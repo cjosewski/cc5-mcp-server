@@ -2395,11 +2395,9 @@ def exec_python(code: str) -> dict[str, Any]:
     Returns: {"success": True, "output": "<captured stdout>", "result": "<last expression>"}
     """
     # --- Production safety gate (hot-reloadable; mirrors server-side DEV_MODE) ---
-    # Disabled when dev mode is off unless an explicit exec opt-in / reload secret
-    # is present. Keeps arbitrary code execution off by default in production.
-    # NOTE: deliberately NOT gated on CC5_RELOAD_SECRET — exec must not be enabled
-    # as a side effect of securing /reload. Gate only on dev mode / explicit exec opt-in.
-    dev_mode = os.environ.get("CC5_DEV_MODE", "1").strip().lower() not in ("0", "false", "no", "")
+    # Disabled unless CC5_DEV_MODE=1 or the explicit CC5_ALLOW_EXEC=1 opt-in is set.
+    # Keeps arbitrary code execution off by default in production.
+    dev_mode = os.environ.get("CC5_DEV_MODE", "0").strip().lower() in ("1", "true", "yes")
     allow_exec = os.environ.get("CC5_ALLOW_EXEC", "").strip().lower() in ("1", "true", "yes")
     if not dev_mode and not allow_exec:
         return {

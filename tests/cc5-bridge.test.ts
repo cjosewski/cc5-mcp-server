@@ -1079,3 +1079,23 @@ describe("CC5Bridge.createActorMixer", () => {
     await expect(bridge.createActorMixer({ confirm_create: true })).rejects.toThrow("ECONNREFUSED");
   });
 });
+
+describe("CC5Bridge token header", () => {
+  it("sends X-CC5-Token when a token is available", async () => {
+    process.env.CC5_BRIDGE_TOKEN = "t0k";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ result: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new CC5Bridge("http://localhost:5101").getAvatars();
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers["X-CC5-Token"]).toBe("t0k");
+    delete process.env.CC5_BRIDGE_TOKEN;
+    vi.unstubAllGlobals();
+  });
+
+  it("explains a 401 in plain words", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 401 })));
+    await expect(new CC5Bridge("http://localhost:5101").getAvatars()).rejects.toThrow(/token/i);
+    vi.unstubAllGlobals();
+  });
+});

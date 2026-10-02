@@ -12,7 +12,9 @@ import importlib
 import json
 import os
 import queue
+import secrets
 import sys
+import tempfile
 import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -21,8 +23,35 @@ from urllib.parse import urlparse
 
 import cc5_api
 
-RELOAD_SECRET = os.environ.get("CC5_RELOAD_SECRET", "")
-DEV_MODE = os.environ.get("CC5_DEV_MODE", "1") == "1"  # Default: dev mode on
+DEV_MODE = os.environ.get("CC5_DEV_MODE", "0").strip().lower() in ("1", "true", "yes")
+TOKEN_HEADER = "X-CC5-Token"
+
+
+def _token_path() -> str:
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return os.path.join(base, "CC5_MCP_Bridge", "token")
+
+
+def _load_or_create_token() -> str:
+    env = os.environ.get("CC5_BRIDGE_TOKEN", "").strip()
+    if env:
+        return env
+    path = _token_path()
+    try:
+        with open(path, encoding="utf-8") as f:
+            existing = f.read().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    token = secrets.token_urlsafe(32)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(token)
+    return token
+
+
+TOKEN = _load_or_create_token()
 API_VERSION = "1.1.0"
 
 # Thread-safe command queue: HTTP thread -> main thread
@@ -413,11 +442,37 @@ class BridgeHandler(BaseHTTPRequestHandler):
             raise ValueError("Request body must be a JSON object")
         return parsed
 
+    def _allowed_host(self) -> bool:
+        port = self.server.server_address[1]
+        host = (self.headers.get("Host") or "").strip().lower()
+        return host in (f"127.0.0.1:{port}", f"localhost:{port}")
+
+    def _check_request(self, require_json: bool) -> bool:
+        """Guard every request. Fails closed: anything unexpected is rejected."""
+        if not self._allowed_host():
+            self._send_json(403, {"error": "Forbidden host"})
+            return False
+        # Compare bytes: compare_digest raises TypeError on non-ASCII str, and http.server
+        # decodes headers as latin-1, so a stray high byte must yield 401, not a dropped socket.
+        supplied = (self.headers.get(TOKEN_HEADER) or "").encode("utf-8", "surrogatepass")
+        if not hmac.compare_digest(supplied, TOKEN.encode("utf-8", "surrogatepass")):
+            self._send_json(401, {"error": "Missing or invalid bridge token"})
+            return False
+        if require_json:
+            ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                self._send_json(415, {"error": "Content-Type must be application/json"})
+                return False
+        return True
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
 
         if path == "/health":
             self._send_json(200, {"result": {"status": "ok", "service": "cc5-mcp-bridge", "version": API_VERSION}})
+            return
+
+        if not self._check_request(require_json=False):
             return
 
         if path == "/api":
@@ -428,17 +483,11 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/reload":
-            if not DEV_MODE and not RELOAD_SECRET:
-                self._send_json(403, {"error": "/reload disabled. Set CC5_DEV_MODE=1 or CC5_RELOAD_SECRET."})
+            if not DEV_MODE:
+                self._send_json(403, {"error": "/reload disabled. Set CC5_DEV_MODE=1."})
                 return
-            if RELOAD_SECRET:
-                token = self.headers.get("X-Reload-Token", "")
-                if not hmac.compare_digest(token, RELOAD_SECRET):
-                    self._send_json(403, {"error": "Forbidden"})
-                    return
             result = reload_modules()
-            status = 200 if result.get("success") else 500
-            self._send_json(status, {"result": result})
+            self._send_json(200 if result.get("success") else 500, {"result": result})
             return
 
         action = GET_ROUTES.get(path)
@@ -455,6 +504,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             params = self._read_json()
         except ValueError as e:
             self._send_json(400, {"error": str(e)})
+            return
+
+        if not self._check_request(require_json=True):
             return
 
         action = POST_ROUTES.get(path)
@@ -481,9 +533,6 @@ def start_server(port: int = 5101) -> threading.Thread:
     def run() -> None:
         httpd.serve_forever()
 
-    if not RELOAD_SECRET:
-        print("[CC5 MCP Bridge] WARNING: /reload endpoint has no authentication. Set CC5_RELOAD_SECRET env var to secure it.")
-
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     return thread
@@ -494,4 +543,5 @@ def stop_server() -> None:
     global _httpd
     if _httpd is not None:
         _httpd.shutdown()
+        _httpd.server_close()
         _httpd = None

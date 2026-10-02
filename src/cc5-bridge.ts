@@ -49,6 +49,7 @@ import type {
   CreateActorMixerOptions,
   CreateActorMixerResult,
 } from "./types.js";
+import { getBridgeToken, resetTokenCache } from "./auth.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:5101";
 const _rawTimeout = parseInt(process.env.CC5_REQUEST_TIMEOUT_MS ?? "30000", 10);
@@ -84,17 +85,22 @@ export class CC5Bridge {
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-      const options: RequestInit = {
-        method,
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-      };
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const token = getBridgeToken();
+      if (token) headers["X-CC5-Token"] = token;
+      const options: RequestInit = { method, headers, signal: controller.signal };
 
       if (body !== undefined) {
         options.body = JSON.stringify(body);
       }
 
       const response = await fetch(`${this.baseUrl}${path}`, options);
+
+      if (response.status === 401) {
+        resetTokenCache();
+        throw new Error(
+          "CC5 rejected the bridge token. Start Character Creator 5 at least once so it writes its token, then try again");
+      }
 
       if (!response.ok) {
         const errorBody = await response.text();
