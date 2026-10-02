@@ -60,3 +60,37 @@ describe("export_obj", () => {
     expect(r.content[0].text).toContain("a.obj");
   });
 });
+
+describe("export_goz", () => {
+  it("runs as a job and reports the folder", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_2" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_2", action: "export_goz", status: "done",
+      result: { success: true, folder: "C:/GoZ/P1", files: [{ path: "C:/GoZ/P1/Body.GoZ", bytes: 10 }] } });
+    const r = await server.getRegisteredTool("export_goz")({ output_dir: "C:/GoZ/P1", pose: "tpose" });
+    expect(bridge.startJob).toHaveBeenCalledWith("export_goz", { output_dir: "C:/GoZ/P1", pose: "tpose" });
+    expect(r.content[0].text).toContain("C:/GoZ/P1");
+  });
+
+  it("warns when the pose was not applied", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_3" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_3", action: "export_goz", status: "done",
+      result: { success: true, folder: "C:/GoZ/P1", files: [], pose_applied: false } });
+    const r = await server.getRegisteredTool("export_goz")({ output_dir: "C:/GoZ/P1", pose: "apose" });
+    expect(r.content[0].text).toContain("WARNING");
+  });
+
+  it("rejects a network (UNC) folder without starting a job", async () => {
+    const r = await server.getRegisteredTool("export_goz")({ output_dir: "//fileserver/share/GoZ", pose: "tpose" });
+    expect(r.isError).toBe(true);
+    expect(bridge.startJob).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed job as an error", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_4" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_4", action: "export_goz", status: "failed",
+      result: { success: false, error: "No avatar in scene" } });
+    const r = await server.getRegisteredTool("export_goz")({ output_dir: "C:/GoZ/P1", pose: "tpose" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("No avatar in scene");
+  });
+});

@@ -257,6 +257,41 @@ def export_obj(output_path: str, y_up: bool = True) -> dict[str, Any]:
     return {"success": True, "path": output_path, "signature": label}
 
 
+GOZ_POSES = {"current": "EExportGoZPose_Current", "tpose": "EExportGoZPose_TPose", "apose": "EExportGoZPose_APose"}
+
+
+def export_goz(output_dir: str, pose: str = "tpose") -> dict[str, Any]:
+    """Write GoZ files for ZBrush (LIVE-VERIFY: RExportGoZMeshOption setter name)."""
+    error = check_path(output_dir)
+    if error:
+        return {"success": False, "error": error}
+    if not isinstance(pose, str) or pose not in GOZ_POSES:
+        return {"success": False, "error": f"pose must be one of: {', '.join(GOZ_POSES)}"}
+    avatar = cc5_api.get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    os.makedirs(output_dir, exist_ok=True)
+    started = time.time() - 2  # mtime slack; report only files this export wrote
+    option = RLPy.RExportGoZMeshOption()
+    pose_enum = getattr(RLPy, GOZ_POSES[pose])
+    pose_setter = next((s for s in ("SetPose", "SetExportPose", "SetGoZPose") if hasattr(option, s)), None)
+    if pose_setter:
+        getattr(option, pose_setter)(pose_enum)
+    pose_applied = pose_setter is not None or pose == "current"
+    label, err = try_signatures([
+        ("([avatar], folder, option)",
+         lambda: _raise_on_error(RLPy.RFileIO.ExportGoZFile([avatar], output_dir, option), "ExportGoZFile")),
+        ("([avatar], folder, [option])",
+         lambda: _raise_on_error(RLPy.RFileIO.ExportGoZFile([avatar], output_dir, [option]), "ExportGoZFile")),
+    ])
+    if not label:
+        return {"success": False, "error": f"ExportGoZFile failed: {err}"}
+    notes = [] if pose_applied else [
+        f"WARNING: pose '{pose}' NOT applied (no pose setter on RExportGoZMeshOption); files use the current pose"]
+    return {"success": True, "folder": output_dir, "files": list_files(output_dir, since=started), "signature": label,
+            "pose_applied": pose_applied, "notes": notes}
+
+
 def _opt_int(p: dict, key: str) -> int | None:
     return int(p[key]) if p.get(key) is not None else None
 
@@ -269,6 +304,7 @@ ACTIONS: dict[str, Any] = {
     "apply_pose": lambda p: apply_pose(p["file_path"]),
     "save_character": lambda p: save_character(p["output_path"]),
     "export_obj": lambda p: export_obj(p["output_path"], bool(p.get("y_up", True))),
+    "export_goz": lambda p: export_goz(p["output_dir"], p.get("pose", "tpose")),
 }
 POST_ROUTES: dict[str, str] = {
     "/pipeline/mesh_stats": "get_mesh_stats",
@@ -281,4 +317,5 @@ REQUIRED_PARAMS: dict[str, list[str]] = {
     "apply_pose": ["file_path"],
     "save_character": ["output_path"],
     "export_obj": ["output_path"],
+    "export_goz": ["output_dir"],  # job-only: no POST route
 }

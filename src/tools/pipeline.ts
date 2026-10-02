@@ -8,6 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, errorResult } from "../util.js";
 import { isLocalAbsolute } from "./unity.js";
+import { runJob, formatPending } from "../jobs.js";
 
 /** Local absolute path (no '..', no UNC/network or device path), extension in the allowed set. Returns an error message or null. */
 export function checkFile(filePath: string, allowed: string[]): string | null {
@@ -58,6 +59,28 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       if (err) return errorResult(err);
       return bridgeCall(() => bridge.exportObj(output_path, y_up),
         (r) => r.success ? `Exported ${r.path}` : `Failed: ${r.error}`);
+    }
+  );
+
+  server.tool(
+    "export_goz",
+    "Export the current character as GoZ files for ZBrush (open them in ZBrush, sculpt, then export OBJ and use replace_mesh_from_obj to bring changes back).",
+    {
+      output_dir: z.string().describe("Absolute folder for the GoZ files"),
+      pose: z.enum(["current", "tpose", "apose"]).default("tpose"),
+    },
+    async ({ output_dir, pose }) => {
+      if (!isLocalAbsolute(output_dir)) return errorResult("output_dir must be a local absolute path without '..' (no network/UNC paths)");
+      try {
+        const out = await runJob(bridge, "export_goz", { output_dir, pose });
+        if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+        const r = out.result as { success: boolean; error?: string; folder?: string; files?: unknown[]; pose_applied?: boolean };
+        if (out.failed || !r.success) return errorResult(`GoZ export failed: ${r.error ?? "unknown error"}`);
+        const warn = r.pose_applied === false ? `\nWARNING: pose '${pose}' was NOT applied (no pose setter on RExportGoZMeshOption); files use the character's current pose.` : "";
+        return { content: [{ type: "text" as const, text: `GoZ files written to ${r.folder} (${r.files?.length ?? 0} files)${warn}` }] };
+      } catch (e) {
+        return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   );
 }
