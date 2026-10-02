@@ -48,7 +48,8 @@ def _check_server_health():
 
 ```
 cc5_api.py を編集
-  → curl http://127.0.0.1:5101/reload (または Claude が自動実行)
+  → curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/reload
+    (または Claude が自動実行。CC5 を CC5_DEV_MODE=1 で起動している必要あり)
   → importlib.reload(cc5_api) が実行される
   → _auto_patch_server() が ACTION_MAP / POST_ROUTES / GET_ROUTES を更新
   → 新しいコードが即座に有効化（CC5 再起動不要）
@@ -64,6 +65,8 @@ cc5_api.py の変更（API 関数の修正、新関数追加）はリロード�
 | CC5 起動してもブリッジが立たない | `initialize_plugin` でない / `rl_plugin_info` がない | main.py の関数名・辞書を確認 |
 | ポート 5101 に接続できない | プラグイン未インストール | `install-plugin.ps1` を管理者権限で実行 |
 | `curl /reload` が 404 | 古い server.py が動いている | CC5 を再起動して新しい server.py を読み込み |
+| `curl /reload` 等が 401 | `X-CC5-Token` ヘッダーがない / トークン不一致 | `%LOCALAPPDATA%\CC5_MCP_Bridge\token` の値を `X-CC5-Token` で送る (`/health` 以外は全ルート必須) |
+| `/reload` や `/exec/python` が 403 | 開発モードが無効 (デフォルト) | CC5 を `CC5_DEV_MODE=1` で起動 (`/exec/python` のみなら `CC5_ALLOW_EXEC=1` でも可) |
 | RLPy の関数が見つからない | CC5 バージョン差異 | `hasattr()` でチェックしてグレースフルに失敗 |
 | モーフが効かない | アバターがシーンにいない | `create_avatar` で先にアバターを作成 |
 | マテリアル色が変わらない | メッシュ/マテリアル名が間違い | `get_material_info` で正しい名前を確認 |
@@ -310,8 +313,9 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 
 - ビルド: `npm run build`
 - テスト: `npm test` (449件) / `npm run test:coverage`
-- ホットリロード: `curl http://127.0.0.1:5101/reload` (cc5_api.py の変更を即反映)
-- API ディスカバリ: `curl http://127.0.0.1:5101/api`
+- ブリッジ認証: `/health` 以外の全ルートは `X-CC5-Token` ヘッダーが必須。トークンはプラグイン初回起動時に `%LOCALAPPDATA%\CC5_MCP_Bridge\token` へ生成される (環境変数 `CC5_BRIDGE_TOKEN` で上書き可)。MCP サーバーは自動で送信する
+- ホットリロード: `curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/reload` (cc5_api.py の変更を即反映。`CC5_DEV_MODE=1` が必要、無効時は 403)
+- API ディスカバリ: `curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/api`
 - CC5 再起動: `taskkill` → `CharacterCreator.exe &` → ブリッジ自動起動
 
 ## 環境変数
@@ -320,7 +324,8 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 |------|-----------|------|
 | CC5_BRIDGE_URL | http://127.0.0.1:5101 | ブリッジ接続先 |
 | CC5_BRIDGE_PORT | 5101 | ブリッジポート (start_bridge.py用) |
-| CC5_RELOAD_SECRET | (空) | /reload 認証トークン |
-| CC5_DEV_MODE | 1 | 開発モード (1=reload有効) |
+| CC5_BRIDGE_TOKEN | (空 = トークンファイルを使用) | ブリッジ認証トークン (`X-CC5-Token`)。プラグインと MCP サーバーの両方で同じ値にすること |
+| CC5_DEV_MODE | 0 | 開発モード (1/true/yes で /reload と /exec/python を有効化) |
+| CC5_ALLOW_EXEC | (空) | 1/true/yes で開発モード無効時も /exec/python を有効化 |
 | CC5_REQUEST_TIMEOUT_MS | 30000 | リクエストタイムアウト (ms) |
 | CC5_ROOT | (自動検出) | CC5 インストールパス |
