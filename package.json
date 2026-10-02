@@ -13,7 +13,8 @@
     "dev": "tsc --watch",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:py": "py -3 -m unittest discover -s tests/py -p \"test_*.py\" -v"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
