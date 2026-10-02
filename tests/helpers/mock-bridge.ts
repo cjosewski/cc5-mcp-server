@@ -96,6 +96,10 @@ export function createMockBridge(): MockBridge {
     replaceMeshFromObj: vi.fn(),
     loadTexture: vi.fn(),
     loadSubstanceTextures: vi.fn(),
+    applySkinOverlay: vi.fn(),
+    removeSkinOverlay: vi.fn(),
+    setSkinCondition: vi.fn(),
+    setWrinkleStrength: vi.fn(),
   };
 }
 

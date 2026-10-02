@@ -610,4 +610,20 @@ export class CC5Bridge {
   async loadSubstanceTextures(folder: string): Promise<OperationResult> {
     return this.request("/pipeline/substance_import", "POST", { folder });
   }
+
+  async applySkinOverlay(imagePath: string, region: string, strength: number): Promise<OperationResult & { applied_to?: string[] }> {
+    return this.request("/skin/overlay", "POST", { image_path: imagePath, region, strength });
+  }
+
+  async removeSkinOverlay(region: string): Promise<OperationResult & { removed_from?: string[] }> {
+    return this.request("/skin/overlay/remove", "POST", { region });
+  }
+
+  async setSkinCondition(condition: string, amount: number, region: string, baseRgb?: [number, number, number]): Promise<OperationResult & { applied_to?: string[] }> {
+    return this.request("/skin/condition", "POST", { condition, amount, region, base_rgb: baseRgb });
+  }
+
+  async setWrinkleStrength(strength: number): Promise<OperationResult> {
+    return this.request("/skin/wrinkle", "POST", { strength });
+  }
 }

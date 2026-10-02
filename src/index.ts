@@ -31,6 +31,7 @@ import { registerActorMixerTools } from "./tools/actor-mixer.js";
 import { registerJobTools } from "./tools/jobs.js";
 import { registerUnityTools } from "./tools/unity.js";
 import { registerPipelineTools } from "./tools/pipeline.js";
+import { registerSkinTools } from "./tools/skin.js";
 import { registerMorphResources } from "./resources/morphs.js";
 
 async function main() {
@@ -61,6 +62,7 @@ async function main() {
   registerJobTools(server, bridge);
   registerUnityTools(server, bridge);
   registerPipelineTools(server, bridge);
+  registerSkinTools(server, bridge);
 
   // Register resources
   registerMorphResources(server, bridge);

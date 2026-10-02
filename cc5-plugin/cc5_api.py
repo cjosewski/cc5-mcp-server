@@ -1943,6 +1943,15 @@ def browse_content(folder_type: str = "cloth_upper") -> list[str]:
         "light": "EContentRootFolder_Light",
         "camera": "EContentRootFolder_Camera",
         "character": "EContentRootFolder_Character",
+        # Makeup, SkinGen and image libraries (skin overlays for injury states).
+        "makeup_full": "EContentRootFolder_FullMakeup",
+        "makeup_foundation": "EContentRootFolder_FoundationMakeup",
+        "makeup_eye": "EContentRootFolder_EyeMakeup",
+        "makeup_lip": "EContentRootFolder_LipMakeup",
+        "image_layer": "EContentRootFolder_ImageLayer",
+        "skingen": "EContentRootFolder_SkinGenTools",
+        "wrinkle_mask": "EContentRootFolder_WrinkleMasks",
+        "texture": "EContentRootFolder_Texture",
     }
     folder_map: dict[str, Any] = {}
     for key, attr_name in enum_candidates.items():
@@ -1978,6 +1987,8 @@ def browse_content(folder_type: str = "cloth_upper") -> list[str]:
         # legacy CC3/iClone content uses .i* (e.g. .iAvatar, .iShoe). Accept both.
         # (_ALLOWED_LOAD_EXTENSIONS is for load_asset and excludes .cc* content files.)
         # pose/motion folders also hold .rlMotion/.rlPose files (apply_pose, not load_asset).
+        # image_layer/texture/wrinkle_mask folders hold plain images (apply_skin_overlay, load_texture).
+        # Literal tuple, not cc5_pipeline.IMAGE_EXTENSIONS: cc5_pipeline imports this module.
         results: list[str] = []
         seen: set[str] = set()
         for fs in folder_strs:
@@ -1987,7 +1998,8 @@ def browse_content(folder_type: str = "cloth_upper") -> list[str]:
                 files = None
             for f in (files or []):
                 ext = os.path.splitext(f)[1].lower()
-                if (ext.startswith((".cc", ".i")) or (folder_type in ("pose", "motion") and ext.startswith(".rl"))) and f not in seen:
+                is_image = folder_type in ("image_layer", "texture", "wrinkle_mask") and ext in (".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff")
+                if (ext.startswith((".cc", ".i")) or (folder_type in ("pose", "motion") and ext.startswith(".rl")) or is_image) and f not in seen:
                     seen.add(f)
                     results.append(f)
                     if len(results) >= 200:
