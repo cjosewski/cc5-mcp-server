@@ -303,7 +303,7 @@ GET_ROUTES: dict[str, str | None] = {
 
 # Feature modules whose ACTIONS / POST_ROUTES / REQUIRED_PARAMS are merged into the
 # dispatch tables above by load_extensions().
-EXTENSION_MODULES: list[str] = ["cc5_pipeline", "cc5_skin"]
+EXTENSION_MODULES: list[str] = ["cc5_pipeline", "cc5_skin", "cc5_builder"]
 
 
 def load_extensions(reload: bool = False) -> list[str]:

@@ -100,6 +100,8 @@ export function createMockBridge(): MockBridge {
     removeSkinOverlay: vi.fn(),
     setSkinCondition: vi.fn(),
     setWrinkleStrength: vi.fn(),
+    browseContent: vi.fn(),
+    loadFacialProfile: vi.fn(),
   };
 }
 

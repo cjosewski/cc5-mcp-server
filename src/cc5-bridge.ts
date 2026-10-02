@@ -626,4 +626,8 @@ export class CC5Bridge {
   async setWrinkleStrength(strength: number): Promise<OperationResult> {
     return this.request("/skin/wrinkle", "POST", { strength });
   }
+
+  async loadFacialProfile(filePath: string): Promise<OperationResult> {
+    return this.request("/builder/facial_profile", "POST", { file_path: filePath });
+  }
 }
