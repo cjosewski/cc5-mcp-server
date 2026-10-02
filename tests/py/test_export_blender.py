@@ -41,10 +41,31 @@ class ExportObjTest(unittest.TestCase):
         self.assertFalse(self.pipe.export_obj(os.path.join(tempfile.mkdtemp(), "a.fbx"))["success"])
 
     def test_reports_signature_used(self):
+        self.rl.RFileIO.ExportObjFile.side_effect = lambda avatar, path, *rest: open(path, "wb").close()
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()):
             r = self.pipe.export_obj(os.path.join(tempfile.mkdtemp(), "a.obj"))
         self.assertTrue(r["success"])
         self.assertTrue(r["signature"])
+
+    def test_reports_failure_when_file_not_written(self):
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()):
+            r = self.pipe.export_obj(os.path.join(tempfile.mkdtemp(), "a.obj"))
+        self.assertFalse(r["success"])
+
+    def test_error_status_falls_back(self):
+        def export(avatar, path, *rest):
+            status = mock.MagicMock()
+            if rest:
+                status.IsError.return_value = True
+                return status
+            open(path, "wb").close()
+            status.IsError.return_value = False
+            return status
+        self.rl.RFileIO.ExportObjFile.side_effect = export
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()):
+            r = self.pipe.export_obj(os.path.join(tempfile.mkdtemp(), "a.obj"))
+        self.assertTrue(r["success"])
+        self.assertEqual(r["signature"], "(avatar, path)")
 
     def test_try_signatures_falls_through(self):
         def boom():

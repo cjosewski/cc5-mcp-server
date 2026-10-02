@@ -245,11 +245,15 @@ def export_obj(output_path: str, y_up: bool = True) -> dict[str, Any]:
     if y_up:
         option |= RLPy.EExport3DFileOption_AxisYUp
     label, err = try_signatures([
-        ("(avatar, path, option)", lambda: RLPy.RFileIO.ExportObjFile(avatar, output_path, option)),
-        ("(avatar, path)", lambda: RLPy.RFileIO.ExportObjFile(avatar, output_path)),
+        ("(avatar, path, option)",
+         lambda: _raise_on_error(RLPy.RFileIO.ExportObjFile(avatar, output_path, option), "ExportObjFile")),
+        ("(avatar, path)",
+         lambda: _raise_on_error(RLPy.RFileIO.ExportObjFile(avatar, output_path), "ExportObjFile")),
     ])
     if not label:
         return {"success": False, "error": f"ExportObjFile failed: {err}"}
+    if not os.path.isfile(output_path):
+        return {"success": False, "error": f"CC5 did not write {output_path}", "signature": label}
     return {"success": True, "path": output_path, "signature": label}
 
 
