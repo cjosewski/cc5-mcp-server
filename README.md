@@ -167,6 +167,8 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 
 This copies every `cc5-plugin/*.py` module plus `config.json` and `config.xml` from the script's own folder into CC5's `OpenPlugin\CC5_MCP_Bridge` directory, replacing any older install. Re-run it after changing the plugin. It also prints where the bridge writes its access token (`%LOCALAPPDATA%\CC5_MCP_Bridge\token`); the MCP server reads that file automatically.
 
+Without administrator rights the script changes nothing and exits with "Open PowerShell with Run as administrator and run this again". If a delete or copy fails, or a file is missing afterwards, it prints `Install FAILED` and exits with code 1; only a complete install prints the green `Plugin installed to: ...` line. If CC5 is installed somewhere other than `C:\Program Files\Reallusion\Character Creator 5`, set `CC5_ROOT` to its folder first.
+
 ### 3. Configure Claude Code
 
 Add to your `~/.claude.json` under `mcpServers`:
