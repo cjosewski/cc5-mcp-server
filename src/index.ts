@@ -29,6 +29,7 @@ import { registerScriptingTools } from "./tools/scripting.js";
 import { registerMetaHumanTools } from "./tools/metahuman.js";
 import { registerActorMixerTools } from "./tools/actor-mixer.js";
 import { registerJobTools } from "./tools/jobs.js";
+import { registerUnityTools } from "./tools/unity.js";
 import { registerMorphResources } from "./resources/morphs.js";
 
 async function main() {
@@ -57,6 +58,7 @@ async function main() {
   registerMetaHumanTools(server, bridge);
   registerActorMixerTools(server, bridge);
   registerJobTools(server, bridge);
+  registerUnityTools(server, bridge);
 
   // Register resources
   registerMorphResources(server, bridge);
