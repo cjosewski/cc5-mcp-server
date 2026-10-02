@@ -86,6 +86,8 @@ export function createMockBridge(): MockBridge {
     getShaderParameters: vi.fn<[string, string], Promise<ShaderParameters>>(),
     setShaderParameter: vi.fn<[string, string, string, number[]], Promise<SetShaderParameterResult>>(),
     createActorMixer: vi.fn<[CreateActorMixerOptions], Promise<CreateActorMixerResult>>(),
+    startJob: vi.fn(),
+    getJob: vi.fn(),
   };
 }
 

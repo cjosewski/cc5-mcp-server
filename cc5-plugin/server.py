@@ -343,6 +343,8 @@ def process_command_queue() -> None:
                     command_queue.task_done()
                     continue
                 _running_id = cmd_id
+                if cmd.get("job"):
+                    _jobs[cmd_id]["status"] = "running"
 
             try:
                 handler = ACTION_MAP.get(action)
@@ -353,10 +355,14 @@ def process_command_queue() -> None:
 
             with _store_lock:
                 _running_id = None
-                event = response_events.pop(cmd_id, None)
-                if event:
-                    response_store[cmd_id] = result
-                    event.set()
+                if cmd.get("job"):
+                    failed = isinstance(result, dict) and result.get("success") is False
+                    _jobs[cmd_id].update({"status": "failed" if failed else "done", "result": result})
+                else:
+                    event = response_events.pop(cmd_id, None)
+                    if event:
+                        response_store[cmd_id] = result
+                        event.set()
 
             command_queue.task_done()
     finally:
@@ -415,6 +421,41 @@ def _execute_sync(action: str, params: dict, timeout: float = 30.0) -> tuple[int
         return 400, result
 
     return 200, {"result": result}
+
+
+# --- Jobs: long operations run on the queue while the caller polls /jobs/status ---
+
+MAX_JOBS = 200
+_jobs: dict[str, dict[str, Any]] = {}
+JOB_FORBIDDEN = {"exec_python"}
+
+
+def _start_job(action: str, params: dict) -> tuple[int, Any]:
+    if action in JOB_FORBIDDEN or action not in ACTION_MAP:
+        return 400, {"error": f"Action cannot run as a job: {action}"}
+    error = _validate_params(action, params)
+    if error:
+        return 400, {"error": error}
+    cmd_id = _next_command_id()
+    with _store_lock:
+        if len(_jobs) >= MAX_JOBS:
+            # Make room by dropping the oldest finished jobs (dicts keep insertion order).
+            for old_id in [j for j, v in _jobs.items() if v["status"] in ("done", "failed")][: len(_jobs) - MAX_JOBS + 1]:
+                _jobs.pop(old_id, None)
+        _jobs[cmd_id] = {"job_id": cmd_id, "action": action, "status": "queued"}
+    try:
+        command_queue.put_nowait({"id": cmd_id, "action": action, "params": params, "job": True})
+    except queue.Full:
+        with _store_lock:
+            _jobs.pop(cmd_id, None)
+        return 503, {"error": "server busy, command queue full"}
+    return 200, {"result": {"job_id": cmd_id}}
+
+
+def _job_status(job_id: str) -> tuple[int, Any]:
+    with _store_lock:
+        job = _jobs.get(job_id)
+        return (200, {"result": dict(job)}) if job else (404, {"error": f"Unknown job: {job_id}"})
 
 
 def reload_modules() -> dict[str, Any]:
@@ -543,6 +584,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
 
         if not self._check_request(require_json=True):
+            return
+
+        if path == "/jobs/start":
+            job_params = params.get("params") or {}
+            if not isinstance(job_params, dict):
+                self._send_json(400, {"error": "params must be a JSON object"})
+                return
+            status, data = _start_job(str(params.get("action", "")), job_params)
+            self._send_json(status, data)
+            return
+        if path == "/jobs/status":
+            status, data = _job_status(str(params.get("job_id", "")))
+            self._send_json(status, data)
             return
 
         action = POST_ROUTES.get(path)

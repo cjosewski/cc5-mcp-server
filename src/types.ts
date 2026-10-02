@@ -354,3 +354,10 @@ export interface CreateActorMixerResult extends OperationResult {
   /** True when the open avatar holds trial content; ActorMIXER refuses to run. */
   trial_content?: boolean;
 }
+
+export interface JobStatus {
+  job_id: string;
+  action: string;
+  status: "queued" | "running" | "done" | "failed";
+  result?: unknown;
+}

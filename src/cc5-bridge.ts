@@ -48,6 +48,7 @@ import type {
   ExportHeadMetaHumanResult,
   CreateActorMixerOptions,
   CreateActorMixerResult,
+  JobStatus,
 } from "./types.js";
 import { getBridgeToken, resetTokenCache } from "./auth.js";
 
@@ -561,5 +562,15 @@ export class CC5Bridge {
     if (opts.save_presets !== undefined) body.save_presets = opts.save_presets;
     if (opts.save_avatar_presets !== undefined) body.save_avatar_presets = opts.save_avatar_presets;
     return this.request<CreateActorMixerResult>("/actor_mixer/create", "POST", body);
+  }
+
+  // --- Jobs: long operations polled to completion ---
+
+  async startJob(action: string, params: Record<string, unknown>): Promise<{ job_id: string }> {
+    return this.request<{ job_id: string }>("/jobs/start", "POST", { action, params });
+  }
+
+  async getJob(jobId: string): Promise<JobStatus> {
+    return this.request<JobStatus>("/jobs/status", "POST", { job_id: jobId });
   }
 }
