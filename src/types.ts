@@ -361,3 +361,6 @@ export interface JobStatus {
   status: "queued" | "running" | "done" | "failed";
   result?: unknown;
 }
+
+export interface MeshStat { object: string; kind: "body" | "clothing" | "hair" | "accessory"; mesh: string; vertices: number; faces: number; materials: number }
+export interface MeshStatsResult { success: boolean; error?: string; meshes: MeshStat[]; totals: { vertices: number; faces: number; materials: number } }

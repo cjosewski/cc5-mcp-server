@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { registerUnityTools, isInUnityAssets, isLocalAbsolute } from "../../src/tools/unity.js";
+import {
+  registerUnityTools, isInUnityAssets, isLocalAbsolute, evaluateBudget, estimateTextureGpuMb, QUEST_DEFAULTS,
+} from "../../src/tools/unity.js";
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -60,5 +62,72 @@ describe("export_for_unity", () => {
     bridge.getJob.mockResolvedValue({ job_id: "cmd_9", action: "export_for_unity", status: "running" });
     const r = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1", wait_seconds: 0 });
     expect(r.content[0].text).toContain("cmd_9");
+  });
+});
+
+describe("evaluateBudget", () => {
+  const stats = { success: true, meshes: [], totals: { vertices: 1, faces: 40_000, materials: 10 } };
+
+  it("passes within limits", () => {
+    const r = evaluateBudget(stats, [{ path: "a.png", bytes: 1_000_000, width: 2048, height: 2048 }], QUEST_DEFAULTS);
+    expect(r.pass).toBe(true);
+  });
+
+  it("fails on faces and oversize textures, naming the offenders", () => {
+    const r = evaluateBudget({ ...stats, totals: { vertices: 1, faces: 80_000, materials: 10 } },
+      [{ path: "Body_Diffuse.png", bytes: 1, width: 4096, height: 4096 }], QUEST_DEFAULTS);
+    expect(r.pass).toBe(false);
+    expect(r.lines.join("\n")).toContain("80,000");
+    expect(r.lines.join("\n")).toContain("Body_Diffuse.png");
+  });
+
+  it("fails when a texture's size cannot be read, naming it", () => {
+    const r = evaluateBudget(stats, [{ path: "Body_Diffuse.tif", bytes: 1, width: 0, height: 0 }], QUEST_DEFAULTS);
+    expect(r.pass).toBe(false);
+    expect(r.lines.join("\n")).toContain("Body_Diffuse.tif");
+  });
+
+  it("fails when estimated texture GPU memory is over budget, and reports file size as information", () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ path: `t${i}.png`, bytes: 1_048_576, width: 2048, height: 2048 }));
+    const r = evaluateBudget(stats, many, QUEST_DEFAULTS);
+    expect(r.pass).toBe(false);
+    expect(r.lines.join("\n")).toContain("Texture GPU memory");
+    expect(r.lines.join("\n")).toContain("Texture files on disk: 40.0 MiB");
+  });
+});
+
+describe("estimateTextureGpuMb", () => {
+  it("prices a 2048px texture as ASTC 6x6 with mips", () => {
+    expect(estimateTextureGpuMb([{ path: "a.png", bytes: 1, width: 2048, height: 2048 }], 2048)).toBeCloseTo(2.373, 3);
+  });
+
+  it("clamps the longer edge to maxPx, keeping the aspect ratio", () => {
+    const clamped = estimateTextureGpuMb([{ path: "a.png", bytes: 1, width: 4096, height: 2048 }], 2048);
+    const direct = estimateTextureGpuMb([{ path: "b.png", bytes: 1, width: 2048, height: 1024 }], 2048);
+    expect(clamped).toBeCloseTo(direct, 6);
+  });
+
+  it("ignores textures whose size is unreadable", () => {
+    expect(estimateTextureGpuMb([{ path: "a.tif", bytes: 1, width: 0, height: 0 }], 2048)).toBe(0);
+  });
+});
+
+describe("check_quest_budget", () => {
+  it("rejects an export_folder that is a file, without calling CC5", async () => {
+    const r = await server.getRegisteredTool("check_quest_budget")({ export_folder: `${process.cwd()}/package.json` });
+    expect(r.isError).toBe(true);
+    expect(bridge.getMeshStats).not.toHaveBeenCalled();
+  });
+
+  it("says when no textures were scanned", async () => {
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 9, faces: 100, materials: 2 } });
+    const r = await server.getRegisteredTool("check_quest_budget")({});
+    expect(r.content[0].text).toContain("no texture images scanned");
+  });
+
+  it("reports mesh totals without an export folder", async () => {
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 9, faces: 100, materials: 2 } });
+    const r = await server.getRegisteredTool("check_quest_budget")({});
+    expect(r.content[0].text).toContain("PASS");
   });
 });

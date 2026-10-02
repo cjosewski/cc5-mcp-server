@@ -88,6 +88,7 @@ export function createMockBridge(): MockBridge {
     createActorMixer: vi.fn<[CreateActorMixerOptions], Promise<CreateActorMixerResult>>(),
     startJob: vi.fn(),
     getJob: vi.fn(),
+    getMeshStats: vi.fn(),
   };
 }
 

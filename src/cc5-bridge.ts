@@ -49,6 +49,7 @@ import type {
   CreateActorMixerOptions,
   CreateActorMixerResult,
   JobStatus,
+  MeshStatsResult,
 } from "./types.js";
 import { getBridgeToken, resetTokenCache } from "./auth.js";
 
@@ -572,5 +573,11 @@ export class CC5Bridge {
 
   async getJob(jobId: string): Promise<JobStatus> {
     return this.request<JobStatus>("/jobs/status", "POST", { job_id: jobId });
+  }
+
+  // --- Pipeline ---
+
+  async getMeshStats(): Promise<MeshStatsResult> {
+    return this.request<MeshStatsResult>("/pipeline/mesh_stats", "POST", {});
   }
 }

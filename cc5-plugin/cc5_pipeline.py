@@ -104,6 +104,45 @@ def export_for_unity(
     return {"success": True, "fbx": fbx, "folder": folder, "files": list_files(folder, since=started), "notes": result.get("notes", [])}
 
 
+def _parts(avatar) -> list[tuple[str, Any]]:
+    parts: list[tuple[str, Any]] = [("body", avatar)]
+    parts += [("clothing", c) for c in (avatar.GetClothes() or [])]
+    parts += [("hair", h) for h in (avatar.GetHairs() or [])]
+    parts += [("accessory", a) for a in (avatar.GetAccessories(True) or [])]
+    return parts
+
+
+def get_mesh_stats() -> dict[str, Any]:
+    """Vertex/face/material counts for the avatar and everything it wears."""
+    avatar = cc5_api.get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    meshes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    parts = _parts(avatar)
+    # Worn items first, body last: if avatar.GetMeshes(True) also returns worn-item meshes
+    # (LIVE-VERIFY in Task 18), each mesh is still counted once, under its own kind.
+    for kind, obj in parts[1:] + parts[:1]:
+        mat_comp = obj.GetMaterialComponent() if hasattr(obj, "GetMaterialComponent") else None
+        for mesh in obj.GetMeshes(True) or []:
+            name = mesh.GetName()
+            if name in seen:
+                continue
+            seen.add(name)
+            try:
+                mats = len(mat_comp.GetMaterialNames(name) or []) if mat_comp else 0
+            except Exception:
+                mats = 0
+            meshes.append({
+                "object": obj.GetName(), "kind": kind, "mesh": name,
+                "vertices": int(mesh.GetVerticesCount()), "faces": int(mesh.GetFacesCount()),
+                "materials": mats,
+            })
+    meshes.sort(key=lambda m: ("body", "clothing", "hair", "accessory").index(m["kind"]))
+    totals = {k: sum(m[k] for m in meshes) for k in ("vertices", "faces", "materials")}
+    return {"success": True, "meshes": meshes, "totals": totals}
+
+
 def _opt_int(p: dict, key: str) -> int | None:
     return int(p[key]) if p.get(key) is not None else None
 
@@ -112,8 +151,11 @@ ACTIONS: dict[str, Any] = {
     "export_for_unity": lambda p: export_for_unity(
         p["unity_dir"], p["character_name"], _opt_int(p, "sub_d_level"),
         _opt_int(p, "texture_size"), bool(p.get("include_current_pose", False))),
+    "get_mesh_stats": lambda p: get_mesh_stats(),
 }
-POST_ROUTES: dict[str, str] = {}
+POST_ROUTES: dict[str, str] = {
+    "/pipeline/mesh_stats": "get_mesh_stats",
+}
 REQUIRED_PARAMS: dict[str, list[str]] = {
     "export_for_unity": ["unity_dir", "character_name"],
 }
