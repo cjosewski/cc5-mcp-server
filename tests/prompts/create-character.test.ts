@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { registerCreateCharacterPrompt, buildCreateCharacterPrompt } from "../../src/prompts/create-character.js";
+import { RecipeSchema } from "../../src/recipe.js";
 
 describe("create_character prompt", () => {
   it("embeds the description and the workflow", () => {
@@ -8,6 +9,18 @@ describe("create_character prompt", () => {
     expect(text).toContain("search_content");
     expect(text).toContain("apply_character_recipe");
     expect(text).toContain("check_quest_budget");
+  });
+
+  it("starts an empty scene from a textured template, not CC5's bald, untextured 'default' mannequin", () => {
+    const step1 = buildCreateCharacterPrompt("40-year-old woman").split("\n").find((l) => l.startsWith("1. "));
+    expect(step1).toContain("browse_content('character')");
+    expect(step1).toContain("Do not use base 'default'");
+    expect(step1).not.toMatch(/base will be 'default'/);
+  });
+
+  it("warns in the recipe schema that 'default' is a mannequin", () => {
+    expect(RecipeSchema.shape.base.description).toContain("mannequin");
+    expect(RecipeSchema.shape.base.description).toContain("browse_content('character')");
   });
 
   it("registers with the server", () => {

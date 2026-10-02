@@ -22,7 +22,7 @@ const absPath = z.string().refine(isLocalAbsolute, "must be a local absolute pat
 
 export const RecipeSchema = z.object({
   base: z.union([z.literal("default"), absPath]).optional()
-    .describe("'default' for a new base character, or a .ccAvatar/.iAvatar path; omit to modify the current one. Setting it replaces any character already in the scene"),
+    .describe("A .ccAvatar/.iAvatar path, best a textured character template from browse_content('character'); omit to modify the current character. 'default' loads CC5's neutral base, a mannequin with no skin or eye textures, eyebrows, eyelashes or hair. Setting it replaces any character already in the scene"),
   headshot_photo: absPath.optional(),
   body_preset: z.object({
     preset: z.enum(["athletic", "muscular", "slim", "heavy", "average"]),
