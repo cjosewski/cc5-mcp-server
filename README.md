@@ -258,13 +258,29 @@ Passing a bare filename (no directory component) exports into `D:\CC5Export` by 
 
 ## Long batches
 
-`batch_generate_patients` runs one recipe, export and budget check per variant and can take many minutes. So that Claude Code does not time the call out, set `MCP_TOOL_TIMEOUT=1800000` (30 minutes, in milliseconds) in the environment when starting Claude Code:
+`batch_generate_patients` runs one recipe, export and budget check per variant, so one call can take many minutes. Claude Code (v2.1.203 and later) ends a call to a stdio MCP server that sends nothing back for 30 minutes: its MCP idle timeout. When Claude Code asks for progress updates, the batch sends one after every recipe step and variant, and each one restarts that timer. To be safe with long batches, add a `timeout` in milliseconds to the server's entry in your MCP configuration. It is a hard limit per tool call and also the shortest idle time Claude Code will wait, so `7200000` allows a two-hour batch:
 
-```bash
-MCP_TOOL_TIMEOUT=1800000 claude
+```json
+{
+  "cc5": {
+    "command": "node",
+    "args": ["<path-to-project>/build/index.js"],
+    "timeout": 7200000
+  }
+}
 ```
 
-Long single operations (`export_for_unity`, `headshot_from_photo`) run as bridge jobs: if one is still running when the tool stops waiting, it returns a job id to poll with `job_status`.
+Or raise the idle window for one session (milliseconds; `0` turns the check off). In PowerShell:
+
+```powershell
+$env:CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT = "7200000"; claude
+```
+
+In Git Bash: `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=7200000 claude`. Leave `MCP_TOOL_TIMEOUT` unset: unset, it already allows about 28 hours, and it does not change the idle timeout.
+
+Cancelling the call (Esc, or Claude Code giving up) stops the batch before its next CC5 command. Finished variants stay in place, and `patients_manifest.json` says which variants never started. One `batch_generate_patients` or `apply_character_recipe` runs at a time; another is refused until it finishes, because both edit the same scene.
+
+Long operations run as bridge jobs: `export_for_unity`, `export_goz`, `import_fbx`, `export_textures`, `headshot_from_photo`, `apply_pose`, `save_character`, `replace_mesh_from_obj` and `load_substance_textures`. If one is still running when the tool stops waiting, it returns a job id to poll with `job_status`; do not start the same operation again. If CC5 restarts, an old job id is reported as not found and its result is lost.
 
 ## Budget defaults
 
@@ -300,13 +316,15 @@ npm run test:coverage # With coverage report
 
 ### Hot-Reload the Python Plugin
 
-The bridge supports hot-reloading `cc5_api.py` and the extension modules without restarting CC5. It is only available in dev mode: start CC5 with `CC5_DEV_MODE=1` in its environment, then:
+The bridge supports hot-reloading `cc5_api.py` and the extension modules without restarting CC5. It is only available in dev mode: start CC5 with `CC5_DEV_MODE=1` in its environment.
+
+CC5 runs the installed copy of the plugin in `C:\Program Files\Reallusion\Character Creator 5\Bin64\OpenPlugin\CC5_MCP_Bridge\`, not the files in this repo, and `/reload` re-imports that copy. So after editing a module, first re-run `install-plugin.ps1` from an Administrator PowerShell (or copy the changed `.py` into that folder), then reload:
 
 ```bash
 curl -H "X-CC5-Token: $(cat $LOCALAPPDATA/CC5_MCP_Bridge/token)" http://127.0.0.1:5101/reload
 ```
 
-After reloading, the server's dispatch table is automatically patched with the updated functions.
+After reloading, the server's dispatch table is automatically patched with the updated functions. A change to `server.py` is not reloaded: re-run the installer and restart CC5.
 
 ### Project Structure
 

@@ -47,16 +47,19 @@ def _check_server_health():
 ### Hot reload (apply code changes immediately)
 
 ```
-Edit cc5_api.py
+Edit cc5_api.py (or an extension module: cc5_pipeline.py, cc5_skin.py, cc5_builder.py) in the repo
+  → copy it to the installed plugin: re-run install-plugin.ps1 (Administrator PowerShell), or copy the
+    changed .py into C:\Program Files\Reallusion\Character Creator 5\Bin64\OpenPlugin\CC5_MCP_Bridge\
+    (CC5 runs that copy, not the repo; without this step /reload succeeds and changes nothing)
   → curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/reload
     (or Claude runs it automatically; CC5 must have been started with CC5_DEV_MODE=1)
-  → importlib.reload(cc5_api) runs
+  → importlib.reload(cc5_api) and the extension modules runs
   → _auto_patch_server() updates ACTION_MAP / POST_ROUTES / GET_ROUTES
   → the new code takes effect immediately (no CC5 restart needed)
 ```
 
-**Limitation:** changes to server.py (adding routes, changing validation, etc.) require a CC5 restart.
-Changes to cc5_api.py (fixing API functions, adding new functions) take effect immediately on reload.
+**Limitation:** changes to server.py (adding routes, changing validation, etc.) require re-running install-plugin.ps1 and restarting CC5.
+Changes to cc5_api.py and the extension modules take effect on reload, once the installed copy is updated.
 
 ### Troubleshooting
 
