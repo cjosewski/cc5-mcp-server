@@ -96,6 +96,38 @@ describe("applyRecipe", () => {
     expect(started.map((j) => j.action)).not.toContain("create_default_avatar");
     expect(results[1]).toMatchObject({ step: "pose_file", ok: true });
   });
+
+  it("starts no further step, and sends CC5 nothing more, once cancelled", async () => {
+    const ac = new AbortController();
+    bridge.setSkinColor.mockImplementation(async () => { ac.abort(); return ok; });
+    const recipe = RecipeSchema.parse({
+      skin_rgb: [0.8, 0.6, 0.5], skin_condition: { condition: "pale", amount: 1 },
+      assets: ["C:/c/Jacket.iClothes"], pose_file: "C:/p/Supine.rlMotion" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, recipe, { signal: ac.signal });
+    expect(results).toEqual([{ step: "skin_rgb", ok: true, detail: "" }]);
+    expect(bridge.setSkinCondition).not.toHaveBeenCalled();
+    expect(started).toEqual([]);
+  });
+
+  it("stops removing old avatars when cancelled part-way through the base step", async () => {
+    const ac = new AbortController();
+    bridge.getAvatars.mockResolvedValue([{ name: "Old", id: "1", type: "avatar" }, { name: "Older", id: "2", type: "avatar" }]);
+    bridge.deleteAvatar.mockImplementation(async () => { ac.abort(); return ok; });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ base: "C:/Bases/Male.ccAvatar" }), { signal: ac.signal });
+    expect(bridge.deleteAvatar).toHaveBeenCalledTimes(1);
+    expect(started).toEqual([]);
+    expect(results[0]).toMatchObject({ step: "base", ok: false });
+  });
+
+  it("reports each step as it finishes", async () => {
+    const seen: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await applyRecipe(bridge as any, RecipeSchema.parse({ skin_rgb: [0.8, 0.6, 0.5], pose_file: "C:/p/a.rlMotion" }),
+      { onStep: (s) => seen.push(`${s.step}:${s.ok}`) });
+    expect(seen).toEqual(["skin_rgb:true", "pose_file:true"]);
+  });
 });
 
 describe("formatReport", () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { registerBuilderTools, searchContent } from "../../src/tools/builder.js";
 import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
@@ -74,5 +74,28 @@ describe("apply_character_recipe", () => {
     const r = await server.getRegisteredTool("apply_character_recipe")({ recipe: { assets: ["C:/x/a.iClothes"] } });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain("FAIL asset a.iClothes: File not found");
+  });
+
+  it("stops at the next step when the client cancels, and says so", async () => {
+    const started = mockJobs(bridge);
+    const ac = new AbortController();
+    bridge.setSkinCondition.mockImplementation(async () => { ac.abort(); return { success: true }; });
+    const r = await server.getRegisteredTool("apply_character_recipe")(
+      { recipe: { skin_condition: { condition: "pale", amount: 1 }, pose_file: "C:/p/Supine.rlMotion" } },
+      { signal: ac.signal });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/^Cancelled: the remaining steps were not started\./);
+    expect(started).toEqual([]);
+  });
+
+  it("sends a progress notification per step when the client asks for progress", async () => {
+    mockJobs(bridge);
+    bridge.setSkinCondition.mockResolvedValue({ success: true });
+    const sendNotification = vi.fn().mockResolvedValue(undefined);
+    await server.getRegisteredTool("apply_character_recipe")(
+      { recipe: { skin_condition: { condition: "pale", amount: 1 }, pose_file: "C:/p/Supine.rlMotion" } },
+      { signal: new AbortController().signal, _meta: { progressToken: 7 }, sendNotification });
+    expect(sendNotification.mock.calls.map(([n]) => [n.params.progress, n.params.message]))
+      .toEqual([[1, "OK skin_condition"], [2, "OK pose_file"]]);
   });
 });

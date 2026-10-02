@@ -7,11 +7,12 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall, errorResult } from "../util.js";
+import { bridgeCall, errorResult, progressReporter } from "../util.js";
 import { runJob, formatPending } from "../jobs.js";
 import { checkFile } from "./pipeline.js";
 import { isLocalAbsolute } from "./unity.js";
 import { applyRecipe, formatReport, RecipeSchema } from "../recipe.js";
+import { claimScene } from "../scene-lock.js";
 
 export const SEARCH_FOLDERS = [
   "cloth", "cloth_upper", "cloth_lower", "shoes", "accessory_head", "character",
@@ -107,12 +108,22 @@ export function registerBuilderTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "apply_character_recipe",
-    "Build or modify a character in one call from a recipe: base, headshot photo, body preset, morphs, skin colour and condition, facial profile, content assets (hair, clothes, shoes, accessories, makeup), textures, injury overlays, wrinkles, expression, pose. Every step is reported; a failed step does not stop the rest.",
+    "Build or modify a character in one call from a recipe: base, headshot photo, body preset, morphs, skin colour and condition, facial profile, content assets (hair, clothes, shoes, accessories, makeup), textures, injury overlays, wrinkles, expression, pose. Every step is reported; a failed step does not stop the rest. Not while batch_generate_patients runs: both edit the same scene.",
     { recipe: RecipeSchema },
-    async ({ recipe }) => {
-      const results = await applyRecipe(bridge, recipe);
-      const text = formatReport(results);
-      return results.some((r) => !r.ok) ? errorResult(text) : { content: [{ type: "text" as const, text }] };
+    async ({ recipe }, extra) => {
+      const release = claimScene("apply_character_recipe");
+      if (typeof release === "string") return errorResult(release);
+      try {
+        const report = progressReporter(extra);
+        const results = await applyRecipe(bridge, recipe, {
+          signal: extra?.signal, onStep: (s) => report(`${s.ok ? "OK" : "FAIL"} ${s.step}`),
+        });
+        const text = formatReport(results);
+        if (extra?.signal?.aborted) return errorResult(`Cancelled: the remaining steps were not started.\n${text}`);
+        return results.some((r) => !r.ok) ? errorResult(text) : { content: [{ type: "text" as const, text }] };
+      } finally {
+        release();
+      }
     }
   );
 }

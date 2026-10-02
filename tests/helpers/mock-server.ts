@@ -4,7 +4,9 @@
 
 import { vi } from "vitest";
 
-export type ToolHandler = (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }> }>;
+/** A registered tool callback. `extra` stands in for the SDK's per-request extra (signal, progress token, notifications). */
+export type ToolHandler = (args: Record<string, unknown>, extra?: unknown) =>
+  Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
 
 export interface CapturedTool {
   name: string;

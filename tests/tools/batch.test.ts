@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, it, expect, beforeEach } from "vitest";
-import { runBatch, registerBatchTools } from "../../src/tools/batch.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { runBatch, registerBatchTools, BatchSchema, type Manifest } from "../../src/tools/batch.js";
+import { registerBuilderTools } from "../../src/tools/builder.js";
 import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -145,7 +146,7 @@ describe("runBatch with export subdivision", () => {
     expect(m.variants[0].budget?.[0]).toMatch(/^OK +Triangles: 2,000 \//);
   });
 
-  it("says in the tool summary that the face budget was not checked", async () => {
+  it("says in the tool summary that the triangle budget was not checked", async () => {
     const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc5-batch-")), "Proj", "Assets", "Pt");
     try {
       const server = createMockServer();
@@ -158,5 +159,165 @@ describe("runBatch with export subdivision", () => {
     } finally {
       fs.rmSync(path.resolve(dir, "..", "..", ".."), { recursive: true, force: true });
     }
+  });
+});
+
+function batchHandler() {
+  const server = createMockServer();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  registerBatchTools(server as any, bridge as any);
+  return server.getRegisteredTool("batch_generate_patients");
+}
+
+// The handler creates unity_dir and writes patients_manifest.json in TypeScript, before CC5 sees anything,
+// so these guards are the only thing between a bad request and a folder written outside a Unity project.
+describe("batch_generate_patients refuses bad input before writing anything", () => {
+  let project: string;
+  beforeEach(() => { project = fs.mkdtempSync(path.join(os.tmpdir(), "cc5-batch-")); });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(project, { recursive: true, force: true });
+  });
+
+  it("refuses a unity_dir outside a Unity Assets folder", async () => {
+    const outside = path.join(project, "Exports");
+    const r = await batchHandler()({ ...input, unity_dir: outside });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("inside a Unity project's Assets folder");
+    expect(bridge.getAvatars).not.toHaveBeenCalled();
+    expect(fs.existsSync(outside)).toBe(false);
+  });
+
+  it("refuses a network (UNC) unity_dir", async () => {
+    const mkdir = vi.spyOn(fs, "mkdirSync");
+    const write = vi.spyOn(fs, "writeFileSync");
+    const r = await batchHandler()({ ...input, unity_dir: "//host/share/Assets/x" });
+    expect(r.isError).toBe(true);
+    expect(bridge.getAvatars).not.toHaveBeenCalled();
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("refuses a base_character that is not a local .ccAvatar", async () => {
+    const unityDir = path.join(project, "Assets", "Pt");
+    const r = await batchHandler()({ ...input, unity_dir: unityDir, base_character: "//host/share/Male.ccAvatar" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("base_character");
+    expect(bridge.getAvatars).not.toHaveBeenCalled();
+    expect(fs.existsSync(unityDir)).toBe(false);
+  });
+
+  it("refuses variant names that are the same folder on Windows", async () => {
+    const unityDir = path.join(project, "Assets", "Pt");
+    const r = await batchHandler()({ ...input, unity_dir: unityDir,
+      variants: [{ name: "Patient_A", recipe: {} }, { name: "patient_a", recipe: {} }] });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("Variant names must be unique");
+    expect(bridge.getAvatars).not.toHaveBeenCalled();
+    expect(fs.existsSync(unityDir)).toBe(false);
+    expect(BatchSchema.safeParse({ ...input, variants: [{ name: "A", recipe: {} }, { name: "A", recipe: {} }] }).success).toBe(false);
+    expect(BatchSchema.safeParse(input).success).toBe(true);
+  });
+
+  it("reports a batch with a failed variant as an error", async () => {
+    exportResults.push({ success: false, error: "disk full" });
+    const r = await batchHandler()({ ...input, unity_dir: path.join(project, "Assets", "Pt") });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("1/2 variants exported");
+    expect(r.content[0].text).toContain("FAIL A: disk full");
+  });
+});
+
+describe("batch cancellation, one scene edit at a time, and progress", () => {
+  let project: string;
+  beforeEach(() => { project = fs.mkdtempSync(path.join(os.tmpdir(), "cc5-batch-")); });
+  afterEach(() => fs.rmSync(project, { recursive: true, force: true }));
+
+  it("sends CC5 nothing more once the client cancels, and says so in the manifest", async () => {
+    const ac = new AbortController();
+    // The client cancels (Esc, or its own timeout) while CC5 applies variant A's skin condition.
+    bridge.setSkinCondition.mockImplementation(async () => { ac.abort(); return ok; });
+    const writes: Manifest[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, { ...input, variants: [...input.variants, { name: "C", recipe: {} }] },
+      (man) => writes.push(structuredClone(man)), { signal: ac.signal });
+    expect(bridge.deleteAvatar).toHaveBeenCalledTimes(1);  // variant A's scene clear only
+    expect(baseLoads()).toHaveLength(1);
+    expect(started.map((j) => j.action)).not.toContain("export_for_unity");
+    expect(bridge.getMeshStats).not.toHaveBeenCalled();
+    expect(m.variants).toHaveLength(1);
+    expect(m.variants[0]).toMatchObject({ name: "A", ok: false, error: "cancelled before this variant finished" });
+    expect(m.variants[0].steps).toEqual([{ step: "skin_condition", ok: true, detail: "" }]);
+    expect(m.cancelled).toBe("Cancelled by the client. Not started: B, C.");
+    expect(writes.at(-1)).toEqual(m);
+  });
+
+  it("stops waiting for an export when cancelled, naming the job CC5 is still running", async () => {
+    const ac = new AbortController();
+    bridge.startJob.mockImplementation(async (action: string) => ({ job_id: action === "export_for_unity" ? "cmd_ab12cd34_7" : "cmd_ab12cd34_1" }));
+    bridge.getJob.mockImplementation(async (id: string) => {
+      if (id !== "cmd_ab12cd34_7") return { job_id: id, action: "load_asset", status: "done", result: ok };
+      ac.abort();
+      return { job_id: id, action: "export_for_unity", status: "running" };
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, input, () => undefined, { signal: ac.signal });
+    expect(m.variants[0].error).toBe("cancelled before this variant finished (export still running in CC5 as job cmd_ab12cd34_7)");
+    expect(m.cancelled).toBe("Cancelled by the client. Not started: B.");
+    expect(bridge.getMeshStats).not.toHaveBeenCalled();
+  });
+
+  it("returns a cancelled batch as an error and writes the cancellation to the manifest file", async () => {
+    const ac = new AbortController();
+    bridge.setSkinCondition.mockImplementation(async () => { ac.abort(); return ok; });
+    const unityDir = path.join(project, "Assets", "Pt");
+    const r = await batchHandler()({ ...input, unity_dir: unityDir }, { signal: ac.signal });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text.startsWith("Cancelled by the client. Not started: B.")).toBe(true);
+    const written = JSON.parse(fs.readFileSync(path.join(unityDir, "patients_manifest.json"), "utf8"));
+    expect(written.cancelled).toBe("Cancelled by the client. Not started: B.");
+  });
+
+  it("refuses a second batch, and a recipe, while a batch is running", async () => {
+    const unityDir = path.join(project, "Assets", "Pt");
+    let resume!: () => void;
+    bridge.getAvatars.mockImplementationOnce(() => new Promise((resolve) => { resume = () => resolve([]); }));
+    const handler = batchHandler();
+    const first = handler({ ...input, unity_dir: unityDir });
+
+    const second = await handler({ ...input, unity_dir: unityDir });
+    expect(second.isError).toBe(true);
+    expect(second.content[0].text).toContain("is still running in CC5");
+    expect(second.content[0].text).toContain("patients_manifest.json");
+    const builder = createMockServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerBuilderTools(builder as any, bridge as any);
+    const recipe = await builder.getRegisteredTool("apply_character_recipe")({ recipe: { skin_condition: { condition: "pale", amount: 1 } } });
+    expect(recipe.isError).toBe(true);
+    expect(recipe.content[0].text).toContain("batch_generate_patients");
+    expect(bridge.setSkinCondition).not.toHaveBeenCalled();
+
+    resume();
+    expect((await first).isError).toBeUndefined();
+    expect(bridge.getAvatars).toHaveBeenCalledTimes(2);  // the refused batch never touched the scene
+    expect((await handler({ ...input, unity_dir: unityDir })).isError).toBeUndefined();  // released again
+  });
+
+  it("sends a progress notification after every recipe step and variant when the client asks for progress", async () => {
+    const sendNotification = vi.fn().mockResolvedValue(undefined);
+    const r = await batchHandler()({ ...input, unity_dir: path.join(project, "Assets", "Pt") },
+      { signal: new AbortController().signal, _meta: { progressToken: "tok" }, sendNotification });
+    expect(r.isError).toBeUndefined();
+    const sent = sendNotification.mock.calls.map(([n]) => n);
+    expect(sent.every((n) => n.method === "notifications/progress" && n.params.progressToken === "tok")).toBe(true);
+    expect(sent.map((n) => n.params.progress)).toEqual([1, 2, 3]);
+    expect(sent.map((n) => n.params.message)).toEqual(["A (1/2): OK skin_condition", "A (1/2): done", "B (2/2): done"]);
+  });
+
+  it("sends no progress notification when the client did not ask for progress", async () => {
+    const sendNotification = vi.fn().mockResolvedValue(undefined);
+    await batchHandler()({ ...input, unity_dir: path.join(project, "Assets", "Pt") },
+      { signal: new AbortController().signal, sendNotification });
+    expect(sendNotification).not.toHaveBeenCalled();
   });
 });
