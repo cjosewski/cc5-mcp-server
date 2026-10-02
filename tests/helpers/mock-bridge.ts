@@ -92,6 +92,8 @@ export function createMockBridge(): MockBridge {
     applyPose: vi.fn(),
     saveCharacter: vi.fn(),
     exportObj: vi.fn(),
+    listMeshes: vi.fn(),
+    replaceMeshFromObj: vi.fn(),
   };
 }
 

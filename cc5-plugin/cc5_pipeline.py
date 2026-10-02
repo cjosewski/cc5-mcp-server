@@ -292,6 +292,84 @@ def export_goz(output_dir: str, pose: str = "tpose") -> dict[str, Any]:
             "pose_applied": pose_applied, "notes": notes}
 
 
+FBX_KINDS = {"prop": "EImportFbxOption_Prop", "character": "EImportFbxOption_StandardHumanCharacter", "clothing": None}
+
+
+def import_fbx(file_path: str, kind: str) -> dict[str, Any]:
+    """Import an FBX from Blender/Maya/etc. as a prop, a character, or clothing for the current avatar.
+    LIVE-VERIFY: LoadFbxFile is documented as *args; LoadClotheFromFbx's failed-mesh out-param type."""
+    if not isinstance(kind, str) or kind not in FBX_KINDS:
+        return {"success": False, "error": f"kind must be one of: {', '.join(FBX_KINDS)}"}
+    error = _check_existing(file_path, {".fbx"})
+    if error:
+        return {"success": False, "error": error}
+    avatar = None
+    if kind == "clothing":
+        avatar = cc5_api.get_first_avatar()
+        if not avatar:
+            return {"success": False, "error": "No avatar in scene to dress"}
+    RLPy.RGlobal.BeginAction("Import FBX")
+    try:
+        if kind == "clothing":
+            failed: list[Any] = []
+            label, err = try_signatures([
+                ("LoadClotheFromFbx(avatar, path, WStringVector)",
+                 lambda: _raise_on_error(RLPy.RFileIO.LoadClotheFromFbx(avatar, file_path, RLPy.WStringVector()),
+                                         "LoadClotheFromFbx")),
+                ("LoadClotheFromFbx(avatar, path, list)",
+                 lambda: _raise_on_error(RLPy.RFileIO.LoadClotheFromFbx(avatar, file_path, failed),
+                                         "LoadClotheFromFbx")),
+            ])
+            if label:
+                RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Attribute)
+        else:
+            option = getattr(RLPy, FBX_KINDS[kind])
+            label, err = try_signatures([
+                ("LoadFbxFile(path, option)",
+                 lambda: _raise_on_error(RLPy.RFileIO.LoadFbxFile(file_path, option), "LoadFbxFile")),
+                ("LoadFbxFile(path)",
+                 lambda: _raise_on_error(RLPy.RFileIO.LoadFbxFile(file_path), "LoadFbxFile")),
+            ])
+    finally:
+        RLPy.RGlobal.EndAction()
+    if not label:
+        return {"success": False, "error": f"FBX import failed: {err}"}
+    cc5_api._invalidate_caches()
+    return {"success": True, "signature": label}
+
+
+def list_meshes() -> dict[str, Any]:
+    """Mesh names of the current avatar (the names replace_mesh_from_obj accepts)."""
+    avatar = cc5_api.get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    return {"success": True, "meshes": list(avatar.GetMeshNames(True) or [])}
+
+
+def replace_mesh_from_obj(mesh_name: str, obj_path: str) -> dict[str, Any]:
+    """Swap one avatar mesh for an edited OBJ with the same topology (sculpt round-trip)."""
+    if not isinstance(mesh_name, str) or not mesh_name:
+        return {"success": False, "error": "mesh_name is required"}
+    error = _check_existing(obj_path, {".obj"})
+    if error:
+        return {"success": False, "error": error}
+    avatar = cc5_api.get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    names = list(avatar.GetMeshNames(True) or [])
+    if mesh_name not in names:
+        return {"success": False, "error": f"Unknown mesh '{mesh_name}'. Meshes: {', '.join(names)}"}
+    RLPy.RGlobal.BeginAction("Replace Mesh")
+    try:
+        _raise_on_error(avatar.ReplaceMesh(mesh_name, obj_path, False, False), "ReplaceMesh")
+        RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Attribute)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        RLPy.RGlobal.EndAction()
+    return {"success": True, "mesh": mesh_name}
+
+
 def _opt_int(p: dict, key: str) -> int | None:
     return int(p[key]) if p.get(key) is not None else None
 
@@ -305,12 +383,17 @@ ACTIONS: dict[str, Any] = {
     "save_character": lambda p: save_character(p["output_path"]),
     "export_obj": lambda p: export_obj(p["output_path"], bool(p.get("y_up", True))),
     "export_goz": lambda p: export_goz(p["output_dir"], p.get("pose", "tpose")),
+    "import_fbx": lambda p: import_fbx(p["file_path"], p["kind"]),
+    "list_meshes": lambda p: list_meshes(),
+    "replace_mesh_from_obj": lambda p: replace_mesh_from_obj(p["mesh_name"], p["obj_path"]),
 }
 POST_ROUTES: dict[str, str] = {
     "/pipeline/mesh_stats": "get_mesh_stats",
     "/pipeline/pose": "apply_pose",
     "/pipeline/save_character": "save_character",
     "/pipeline/export_obj": "export_obj",
+    "/pipeline/meshes": "list_meshes",
+    "/pipeline/replace_mesh": "replace_mesh_from_obj",
 }
 REQUIRED_PARAMS: dict[str, list[str]] = {
     "export_for_unity": ["unity_dir", "character_name"],
@@ -318,4 +401,6 @@ REQUIRED_PARAMS: dict[str, list[str]] = {
     "save_character": ["output_path"],
     "export_obj": ["output_path"],
     "export_goz": ["output_dir"],  # job-only: no POST route
+    "import_fbx": ["file_path", "kind"],  # job-only: no POST route
+    "replace_mesh_from_obj": ["mesh_name", "obj_path"],
 }

@@ -83,4 +83,49 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       }
     }
   );
+
+  server.tool(
+    "import_fbx",
+    "Import an FBX made in Blender, Maya or another tool: as a 'prop', a whole 'character', or 'clothing' fitted to the current character.",
+    {
+      file_path: z.string().describe("Absolute path to the .fbx"),
+      kind: z.enum(["prop", "character", "clothing"]),
+    },
+    async ({ file_path, kind }) => {
+      const err = checkFile(file_path, [".fbx"]);
+      if (err) return errorResult(err);
+      try {
+        const out = await runJob(bridge, "import_fbx", { file_path, kind });
+        if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+        const r = out.result as { success: boolean; error?: string };
+        if (out.failed || !r.success) return errorResult(`Import failed: ${r.error ?? "unknown error"}`);
+        return { content: [{ type: "text" as const, text: `Imported ${path.basename(file_path)} as ${kind}` }] };
+      } catch (e) {
+        return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  );
+
+  server.tool(
+    "list_meshes",
+    "List the current character's mesh names (needed for replace_mesh_from_obj and load_texture).",
+    {},
+    async () => bridgeCall(() => bridge.listMeshes(),
+      (r) => r.success ? (r.meshes ?? []).join("\n") : `Failed: ${r.error}`)
+  );
+
+  server.tool(
+    "replace_mesh_from_obj",
+    "Replace one of the character's meshes with an edited OBJ (same topology, e.g. a ZBrush or Blender sculpt of CC_Base_Body).",
+    {
+      mesh_name: z.string().min(1).max(256).describe("Mesh to replace, from list_meshes"),
+      obj_path: z.string().describe("Absolute path to the edited .obj"),
+    },
+    async ({ mesh_name, obj_path }) => {
+      const err = checkFile(obj_path, [".obj"]);
+      if (err) return errorResult(err);
+      return bridgeCall(() => bridge.replaceMeshFromObj(mesh_name, obj_path),
+        (r) => r.success ? `Replaced ${mesh_name} with ${path.basename(obj_path)}` : `Failed: ${r.error}`);
+    }
+  );
 }

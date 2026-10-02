@@ -50,6 +50,7 @@ import type {
   CreateActorMixerResult,
   JobStatus,
   MeshStatsResult,
+  MeshListResult,
 } from "./types.js";
 import { getBridgeToken, resetTokenCache } from "./auth.js";
 
@@ -591,5 +592,13 @@ export class CC5Bridge {
 
   async exportObj(outputPath: string, yUp: boolean = true): Promise<OperationResult & { path?: string; signature?: string }> {
     return this.request("/pipeline/export_obj", "POST", { output_path: outputPath, y_up: yUp });
+  }
+
+  async listMeshes(): Promise<MeshListResult> {
+    return this.request<MeshListResult>("/pipeline/meshes", "POST", {});
+  }
+
+  async replaceMeshFromObj(meshName: string, objPath: string): Promise<OperationResult> {
+    return this.request<OperationResult>("/pipeline/replace_mesh", "POST", { mesh_name: meshName, obj_path: objPath });
   }
 }

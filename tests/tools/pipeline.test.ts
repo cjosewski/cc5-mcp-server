@@ -94,3 +94,25 @@ describe("export_goz", () => {
     expect(r.content[0].text).toContain("No avatar in scene");
   });
 });
+
+describe("import_fbx", () => {
+  it("rejects non-FBX", async () => {
+    const r = await server.getRegisteredTool("import_fbx")({ file_path: "C:/a/b.obj", kind: "prop" });
+    expect(r.isError).toBe(true);
+  });
+
+  it("imports clothing as a job", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_4" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_4", action: "import_fbx", status: "done", result: { success: true } });
+    const r = await server.getRegisteredTool("import_fbx")({ file_path: "C:/a/jacket.fbx", kind: "clothing" });
+    expect(r.content[0].text).toContain("jacket.fbx");
+  });
+});
+
+describe("replace_mesh_from_obj", () => {
+  it("passes mesh and path", async () => {
+    bridge.replaceMeshFromObj.mockResolvedValue({ success: true });
+    await server.getRegisteredTool("replace_mesh_from_obj")({ mesh_name: "CC_Base_Body", obj_path: "C:/s/body.obj" });
+    expect(bridge.replaceMeshFromObj).toHaveBeenCalledWith("CC_Base_Body", "C:/s/body.obj");
+  });
+});

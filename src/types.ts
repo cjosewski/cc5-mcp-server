@@ -364,3 +364,4 @@ export interface JobStatus {
 
 export interface MeshStat { object: string; kind: "body" | "clothing" | "hair" | "accessory"; mesh: string; vertices: number; faces: number; materials: number }
 export interface MeshStatsResult { success: boolean; error?: string; meshes: MeshStat[]; totals: { vertices: number; faces: number; materials: number } }
+export interface MeshListResult { success: boolean; meshes?: string[]; error?: string }
