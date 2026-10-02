@@ -100,6 +100,18 @@ describe("runBatch scene and stats failures", () => {
     expect(m.variants[0].budget_pass).toBeUndefined();
     expect(m.variants[1].ok).toBe(true);
   });
+
+  it("fails a variant exported without some of its settings and keeps the warnings in the manifest", async () => {
+    bridge.getJob.mockResolvedValueOnce({ job_id: "cmd_1", action: "export_for_unity", status: "done", result: {
+      success: true, fbx: "D:/P/Assets/Pt/A/A.fbx", folder: "D:/P/Assets/Pt/A", files: [],
+      notes: ["target_tool=Unity preset applied", "WARNING: SetTextureSize failed: x"] } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, input, () => undefined);
+    expect(m.variants[0]).toMatchObject({ name: "A", ok: false, notes: ["WARNING: SetTextureSize failed: x"] });
+    expect(m.variants[0].error).toContain("WARNING: SetTextureSize failed: x");
+    expect(m.variants[1].ok).toBe(true);
+    expect(m.variants[1].notes).toBeUndefined();
+  });
 });
 
 describe("runBatch with export subdivision", () => {

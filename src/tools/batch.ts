@@ -9,7 +9,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { errorResult } from "../util.js";
+import { errorResult, warningNotes } from "../util.js";
 import { runJob } from "../jobs.js";
 import { applyRecipe, RecipeSchema, type StepResult } from "../recipe.js";
 import { CHARACTER_NAME, isInUnityAssets, isLocalAbsolute, evaluateBudget, scanTextures, QUEST_DEFAULTS } from "./unity.js";
@@ -28,7 +28,12 @@ export type Manifest = {
   created: string;
   base: string;
   unity_dir: string;
-  variants: Array<{ name: string; ok: boolean; steps: StepResult[]; fbx?: string; budget_pass?: boolean; budget?: string[]; error?: string }>;
+  variants: Array<{
+    name: string; ok: boolean; steps: StepResult[]; fbx?: string; budget_pass?: boolean; budget?: string[];
+    /** WARNING notes from the export: settings CC5 did not apply. Such a variant is not ok. */
+    notes?: string[];
+    error?: string;
+  }>;
 };
 
 export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManifest: (m: Manifest) => void): Promise<Manifest> {
@@ -51,7 +56,9 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
         include_current_pose: Boolean(v.recipe.pose_file),
       }, { waitMs: 300_000 });
       if (!out.done) throw new Error(`export still running as job ${out.job_id}`);
-      const r = out.result as { success: boolean; error?: string; fbx?: string; folder?: string };
+      const r = out.result as { success: boolean; error?: string; fbx?: string; folder?: string; notes?: string[] };
+      const warnings = warningNotes(r);
+      if (warnings.length) entry.notes = warnings;
       if (out.failed || !r.success) throw new Error(r.error ?? "export failed");
       entry.fbx = r.fbx;
       const stats = await bridge.getMeshStats();
@@ -73,7 +80,8 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
         entry.budget_pass = budget.pass;
         entry.budget = budget.lines;
       }
-      entry.ok = entry.steps.every((s) => s.ok);
+      entry.ok = entry.steps.every((s) => s.ok) && !warnings.length;
+      if (warnings.length) entry.error = `exported without some of its settings: ${warnings.join("; ")}`;
     } catch (e) {
       entry.error = e instanceof Error ? e.message : String(e);
     }

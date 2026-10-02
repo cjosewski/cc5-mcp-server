@@ -63,6 +63,46 @@ describe("export_for_unity", () => {
     const r = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1", wait_seconds: 0 });
     expect(r.content[0].text).toContain("cmd_9");
   });
+
+  const exported = (extra: Record<string, unknown>) => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_1" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_1", action: "export_for_unity", status: "done",
+      result: { success: true, fbx: "D:/P/Assets/C/P1/P1.fbx", folder: "D:/P/Assets/C/P1", files: [], notes: [], ...extra } });
+  };
+
+  it("flags an export CC5 made without some of its settings, and prints the warnings", async () => {
+    exported({ notes: ["target_tool=Unity preset applied", "WARNING: SetTextureSize failed: bad enum"] });
+    const r = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1", texture_size: 2048 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("WARNING: SetTextureSize failed: bad enum");
+    expect(r.content[0].text).not.toContain("target_tool=Unity preset applied");
+    expect(r.content[0].text).not.toContain("Switch to Unity");
+  });
+
+  it("prints the notes of a failed export", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_1" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_1", action: "export_for_unity", status: "failed", result: {
+      success: false, error: "CC5 exported without the requested FBX settings",
+      notes: ["WARNING: option flags (target-tool preset / axis / etc.) were NOT applied"] } });
+    const r = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("without the requested FBX settings");
+    expect(r.content[0].text).toContain("were NOT applied");
+  });
+
+  it("says a subdivided export needs sub_d_level for the budget check", async () => {
+    exported({ export_level: 2 });
+    const r = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1", sub_d_level: 2 });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toContain("about 16x the base mesh's triangles");
+    expect(r.content[0].text).toContain("give check_quest_budget sub_d_level 2");
+  });
+
+  it("adds no subdivision note at the base level", async () => {
+    exported({ export_level: 0 });
+    const r = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1", sub_d_level: 0 });
+    expect(r.content[0].text).not.toContain("sub_d_level");
+  });
 });
 
 describe("evaluateBudget", () => {

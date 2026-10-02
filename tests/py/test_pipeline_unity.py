@@ -69,11 +69,12 @@ class ExportForUnityTest(unittest.TestCase):
         def fake_export(path, flags, **kw):
             with open(path, "wb") as f:
                 f.write(b"fbx")
-            return {"success": True, "path": path, "notes": ["target_tool=Unity preset applied"]}
+            return {"success": True, "path": path, "flags_applied": True, "export_level": 0, "texture_size": 2048,
+                    "notes": ["target_tool=Unity preset applied"]}
 
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()), \
                 mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake_export) as exp:
-            r = self.pipe.export_for_unity(self.assets, "Patient_01", texture_size=2048)
+            r = self.pipe.export_for_unity(self.assets, "Patient_01", sub_d_level=0, texture_size=2048)
         self.assertTrue(r["success"])
         self.assertEqual(r["fbx"], os.path.join(self.assets, "Patient_01", "Patient_01.fbx"))
         kwargs = exp.call_args.kwargs
@@ -82,4 +83,42 @@ class ExportForUnityTest(unittest.TestCase):
         self.assertFalse(kwargs["export_motion"])
         self.assertEqual(kwargs["texture_size"], 2048)
         self.assertTrue(kwargs["convert_image_format"])
+        self.assertFalse(kwargs["allow_fallback"])
         self.assertEqual(r["files"][0]["bytes"], 3)
+        self.assertEqual((r["export_level"], r["texture_size"]), (0, 2048))
+        self.assertEqual(r["notes"], ["target_tool=Unity preset applied"])
+
+    def _export_with(self, fake_export):
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()), \
+                mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake_export):
+            return self.pipe.export_for_unity(self.assets, "Patient_01", texture_size=2048)
+
+    def test_fails_when_cc5_reports_success_but_writes_no_fbx(self):
+        r = self._export_with(lambda path, flags, **kw: {"success": True, "flags_applied": True, "notes": []})
+        self.assertFalse(r["success"])
+        self.assertIn("did not write", r["error"])
+
+    def test_fails_when_only_an_old_fbx_is_there(self):
+        fbx = os.path.join(self.assets, "Patient_01", "Patient_01.fbx")
+        os.makedirs(os.path.dirname(fbx))
+        with open(fbx, "wb") as f:
+            f.write(b"from an earlier run")
+        os.utime(fbx, (1_000_000_000, 1_000_000_000))
+        r = self._export_with(lambda path, flags, **kw: {"success": True, "flags_applied": True, "notes": []})
+        self.assertFalse(r["success"])
+        self.assertIn("did not write", r["error"])
+
+    def test_fails_when_the_fbx_settings_were_not_applied(self):
+        def fallback_export(path, flags, **kw):
+            open(path, "wb").close()
+            return {"success": True, "flags_applied": False,
+                    "notes": ["WARNING: option flags (target-tool preset / axis / etc.) were NOT applied"]}
+        r = self._export_with(fallback_export)
+        self.assertFalse(r["success"])
+        self.assertIn("without the requested FBX settings", r["error"])
+        self.assertTrue(r["notes"][0].startswith("WARNING"))
+
+    def test_passes_export_fbx_failure_and_notes_through(self):
+        r = self._export_with(lambda path, flags, **kw: {
+            "success": False, "error": "ExportFbxFile reported an error status", "notes": ["n"]})
+        self.assertEqual(r, {"success": False, "error": "ExportFbxFile reported an error status", "notes": ["n"]})

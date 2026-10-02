@@ -44,12 +44,20 @@ class TextureTest(unittest.TestCase):
     def test_export_textures_uses_png_conversion(self):
         def fake_export(path, flags, **kw):
             open(path, "wb").close()
-            return {"success": True}
+            return {"success": True, "flags_applied": True, "notes": []}
         with mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake_export) as exp:
             r = self.pipe.export_textures(self.dir, "P1")
         self.assertTrue(r["success"])
         self.assertTrue(exp.call_args.kwargs["convert_image_format"])
+        self.assertFalse(exp.call_args.kwargs["allow_fallback"])
 
+    def test_export_textures_fails_when_no_fbx_was_written_or_settings_were_dropped(self):
+        for fake in ({"success": True, "flags_applied": True, "notes": []},
+                     {"success": True, "flags_applied": False, "notes": ["WARNING: x"]}):
+            with self.subTest(result=fake), \
+                    mock.patch.object(self.pipe.cc5_api, "export_fbx", return_value=fake):
+                r = self.pipe.export_textures(tempfile.mkdtemp(), "P1")
+            self.assertFalse(r["success"])
 
     def test_load_texture_error_status_fails(self):
         mat_comp = self.avatar.GetMaterialComponent.return_value

@@ -36,6 +36,22 @@ describe("job_status", () => {
     expect(r.content[0].text).toContain("disk full");
   });
 
+  it("flags a finished export that ran without some of its settings", async () => {
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_3", action: "export_for_unity", status: "done",
+      result: { success: true, fbx: "a.fbx", notes: ["WARNING: SetOption2 failed, flags2 NOT applied: x"] } });
+    const r = await server.getRegisteredTool("job_status")({ job_id: "cmd_3" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/^Finished with warnings \(export_for_unity\)/);
+  });
+
+  it("labels an import with warnings without making it an error (repeating it would import twice)", async () => {
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_3", action: "import_fbx", status: "done",
+      result: { success: true, notes: ["WARNING: 1 clothing mesh(es) did not import: Hood"] } });
+    const r = await server.getRegisteredTool("job_status")({ job_id: "cmd_3" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toMatch(/^Finished with warnings \(import_fbx\)/);
+  });
+
   it("says the job was lost in a CC5 restart when the bridge no longer knows it", async () => {
     bridge.getJob.mockRejectedValue(new BridgeHttpError("Unknown job: cmd_0f3a9b2c_12", 404));
     const r = await server.getRegisteredTool("job_status")({ job_id: "cmd_0f3a9b2c_12" });

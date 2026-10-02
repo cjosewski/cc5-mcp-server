@@ -16,6 +16,7 @@ from typing import Any
 import RLPy
 
 import cc5_api
+from cc5_api import _raise_on_error  # also imported from here by cc5_skin and cc5_builder
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")  # \Z, not $: $ also matches before a trailing newline
 SUB_D_LEVELS = (0, 1, 2)  # same sets as the zod schema in src/tools/unity.ts
@@ -98,10 +99,26 @@ def export_for_unity(
         export_motion=False,
         texture_size=texture_size,
         convert_image_format=True,
+        allow_fallback=False,  # without the settings it is not a Unity export (Z-up, full-size textures)
     )
+    error = _check_export(result, fbx, started)
+    if error:
+        return error
+    return {"success": True, "fbx": fbx, "folder": folder, "files": list_files(folder, since=started),
+            "notes": result.get("notes", []), "export_level": result.get("export_level"),
+            "texture_size": result.get("texture_size")}
+
+
+def _check_export(result: dict[str, Any], fbx: str, started: float) -> dict[str, Any] | None:
+    """A failure result unless export_fbx applied its settings and wrote `fbx` during this export."""
+    notes = result.get("notes", [])
     if not result.get("success"):
-        return result
-    return {"success": True, "fbx": fbx, "folder": folder, "files": list_files(folder, since=started), "notes": result.get("notes", [])}
+        return {"success": False, "error": result.get("error", "FBX export failed"), "notes": notes}
+    if not result.get("flags_applied"):
+        return {"success": False, "error": "CC5 exported without the requested FBX settings", "notes": notes}
+    if not os.path.isfile(fbx) or os.stat(fbx).st_mtime < started:
+        return {"success": False, "error": f"CC5 reported success but did not write {fbx}", "notes": notes}
+    return None
 
 
 def _parts(avatar) -> list[tuple[str, Any]]:
@@ -157,13 +174,6 @@ def _check_existing(path: str, allowed: set[str]) -> str | None:
     if not os.path.isfile(path):
         return f"File not found: {path}"
     return None
-
-
-def _raise_on_error(status: Any, what: str) -> None:
-    """RLPy file calls return an RStatus instead of raising; turn an error status into an exception."""
-    is_error = getattr(status, "IsError", None)
-    if callable(is_error) and is_error() is True:
-        raise RuntimeError(f"{what} reported an error status")
 
 
 def apply_pose(file_path: str) -> dict[str, Any]:
@@ -528,10 +538,12 @@ def export_textures(output_dir: str, character_name: str) -> dict[str, Any]:
     fbx = os.path.join(folder, character_name + ".fbx")
     started = time.time() - 2  # mtime slack; report only files this export wrote
     result = cc5_api.export_fbx(fbx, 0, target_tool="", embed_textures=False, export_motion=False,
-                                convert_image_format=True)
-    if not result.get("success"):
-        return result
-    return {"success": True, "folder": folder, "files": list_files(folder, since=started)}
+                                convert_image_format=True, allow_fallback=False)
+    error = _check_export(result, fbx, started)
+    if error:
+        return error
+    return {"success": True, "folder": folder, "files": list_files(folder, since=started),
+            "notes": result.get("notes", [])}
 
 
 def _opt_int(p: dict, key: str) -> int | None:

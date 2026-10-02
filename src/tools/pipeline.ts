@@ -187,9 +187,14 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       try {
         const out = await runJob(bridge, "export_textures", { output_dir, character_name });
         if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
-        const r = out.result as { success: boolean; error?: string; folder?: string; files?: unknown[] };
-        if (out.failed || !r.success) return errorResult(`Texture export failed: ${r.error ?? "unknown error"}`);
-        return { content: [{ type: "text" as const, text: `Exported mesh and ${r.files?.length ?? 0} files to ${r.folder}` }] };
+        const r = out.result as { success: boolean; error?: string; folder?: string; files?: unknown[]; notes?: string[] };
+        const warnings = warningNotes(r);
+        const warningText = warnings.length ? `\n${warnings.join("\n")}` : "";
+        if (out.failed || !r.success) return errorResult(`Texture export failed: ${r.error ?? "unknown error"}${warningText}`);
+        const exported = `Exported mesh and ${r.files?.length ?? 0} files to ${r.folder}`;
+        return warnings.length
+          ? errorResult(`${exported}, but CC5 did not apply every export setting:${warningText}`)
+          : { content: [{ type: "text" as const, text: exported }] };
       } catch (e) {
         return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
       }

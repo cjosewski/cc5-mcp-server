@@ -9,7 +9,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import type { MeshStatsResult } from "../types.js";
-import { bridgeCall, errorResult } from "../util.js";
+import { bridgeCall, errorResult, warningNotes } from "../util.js";
 import { runJob, formatPending } from "../jobs.js";
 import { readImageSize } from "../image-info.js";
 
@@ -125,9 +125,22 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
           { unity_dir, character_name, sub_d_level, texture_size, include_current_pose },
           { waitMs: (wait_seconds ?? 25) * 1000 });
         if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
-        const r = out.result as { success: boolean; error?: string; fbx?: string; files?: Array<{ path: string; bytes: number }> };
-        if (out.failed || !r.success) return errorResult(`Unity export failed: ${r.error ?? "unknown error"}`);
-        return { content: [{ type: "text" as const, text: `Exported ${r.fbx} (${formatFiles(r.files ?? [])}). Switch to Unity to import it.` }] };
+        const r = out.result as {
+          success: boolean; error?: string; fbx?: string; files?: Array<{ path: string; bytes: number }>;
+          notes?: string[]; export_level?: number | null;
+        };
+        const warnings = warningNotes(r);
+        const warningText = warnings.length ? `\n${warnings.join("\n")}` : "";
+        if (out.failed || !r.success) return errorResult(`Unity export failed: ${r.error ?? "unknown error"}${warningText}`);
+        const level = r.export_level ?? 0;
+        const subdivided = level > 0
+          ? ` Exported at sub_d_level ${level}: if the character has HD data, the FBX has about ${4 ** level}x the base mesh's triangles, so give check_quest_budget sub_d_level ${level}.`
+          : "";
+        const exported = `Exported ${r.fbx} (${formatFiles(r.files ?? [])}).${subdivided}`;
+        if (warnings.length) {
+          return errorResult(`${exported}\nCC5 did not apply every export setting, so do not use this FBX until that is fixed:${warningText}`);
+        }
+        return { content: [{ type: "text" as const, text: `${exported} Switch to Unity to import it.` }] };
       } catch (err) {
         return errorResult(`CC5 bridge error: ${err instanceof Error ? err.message : String(err)}`);
       }

@@ -179,6 +179,15 @@ describe("export_textures", () => {
     expect(r.content[0].text).toContain("C:/SP/P1");
   });
 
+  it("flags an export CC5 made without some of its settings", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_5" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_5", action: "export_textures", status: "done",
+      result: { success: true, folder: "C:/SP/P1", files: [], notes: ["WARNING: EnableExportMotion failed: x"] } });
+    const r = await server.getRegisteredTool("export_textures")({ output_dir: "C:/SP", character_name: "P1" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("WARNING: EnableExportMotion failed: x");
+  });
+
   it("rejects a network (UNC) folder without starting a job", async () => {
     const r = await server.getRegisteredTool("export_textures")({ output_dir: "//fileserver/share/SP", character_name: "P1" });
     expect(r.isError).toBe(true);

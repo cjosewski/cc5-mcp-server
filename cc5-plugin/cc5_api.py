@@ -41,6 +41,12 @@ _EOMTYPE_MATERIAL = (
 )
 
 
+def _raise_on_error(status: Any, what: str) -> None:
+    """RLPy file calls return an RStatus instead of raising; turn an error status into an exception."""
+    is_error = getattr(status, "IsError", None)
+    if callable(is_error) and is_error() is True:
+        raise RuntimeError(f"{what} reported an error status")
+
 
 def _validate_morph_id(morph_id: str) -> str | None:
     """Validate morph ID length. Returns error message or None."""
@@ -410,6 +416,7 @@ def export_fbx(
     motion_range: list | None = None,
     convert_image_format: bool = False,
     texture_size: int | None = None,
+    allow_fallback: bool = True,
 ) -> dict[str, Any]:
     """Export the current avatar as FBX, mirroring the CC5 "Export FBX" dialog.
 
@@ -432,7 +439,11 @@ def export_fbx(
         fps: "Frame Rate" for included motion (e.g. 30). Mapped to RLPy.RFps.Fps{n}.
         motion_range: [start, end] frame range. None/"all" leaves the dialog default ("All").
         convert_image_format: "Convert Image Format" — add EExportFbxOptions_ConvertTifToPNG.
-        texture_size: "Max Texture Size" in pixels (0 = original).
+        texture_size: "Max Texture Size" in pixels (0 = original), passed to SetTextureSize as its
+            EExportTextureSize_* enum.
+        allow_fallback: When the RExportFbxSetting path fails, export with the flag-less 2-arg
+            ExportFbxFile instead (notes say what was lost). Pass False when the settings are the
+            point of the export (export_for_unity): the call then fails instead.
     """
     # Defense-in-depth path validation
     _decoded_out = urllib.parse.unquote(output_path)
@@ -544,6 +555,7 @@ def export_fbx(
         # Passing a bare int as the 3rd arg to ExportFbxFile can crash CC5.
         # Fall back to the 2-arg call only if RExportFbxSetting is unavailable.
         used_setting_object = False
+        setting_error = ""
         applied_flags2 = False
         applied_flags3 = False
         if hasattr(RLPy, "RExportFbxSetting"):
@@ -607,18 +619,36 @@ def export_fbx(
                     else:
                         notes.append("WARNING: motion_range must be [start, end]; left default (All)")
 
-                # Texture Settings — "Max Texture Size" (0 = original).
+                # Texture Settings — "Max Texture Size" (0 = original). SetTextureSize takes an
+                # EExportTextureSize_* enum: a raw pixel count is an out-of-range enumerator to CC5.
                 if texture_size is not None:
-                    try:
-                        setting.SetTextureSize(int(texture_size))
-                        applied_texture_size = int(texture_size)
-                    except Exception as e:
-                        notes.append(f"WARNING: SetTextureSize failed: {e}")
+                    size_enum = _texture_size_enum(int(texture_size))
+                    if size_enum is None:
+                        notes.append(f"WARNING: no RLPy.EExportTextureSize value for {int(texture_size)}px, "
+                                     "texture size NOT applied")
+                    else:
+                        try:
+                            setting.SetTextureSize(size_enum)
+                            applied_texture_size = int(texture_size)
+                        except Exception as e:
+                            notes.append(f"WARNING: SetTextureSize failed: {e}")
 
-                RLPy.RFileIO.ExportFbxFile(avatar, output_path, setting)
+                status = RLPy.RFileIO.ExportFbxFile(avatar, output_path, setting)
                 used_setting_object = True
             except Exception as e:
-                notes.append(f"RExportFbxSetting overload failed ({e}); falling back to 2-arg export")
+                setting_error = str(e)
+                notes.append(f"RExportFbxSetting overload failed ({e}); falling back to 2-arg export"
+                             if allow_fallback else f"RExportFbxSetting overload failed ({e})")
+            else:
+                # The export ran with the settings: an error status is CC5's answer, not a reason to
+                # retry without them.
+                _raise_on_error(status, "ExportFbxFile")
+        else:
+            setting_error = "RExportFbxSetting is not available in this CC5 build"
+
+        if not used_setting_object and not allow_fallback:
+            return {"success": False, "notes": notes,
+                    "error": f"CC5 could not export with the requested FBX settings: {setting_error}"}
 
         if not used_setting_object:
             if flags or flags2 or flags3:
@@ -663,7 +693,7 @@ def export_fbx(
                     except Exception:
                         pass
             # 2-arg fallback — avoids passing bare int as 3rd arg
-            RLPy.RFileIO.ExportFbxFile(avatar, output_path)
+            _raise_on_error(RLPy.RFileIO.ExportFbxFile(avatar, output_path), "ExportFbxFile")
 
         # Honest reporting: echo flags/options only when actually applied.
         result: dict[str, Any] = {
@@ -2495,6 +2525,13 @@ def _resolution_to_enum(resolution: int) -> Any:
     if name is None:
         return None
     return getattr(RLPy, name, None)
+
+
+def _texture_size_enum(texture_size: int) -> Any:
+    """The EExportTextureSize_* enum RExportFbxSetting.SetTextureSize takes for a pixel size (0 = original)."""
+    if texture_size == 0:
+        return getattr(RLPy, "EExportTextureSize_Original", None)
+    return _resolution_to_enum(texture_size)
 
 
 def bake_skin_textures(resolution: int = 4096) -> dict[str, Any]:

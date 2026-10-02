@@ -6,8 +6,10 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import type { JobStatus } from "../types.js";
-import { bridgeErrorResult, errorResult } from "../util.js";
+import { bridgeErrorResult, errorResult, warningNotes } from "../util.js";
 import { formatPending, isUnknownJob, JOB_ID_PATTERN, lostJobMessage } from "../jobs.js";
+
+const EXPORTS_CHECKED_FOR_WARNINGS = new Set(["export_for_unity", "export_textures"]);
 
 export function registerJobTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
@@ -25,8 +27,13 @@ export function registerJobTools(server: McpServer, bridge: CC5Bridge) {
         return { content: [{ type: "text" as const, text: formatPending(job_id) }] };
       }
       const failed = job.status === "failed";
-      const text = `${failed ? "Failed" : "Finished"} (${job.action}):\n${JSON.stringify(job.result, null, 2)}`;
-      return failed ? errorResult(text) : { content: [{ type: "text" as const, text }] };
+      const warned = !failed && warningNotes(job.result).length > 0;
+      const label = failed ? "Failed" : warned ? "Finished with warnings" : "Finished";
+      const text = `${label} (${job.action}):\n${JSON.stringify(job.result, null, 2)}`;
+      // Same rule as the tools that start these jobs: an export that ran without some of its settings is
+      // an error; an import with warnings is not, because repeating it would add the content twice.
+      const isError = failed || (warned && EXPORTS_CHECKED_FOR_WARNINGS.has(job.action));
+      return isError ? errorResult(text) : { content: [{ type: "text" as const, text }] };
     }
   );
 }
