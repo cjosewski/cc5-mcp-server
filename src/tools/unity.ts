@@ -36,7 +36,9 @@ function envNumber(name: string, fallback: number): number {
 }
 
 // Defaults match the heaviest shipping Trauma Sim patient (Patient_FemaleWhite), measured 2026-10-02.
-// maxFaces is in triangles; maxTextureGpuMb is the textures' estimated Quest GPU memory in MiB (bytes / 1,048,576).
+// maxFaces (env CC5_BUDGET_MAX_FACES, tool max_faces) counts TRIANGLES, as Unity does: CC5's own face count is
+// polygons (quads), so the check uses get_mesh_stats' triangle totals. maxTextureGpuMb is the textures'
+// estimated Quest GPU memory in MiB (bytes / 1,048,576).
 export const QUEST_DEFAULTS = {
   maxFaces: envNumber("CC5_BUDGET_MAX_FACES", 65_000),
   maxTexturePx: envNumber("CC5_BUDGET_MAX_TEXTURE_PX", 2048),
@@ -80,12 +82,21 @@ export function scanTextures(folder: string): TextureInfo[] {
   return out;
 }
 
+/** Scene triangles, and whether that is an estimate (2 per polygon): a plugin older than the triangle count, or a
+ * mesh whose faces CC5 would not list. */
+function sceneTriangles(stats: MeshStatsResult): { triangles: number; estimated: boolean } {
+  const estimated = stats.totals.triangles === undefined || (stats.meshes ?? []).some((m) => m.approximate);
+  return { triangles: stats.totals.triangles ?? stats.totals.faces * 2, estimated };
+}
+
 export function evaluateBudget(stats: MeshStatsResult, textures: TextureInfo[], limits: BudgetLimits): { pass: boolean; lines: string[] } {
   const lines: string[] = [];
   let pass = true;
   const check = (ok: boolean, text: string) => { if (!ok) pass = false; lines.push(`${ok ? "OK  " : "OVER"} ${text}`); };
   const fmt = (n: number) => n.toLocaleString("en-US");
-  check(stats.totals.faces <= limits.maxFaces, `Faces: ${fmt(stats.totals.faces)} / ${fmt(limits.maxFaces)}`);
+  const { triangles, estimated } = sceneTriangles(stats);
+  check(triangles <= limits.maxFaces,
+    `Triangles: ${fmt(triangles)} / ${fmt(limits.maxFaces)}${estimated ? " (estimated as 2 per polygon)" : ""}`);
   check(stats.totals.materials <= limits.maxMaterials, `Materials: ${stats.totals.materials} / ${limits.maxMaterials}`);
   if (textures.length) {
     const gpuMb = estimateTextureGpuMb(textures, limits.maxTexturePx);
@@ -103,6 +114,27 @@ export function evaluateBudget(stats: MeshStatsResult, textures: TextureInfo[], 
     lines.push("     (no texture images scanned)");
   }
   return { pass, lines };
+}
+
+/**
+ * Budget verdict for an FBX exported at `subDLevel`. export_fbx subdivides only the FBX
+ * (RExportFbxSetting.SetExportLevel leaves the scene mesh at base level), so the scene stats cannot vouch for a
+ * subdivided export's triangles. Subdivision only adds triangles and leaves materials and textures alone, so a
+ * base-mesh fail still holds; a base-mesh pass proves nothing. `pass` is undefined when triangles were not checked.
+ */
+export function evaluateExportBudget(stats: MeshStatsResult, textures: TextureInfo[], limits: BudgetLimits, subDLevel = 0):
+  { pass: boolean | undefined; lines: string[] } {
+  const budget = evaluateBudget(stats, textures, limits);
+  if (subDLevel <= 0) return budget;
+  const factor = 4 ** subDLevel;
+  const estimate = (sceneTriangles(stats).triangles * factor).toLocaleString("en-US");
+  return {
+    pass: budget.pass ? undefined : false,
+    lines: [
+      `NOT CHECKED Triangles: the FBX was exported at sub_d_level ${subDLevel} (about ${factor}x the triangles, roughly ${estimate}); the Triangles line below counts the base scene mesh`,
+      ...budget.lines,
+    ],
+  };
 }
 
 export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
@@ -149,15 +181,17 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "check_quest_budget",
-    "Check the current character against the Quest 3 per-character budget (faces, materials, and — when export_folder is given — texture sizes). Defaults (matching the current Trauma Sim patient): 65,000 faces (triangles), 20 materials, 2048px textures, 66 MiB estimated texture GPU memory (ASTC 6x6 + mips; file size on disk is reported but not limited).",
+    "Check the current character against the Quest 3 per-character budget (triangles, materials, and — when export_folder is given — texture sizes). Defaults (matching the current Trauma Sim patient): 65,000 triangles (CC5 counts polygons; this counts triangles, like Unity), 20 materials, 2048px textures, 66 MiB estimated texture GPU memory (ASTC 6x6 + mips; file size on disk is reported but not limited). Checking an export made with sub_d_level above 0? Pass the same sub_d_level: its triangles cannot be counted from the scene.",
     {
       export_folder: z.string().optional().describe("Folder from export_for_unity, to include texture checks"),
-      max_faces: z.number().int().positive().optional(),
+      sub_d_level: z.number().int().min(0).max(2).optional()
+        .describe("The sub_d_level that export was made with (0 = base mesh). Above 0 the triangle budget is reported as NOT CHECKED, because the scene stats count the base mesh"),
+      max_faces: z.number().int().positive().optional().describe("Triangle limit (default 65,000)"),
       max_materials: z.number().int().positive().optional(),
       max_texture_px: z.number().int().positive().optional(),
       max_texture_gpu_mb: z.number().positive().optional(),
     },
-    async ({ export_folder, max_faces, max_materials, max_texture_px, max_texture_gpu_mb }) => {
+    async ({ export_folder, sub_d_level, max_faces, max_materials, max_texture_px, max_texture_gpu_mb }) => {
       if (export_folder && (!isLocalAbsolute(export_folder) || !fs.existsSync(export_folder))) {
         return errorResult(`export_folder must be an existing local absolute folder (no network/UNC paths): ${export_folder}`);
       }
@@ -172,8 +206,12 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
       };
       const res = await bridgeCall(() => bridge.getMeshStats(), (stats) => {
         if (!stats.success) return `Failed: ${stats.error}`;
-        const { pass, lines } = evaluateBudget(stats, export_folder ? scanTextures(export_folder) : [], limits);
-        return `${pass ? "PASS" : "FAIL"} — Quest budget\n${lines.join("\n")}`;
+        const level = sub_d_level ?? 0;
+        const { pass, lines } = evaluateExportBudget(stats, export_folder ? scanTextures(export_folder) : [], limits, level);
+        const verdict = pass === undefined
+          ? `NOT CHECKED — Quest budget: the triangles of a sub_d_level ${level} export cannot be counted from the scene (everything else is within budget)`
+          : `${pass ? "PASS" : "FAIL"} — Quest budget`;
+        return `${verdict}\n${lines.join("\n")}`;
       });
       return res.content[0].text.startsWith("FAIL") ? errorResult(res.content[0].text) : res;
     }

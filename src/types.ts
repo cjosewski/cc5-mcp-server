@@ -362,6 +362,17 @@ export interface JobStatus {
   result?: unknown;
 }
 
-export interface MeshStat { object: string; kind: "body" | "clothing" | "hair" | "accessory"; mesh: string; vertices: number; faces: number; materials: number }
-export interface MeshStatsResult { success: boolean; error?: string; meshes: MeshStat[]; totals: { vertices: number; faces: number; materials: number } }
+/**
+ * `faces` counts polygons (RIMesh.GetFacesCount; CC characters are quads). `triangles` is what Unity and the
+ * Quest budget count; `approximate` marks a mesh whose triangles were estimated as 2 per polygon. Plugins
+ * older than the triangle count send no `triangles`.
+ */
+export interface MeshStat {
+  object: string; kind: "body" | "clothing" | "hair" | "accessory"; mesh: string;
+  vertices: number; faces: number; triangles?: number; approximate?: boolean; materials: number;
+}
+export interface MeshStatsResult {
+  success: boolean; error?: string; meshes: MeshStat[];
+  totals: { vertices: number; faces: number; triangles?: number; materials: number };
+}
 export interface MeshListResult { success: boolean; meshes?: string[]; error?: string }

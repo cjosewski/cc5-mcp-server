@@ -12,14 +12,14 @@ import type { CC5Bridge } from "../cc5-bridge.js";
 import { errorResult, warningNotes } from "../util.js";
 import { runJob } from "../jobs.js";
 import { applyRecipe, RecipeSchema, type StepResult } from "../recipe.js";
-import { CHARACTER_NAME, isInUnityAssets, isLocalAbsolute, evaluateBudget, scanTextures, QUEST_DEFAULTS } from "./unity.js";
+import { CHARACTER_NAME, isInUnityAssets, isLocalAbsolute, evaluateExportBudget, scanTextures, QUEST_DEFAULTS } from "./unity.js";
 
 export const BatchSchema = z.object({
   base_character: z.string().describe("Absolute path to a saved .ccAvatar base (see save_character)"),
   unity_dir: z.string().describe("Absolute folder inside a Unity project's Assets folder"),
   variants: z.array(z.object({ name: CHARACTER_NAME, recipe: RecipeSchema })).min(1).max(50),
   sub_d_level: z.number().int().min(0).max(2).default(0)
-    .describe("Subdivision level of the exported FBX (0 = base mesh, best for Quest). Above 0 the face budget is not checked, because the scene stats count the base mesh"),
+    .describe("Subdivision level of the exported FBX (0 = base mesh, best for Quest). Above 0 the triangle budget is not checked, because the scene stats count the base mesh"),
   texture_size: z.union([z.literal(1024), z.literal(2048), z.literal(4096)]).default(2048),
 });
 export type BatchInput = z.input<typeof BatchSchema>;
@@ -64,22 +64,9 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
       const stats = await bridge.getMeshStats();
       if (!stats.success) throw new Error(`mesh stats failed: ${stats.error ?? "unknown error"}`);
       const textures = r.folder && fs.existsSync(r.folder) ? scanTextures(r.folder) : [];
-      const budget = evaluateBudget(stats, textures, QUEST_DEFAULTS);
-      if (parsed.sub_d_level > 0) {
-        // export_fbx subdivides only the FBX (RExportFbxSetting.SetExportLevel leaves the scene mesh at base level),
-        // so getMeshStats counts base-mesh faces and cannot vouch for the export. Subdivision only adds faces and
-        // leaves materials and textures alone, so a base-mesh fail still holds; a base-mesh pass proves nothing.
-        const factor = 4 ** parsed.sub_d_level;
-        const est = (stats.totals.faces * factor).toLocaleString("en-US");
-        entry.budget_pass = budget.pass ? undefined : false;
-        entry.budget = [
-          `NOT CHECKED Faces: the FBX was exported at sub_d_level ${parsed.sub_d_level} (about ${factor}x the faces, roughly ${est}); the Faces line below counts the base scene mesh`,
-          ...budget.lines,
-        ];
-      } else {
-        entry.budget_pass = budget.pass;
-        entry.budget = budget.lines;
-      }
+      const budget = evaluateExportBudget(stats, textures, QUEST_DEFAULTS, parsed.sub_d_level);
+      entry.budget_pass = budget.pass;
+      entry.budget = budget.lines;
       entry.ok = entry.steps.every((s) => s.ok) && !warnings.length;
       if (warnings.length) entry.error = `exported without some of its settings: ${warnings.join("; ")}`;
     } catch (e) {
@@ -104,7 +91,7 @@ export function registerBatchTools(server: McpServer, bridge: CC5Bridge) {
       const manifestPath = path.join(input.unity_dir, "patients_manifest.json");
       fs.mkdirSync(input.unity_dir, { recursive: true });
       const m = await runBatch(bridge, input, (man) => fs.writeFileSync(manifestPath, JSON.stringify(man, null, 2)));
-      const lines = m.variants.map((v) => `${v.ok ? "OK  " : "FAIL"} ${v.name}${v.error ? `: ${v.error}` : ""}${v.budget_pass === false ? " (over Quest budget)" : ""}${v.budget && v.budget_pass === undefined ? ` (face budget not checked: sub_d_level ${input.sub_d_level})` : ""}`);
+      const lines = m.variants.map((v) => `${v.ok ? "OK  " : "FAIL"} ${v.name}${v.error ? `: ${v.error}` : ""}${v.budget_pass === false ? " (over Quest budget)" : ""}${v.budget && v.budget_pass === undefined ? ` (triangle budget not checked: sub_d_level ${input.sub_d_level})` : ""}`);
       const failed = m.variants.filter((v) => !v.ok).length;
       const text = `${m.variants.length - failed}/${m.variants.length} variants exported. Manifest: ${manifestPath}\n${lines.join("\n")}`;
       return failed ? errorResult(text) : { content: [{ type: "text" as const, text }] };

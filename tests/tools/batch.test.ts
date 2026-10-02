@@ -16,7 +16,7 @@ beforeEach(() => {
   bridge.deleteAvatar.mockResolvedValue(ok);
   bridge.loadAsset.mockResolvedValue(ok);
   bridge.setSkinCondition.mockResolvedValue(ok);
-  bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 1, faces: 1000, materials: 4 } });
+  bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 1, faces: 1000, triangles: 2000, materials: 4 } });
   bridge.startJob.mockResolvedValue({ job_id: "cmd_1" });
   bridge.getJob.mockResolvedValue({ job_id: "cmd_1", action: "export_for_unity", status: "done",
     result: { success: true, fbx: "D:/P/Assets/Pt/A/A.fbx", folder: "D:/P/Assets/Pt/A", files: [] } });
@@ -118,28 +118,28 @@ describe("runBatch with export subdivision", () => {
   // export_for_unity subdivides only the FBX (RExportFbxSetting.SetExportLevel leaves the scene at base level),
   // so getMeshStats counts base-mesh faces and cannot vouch for a sub_d_level > 0 export.
   it("does not report a budget pass from base-mesh faces when sub_d_level > 0", async () => {
-    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 1, faces: 20_000, materials: 4 } });
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 1, faces: 20_000, triangles: 40_000, materials: 4 } });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const m = await runBatch(bridge as any, { ...input, sub_d_level: 2 }, () => undefined);
     expect(bridge.startJob).toHaveBeenCalledWith("export_for_unity", expect.objectContaining({ sub_d_level: 2 }));
     expect(m.variants[0].budget_pass).toBeUndefined();
-    expect(m.variants[0].budget?.[0]).toMatch(/^NOT CHECKED Faces: .*sub_d_level 2.*about 16x.*320,000/);
+    expect(m.variants[0].budget?.[0]).toMatch(/^NOT CHECKED Triangles: .*sub_d_level 2.*about 16x.*640,000/);
     expect(m.variants[0].ok).toBe(true);
   });
 
   it("still reports a budget fail when the base mesh is already over budget", async () => {
-    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 1, faces: 1000, materials: 99 } });
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 1, faces: 1000, triangles: 2000, materials: 99 } });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const m = await runBatch(bridge as any, { ...input, sub_d_level: 1 }, () => undefined);
     expect(m.variants[0].budget_pass).toBe(false);
     expect(m.variants[0].budget).toContainEqual(expect.stringMatching(/^OVER Materials: 99/));
   });
 
-  it("checks faces as before when sub_d_level is 0", async () => {
+  it("checks triangles as before when sub_d_level is 0", async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const m = await runBatch(bridge as any, { ...input, sub_d_level: 0 }, () => undefined);
     expect(m.variants[0].budget_pass).toBe(true);
-    expect(m.variants[0].budget?.[0]).toMatch(/^OK +Faces: 1,000 \//);
+    expect(m.variants[0].budget?.[0]).toMatch(/^OK +Triangles: 2,000 \//);
   });
 
   it("says in the tool summary that the face budget was not checked", async () => {
@@ -149,7 +149,7 @@ describe("runBatch with export subdivision", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       registerBatchTools(server as any, bridge as any);
       const r = await server.getRegisteredTool("batch_generate_patients")({ ...input, unity_dir: dir, sub_d_level: 1 });
-      expect(r.content[0].text).toContain("OK   A (face budget not checked: sub_d_level 1)");
+      expect(r.content[0].text).toContain("OK   A (triangle budget not checked: sub_d_level 1)");
       const written = JSON.parse(fs.readFileSync(path.join(dir, "patients_manifest.json"), "utf8"));
       expect(written.variants[0].budget_pass).toBeUndefined();
     } finally {

@@ -106,19 +106,39 @@ describe("export_for_unity", () => {
 });
 
 describe("evaluateBudget", () => {
-  const stats = { success: true, meshes: [], totals: { vertices: 1, faces: 40_000, materials: 10 } };
+  const stats = { success: true, meshes: [], totals: { vertices: 1, faces: 20_000, triangles: 40_000, materials: 10 } };
 
   it("passes within limits", () => {
     const r = evaluateBudget(stats, [{ path: "a.png", bytes: 1_000_000, width: 2048, height: 2048 }], QUEST_DEFAULTS);
     expect(r.pass).toBe(true);
+    expect(r.lines[0]).toBe("OK   Triangles: 40,000 / 65,000");
   });
 
-  it("fails on faces and oversize textures, naming the offenders", () => {
-    const r = evaluateBudget({ ...stats, totals: { vertices: 1, faces: 80_000, materials: 10 } },
+  it("fails on triangles and oversize textures, naming the offenders", () => {
+    const r = evaluateBudget({ ...stats, totals: { vertices: 1, faces: 40_000, triangles: 80_000, materials: 10 } },
       [{ path: "Body_Diffuse.png", bytes: 1, width: 4096, height: 4096 }], QUEST_DEFAULTS);
     expect(r.pass).toBe(false);
     expect(r.lines.join("\n")).toContain("80,000");
     expect(r.lines.join("\n")).toContain("Body_Diffuse.png");
+  });
+
+  it("budgets triangles, not CC5's polygon (quad) count", () => {
+    // Live CC5: 35,000 quads are 70,000 triangles, over a 65,000-triangle budget.
+    const r = evaluateBudget({ ...stats, totals: { vertices: 1, faces: 35_000, triangles: 70_000, materials: 10 } }, [], QUEST_DEFAULTS);
+    expect(r.pass).toBe(false);
+    expect(r.lines[0]).toBe("OVER Triangles: 70,000 / 65,000");
+  });
+
+  it("estimates 2 triangles per polygon, and says so, when the plugin sends no triangle count", () => {
+    const r = evaluateBudget({ ...stats, totals: { vertices: 1, faces: 35_000, materials: 10 } }, [], QUEST_DEFAULTS);
+    expect(r.pass).toBe(false);
+    expect(r.lines[0]).toBe("OVER Triangles: 70,000 / 65,000 (estimated as 2 per polygon)");
+  });
+
+  it("marks the count as estimated when a mesh's faces could not be read", () => {
+    const r = evaluateBudget({ ...stats, meshes: [{ object: "P", kind: "body" as const, mesh: "CC_Base_Body",
+      vertices: 1, faces: 100, triangles: 200, approximate: true, materials: 1 }] }, [], QUEST_DEFAULTS);
+    expect(r.lines[0]).toContain("(estimated as 2 per polygon)");
   });
 
   it("fails when a texture's size cannot be read, naming it", () => {
@@ -160,14 +180,31 @@ describe("check_quest_budget", () => {
   });
 
   it("says when no textures were scanned", async () => {
-    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 9, faces: 100, materials: 2 } });
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 9, faces: 100, triangles: 200, materials: 2 } });
     const r = await server.getRegisteredTool("check_quest_budget")({});
     expect(r.content[0].text).toContain("no texture images scanned");
   });
 
   it("reports mesh totals without an export folder", async () => {
-    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 9, faces: 100, materials: 2 } });
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 9, faces: 100, triangles: 200, materials: 2 } });
     const r = await server.getRegisteredTool("check_quest_budget")({});
     expect(r.content[0].text).toContain("PASS");
+  });
+
+  it("does not pass a subdivided export on base-mesh triangles", async () => {
+    // export_for_unity's sub_d_level subdivides only the FBX; the scene stats still count the base mesh.
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 9, faces: 20_000, triangles: 40_000, materials: 2 } });
+    const r = await server.getRegisteredTool("check_quest_budget")({ sub_d_level: 2 });
+    expect(r.content[0].text).toMatch(/^NOT CHECKED — Quest budget/);
+    expect(r.content[0].text).toContain("NOT CHECKED Triangles: the FBX was exported at sub_d_level 2 (about 16x the triangles, roughly 640,000)");
+    expect(r.content[0].text).not.toContain("PASS");
+    expect(r.isError).toBeUndefined();
+  });
+
+  it("still fails a subdivided export that is over budget on the base mesh", async () => {
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 9, faces: 100, triangles: 200, materials: 40 } });
+    const r = await server.getRegisteredTool("check_quest_budget")({ sub_d_level: 1 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/^FAIL — Quest budget/);
   });
 });

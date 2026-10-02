@@ -129,34 +129,54 @@ def _parts(avatar) -> list[tuple[str, Any]]:
     return parts
 
 
+def _triangle_count(mesh: Any, faces: int) -> tuple[int, bool]:
+    """(triangles, estimated). GetFacesCount counts polygons: on live CC5 every CC3_Base_Plus face is a
+    quad (GetFace(i) has 4 corners), and sum(corners - 2) matches Unity's triangle count exactly.
+    If GetFace is unusable, count 2 triangles per polygon and say it is an estimate."""
+    try:
+        return sum(max(len(mesh.GetFace(i)) - 2, 0) for i in range(faces)), False
+    except Exception:
+        return faces * 2, True
+
+
 def get_mesh_stats() -> dict[str, Any]:
-    """Vertex/face/material counts for the avatar and everything it wears."""
+    """Vertex, polygon ("faces"), triangle and material counts for the avatar and everything it wears."""
     avatar = cc5_api.get_first_avatar()
     if not avatar:
         return {"success": False, "error": "No avatar in scene"}
     meshes: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+    worn_mesh_names: set[str] = set()
     parts = _parts(avatar)
-    # Worn items first, body last: if avatar.GetMeshes(True) also returns worn-item meshes
-    # (LIVE-VERIFY in Task 18), each mesh is still counted once, under its own kind.
+    # Worn items first, body last. Meshes are told apart by (object, mesh): two garments can both have a
+    # mesh called "Mesh" (e.g. made in Blender). The body pass skips a name already counted under a worn
+    # item, because avatar.GetMeshes(True) may also list worn-item meshes (LIVE-VERIFY in Task 18).
     for kind, obj in parts[1:] + parts[:1]:
+        obj_name = obj.GetName()
         mat_comp = obj.GetMaterialComponent() if hasattr(obj, "GetMaterialComponent") else None
         for mesh in obj.GetMeshes(True) or []:
             name = mesh.GetName()
-            if name in seen:
+            if (obj_name, name) in seen or (kind == "body" and name in worn_mesh_names):
                 continue
-            seen.add(name)
+            seen.add((obj_name, name))
+            if kind != "body":
+                worn_mesh_names.add(name)
             try:
                 mats = len(mat_comp.GetMaterialNames(name) or []) if mat_comp else 0
             except Exception:
                 mats = 0
-            meshes.append({
-                "object": obj.GetName(), "kind": kind, "mesh": name,
-                "vertices": int(mesh.GetVerticesCount()), "faces": int(mesh.GetFacesCount()),
+            faces = int(mesh.GetFacesCount())
+            triangles, estimated = _triangle_count(mesh, faces)
+            entry: dict[str, Any] = {
+                "object": obj_name, "kind": kind, "mesh": name,
+                "vertices": int(mesh.GetVerticesCount()), "faces": faces, "triangles": triangles,
                 "materials": mats,
-            })
+            }
+            if estimated:
+                entry["approximate"] = True
+            meshes.append(entry)
     meshes.sort(key=lambda m: ("body", "clothing", "hair", "accessory").index(m["kind"]))
-    totals = {k: sum(m[k] for m in meshes) for k in ("vertices", "faces", "materials")}
+    totals = {k: sum(m[k] for m in meshes) for k in ("vertices", "faces", "triangles", "materials")}
     return {"success": True, "meshes": meshes, "totals": totals}
 
 

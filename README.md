@@ -115,7 +115,7 @@ Exonicus additions for building Trauma Simulator patients and moving them betwee
 |------|-------------|
 | `job_status` | Check a long-running operation (export, headshot, batch) started earlier; returns its result when finished |
 | `export_for_unity` | Export the current character as FBX with CC5's Unity preset into `<unity_dir>/<character_name>/` inside a Unity project's `Assets` folder |
-| `check_quest_budget` | Check the current character against the Quest 3 per-character budget (faces, materials, and, given an export folder, texture size and estimated GPU memory); see [Budget defaults](#budget-defaults) |
+| `check_quest_budget` | Check the current character against the Quest 3 per-character budget (triangles, materials, and, given an export folder, texture size and estimated GPU memory); see [Budget defaults](#budget-defaults) |
 | `apply_pose` | Apply a pose or motion file (`.rlMotion`, `.rlPose`, `.iMotion`, `.iPose`, `.iMotionPlus`, `.ccPose`, `.ccMotion`) to the current character |
 | `save_character` | Save the current character as a `.ccAvatar` file (the clean base for batch generation) |
 | `export_obj` | Export the current character as OBJ for sculpting in ZBrush or Blender |
@@ -270,12 +270,14 @@ Long single operations (`export_for_unity`, `headshot_from_photo`) run as bridge
 
 | Environment Variable | Default | Limit |
 |---------------------|---------|-------|
-| `CC5_BUDGET_MAX_FACES` | `65000` | Faces (triangles) across the character's meshes |
+| `CC5_BUDGET_MAX_FACES` | `65000` | Triangles across the character's meshes, counted the way Unity counts them. CC5's own face count is polygons (its characters are quads, about 2 triangles each), so the check counts each face's corners. `max_faces` is the same triangle limit. |
 | `CC5_BUDGET_MAX_MATERIALS` | `20` | Material slots |
 | `CC5_BUDGET_MAX_TEXTURE_PX` | `2048` | Longest texture edge, in pixels |
 | `CC5_BUDGET_MAX_TEXTURE_GPU_MB` | `66` | Estimated texture GPU memory on Quest, in MiB (ASTC 6x6 plus mips, after clamping to the px limit). File size on disk is reported but not limited. |
 
 The defaults match the heaviest shipping Trauma Sim patient, `Patient_FemaleWhite`, measured 2026-10-02: 64,783 triangles, 20 materials, 2048 px largest texture edge, and an estimated 65.1 MiB of texture GPU memory.
+
+The scene stats count the base mesh. An FBX exported with `sub_d_level` 1 or 2 holds about 4 or 16 times as many triangles when the character has HD data, so pass the same `sub_d_level` to `check_quest_budget`: the triangle line is then reported as NOT CHECKED instead of passing (a base-mesh fail still fails).
 
 ## Development
 
