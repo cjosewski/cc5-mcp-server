@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { registerBuilderTools, searchContent } from "../../src/tools/builder.js";
-import { createMockBridge } from "../helpers/mock-bridge.js";
+import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
 
@@ -70,9 +70,9 @@ describe("headshot_from_photo", () => {
 
 describe("apply_character_recipe", () => {
   it("flags partial failure as an error", async () => {
-    bridge.loadAsset.mockResolvedValue({ success: false, error: "File not found" });
+    mockJobs(bridge, { load_asset: { success: false, error: "File not found" } });
     const r = await server.getRegisteredTool("apply_character_recipe")({ recipe: { assets: ["C:/x/a.iClothes"] } });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toContain("FAIL asset a.iClothes");
+    expect(r.content[0].text).toContain("FAIL asset a.iClothes: File not found");
   });
 });

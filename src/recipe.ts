@@ -9,7 +9,13 @@ import type { CC5Bridge } from "./cc5-bridge.js";
 import { BODY_PRESETS } from "./tools/character.js";
 import { isLocalAbsolute } from "./tools/unity.js";
 import { TEXTURE_CHANNELS } from "./tools/pipeline.js";
-import { runJob } from "./jobs.js";
+import { runJobStep } from "./jobs.js";
+
+// Loads, the headshot and poses run as bridge jobs: a dressed .ccAvatar can take longer than the bridge's
+// 30 s limit for direct calls, which would report the step failed while CC5 goes on to finish it.
+export const BASE_LOAD_WAIT_MS = 300_000;
+const STEP_JOB_WAIT_MS = 120_000;
+const HEADSHOT_WAIT_MS = 180_000;
 
 const rgb = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.number().min(0).max(1)]);
 const absPath = z.string().refine(isLocalAbsolute, "must be a local absolute path without '..' (no network/UNC paths)");
@@ -73,16 +79,15 @@ export async function applyRecipe(bridge: CC5Bridge, recipe: Recipe): Promise<St
           return { success: false, error: `could not remove existing avatar ${a.name}: ${d.error ?? "failed"}` };
         }
       }
-      return base === "default" ? bridge.createDefaultAvatar() : bridge.loadAsset(base);
+      return base === "default"
+        ? runJobStep(bridge, "create_default_avatar", {}, { waitMs: BASE_LOAD_WAIT_MS })
+        : runJobStep(bridge, "load_asset", { file_path: base }, { waitMs: BASE_LOAD_WAIT_MS });
     });
   }
   const photo = recipe.headshot_photo;
   if (photo) {
-    await step(results, "headshot_photo", async () => {
-      const out = await runJob(bridge, "headshot_from_photo", { photo_path: photo }, { waitMs: 180_000 });
-      if (!out.done) return { success: false, error: `still running as job ${out.job_id}` };
-      return out.result as Outcome;
-    });
+    await step(results, "headshot_photo",
+      () => runJobStep(bridge, "headshot_from_photo", { photo_path: photo }, { waitMs: HEADSHOT_WAIT_MS }));
   }
   const preset = recipe.body_preset;
   if (preset) {
@@ -99,7 +104,8 @@ export async function applyRecipe(bridge: CC5Bridge, recipe: Recipe): Promise<St
   const profile = recipe.facial_profile;
   if (profile) await step(results, "facial_profile", () => bridge.loadFacialProfile(profile));
   for (const asset of recipe.assets ?? []) {
-    await step(results, `asset ${path.basename(asset)}`, () => bridge.loadAsset(asset));
+    await step(results, `asset ${path.basename(asset)}`,
+      () => runJobStep(bridge, "load_asset", { file_path: asset }, { waitMs: STEP_JOB_WAIT_MS }));
   }
   for (const t of recipe.textures ?? []) {
     await step(results, `texture ${t.material_name}/${t.channel}`,
@@ -113,7 +119,10 @@ export async function applyRecipe(bridge: CC5Bridge, recipe: Recipe): Promise<St
   const expr = recipe.expression;
   if (expr?.length) await step(results, "expression", () => bridge.setExpression(expr));
   const pose = recipe.pose_file;
-  if (pose) await step(results, "pose_file", () => bridge.applyPose(pose));
+  if (pose) {
+    await step(results, "pose_file",
+      () => runJobStep(bridge, "apply_pose", { file_path: pose }, { waitMs: STEP_JOB_WAIT_MS }));
+  }
   return results;
 }
 

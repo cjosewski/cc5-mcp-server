@@ -3,23 +3,26 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
 import { runBatch, registerBatchTools } from "../../src/tools/batch.js";
-import { createMockBridge } from "../helpers/mock-bridge.js";
+import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
 
 let bridge: MockBridge;
+let started: ReturnType<typeof mockJobs>;
+/** Results the next export_for_unity jobs return, in order; afterwards each export succeeds. */
+let exportResults: unknown[];
 const ok = { success: true };
+const exported = (name: string) => ({ success: true, fbx: `D:/P/Assets/Pt/${name}/${name}.fbx`, folder: `D:/P/Assets/Pt/${name}`, files: [] });
+const baseLoads = () => started.filter((j) => j.action === "load_asset");
 
 beforeEach(() => {
   bridge = createMockBridge();
   bridge.getAvatars.mockResolvedValue([{ name: "Old", id: 1, type: "avatar" }]);
   bridge.deleteAvatar.mockResolvedValue(ok);
-  bridge.loadAsset.mockResolvedValue(ok);
   bridge.setSkinCondition.mockResolvedValue(ok);
   bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 1, faces: 1000, triangles: 2000, materials: 4 } });
-  bridge.startJob.mockResolvedValue({ job_id: "cmd_1" });
-  bridge.getJob.mockResolvedValue({ job_id: "cmd_1", action: "export_for_unity", status: "done",
-    result: { success: true, fbx: "D:/P/Assets/Pt/A/A.fbx", folder: "D:/P/Assets/Pt/A", files: [] } });
+  exportResults = [];
+  started = mockJobs(bridge, { export_for_unity: (p) => exportResults.shift() ?? exported(String(p.character_name)) });
 });
 
 const input = {
@@ -36,8 +39,12 @@ describe("runBatch", () => {
     const writes: number[] = [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const m = await runBatch(bridge as any, input, (man) => writes.push(man.variants.length));
-    expect(bridge.loadAsset).toHaveBeenCalledWith("D:/Base/Male.ccAvatar");
-    expect(bridge.loadAsset).toHaveBeenCalledTimes(2);
+    // The base loads as a job: a dressed .ccAvatar can outlast the bridge's 30 s limit for direct calls.
+    expect(baseLoads()).toEqual([
+      { action: "load_asset", params: { file_path: "D:/Base/Male.ccAvatar" } },
+      { action: "load_asset", params: { file_path: "D:/Base/Male.ccAvatar" } },
+    ]);
+    expect(bridge.loadAsset).not.toHaveBeenCalled();
     expect(bridge.deleteAvatar).toHaveBeenCalledWith("Old");
     expect(m.variants.map((v) => v.ok)).toEqual([true, true]);
     expect(m.variants[0].budget_pass).toBe(true);
@@ -45,8 +52,7 @@ describe("runBatch", () => {
   });
 
   it("records a failed export and continues", async () => {
-    bridge.getJob.mockResolvedValueOnce({ job_id: "cmd_1", action: "export_for_unity", status: "failed",
-      result: { success: false, error: "disk full" } });
+    exportResults.push({ success: false, error: "disk full" });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const m = await runBatch(bridge as any, input, () => undefined);
     expect(m.variants[0]).toMatchObject({ ok: false, error: "disk full" });
@@ -54,7 +60,6 @@ describe("runBatch", () => {
   });
 
   it("exports a posed variant with include_current_pose", async () => {
-    bridge.applyPose.mockResolvedValue(ok);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await runBatch(bridge as any, { ...input, variants: [{ name: "Supine", recipe: { pose_file: "C:/p/Supine.rlMotion" } }] }, () => undefined);
     expect(bridge.startJob).toHaveBeenCalledWith("export_for_unity", expect.objectContaining({ include_current_pose: true }));
@@ -88,7 +93,7 @@ describe("runBatch scene and stats failures", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const m = await runBatch(bridge as any, input, () => undefined);
     expect(m.variants[0]).toMatchObject({ name: "A", ok: false, error: "could not remove existing avatar Old: locked" });
-    expect(bridge.loadAsset).toHaveBeenCalledTimes(1);
+    expect(baseLoads()).toHaveLength(1);
     expect(m.variants[1].ok).toBe(true);
   });
 
@@ -102,9 +107,7 @@ describe("runBatch scene and stats failures", () => {
   });
 
   it("fails a variant exported without some of its settings and keeps the warnings in the manifest", async () => {
-    bridge.getJob.mockResolvedValueOnce({ job_id: "cmd_1", action: "export_for_unity", status: "done", result: {
-      success: true, fbx: "D:/P/Assets/Pt/A/A.fbx", folder: "D:/P/Assets/Pt/A", files: [],
-      notes: ["target_tool=Unity preset applied", "WARNING: SetTextureSize failed: x"] } });
+    exportResults.push({ ...exported("A"), notes: ["target_tool=Unity preset applied", "WARNING: SetTextureSize failed: x"] });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const m = await runBatch(bridge as any, input, () => undefined);
     expect(m.variants[0]).toMatchObject({ name: "A", ok: false, notes: ["WARNING: SetTextureSize failed: x"] });

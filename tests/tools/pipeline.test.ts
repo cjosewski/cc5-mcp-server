@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { registerPipelineTools } from "../../src/tools/pipeline.js";
-import { createMockBridge } from "../helpers/mock-bridge.js";
+import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
 
@@ -14,23 +14,48 @@ beforeEach(() => {
   registerPipelineTools(server as any, bridge as any);
 });
 
+// apply_pose, save_character, replace_mesh_from_obj and load_substance_textures run as bridge jobs:
+// past 30 s a direct call answers "still running" while CC5 goes on, so the tool would report a failure.
 describe("apply_pose", () => {
   it("rejects traversal without calling CC5", async () => {
     const r = await server.getRegisteredTool("apply_pose")({ file_path: "C:/a/../b.rlMotion" });
     expect(r.isError).toBe(true);
-    expect(bridge.applyPose).not.toHaveBeenCalled();
+    expect(bridge.startJob).not.toHaveBeenCalled();
   });
 
   it("rejects a network (UNC) path without calling CC5", async () => {
     const r = await server.getRegisteredTool("apply_pose")({ file_path: "//fileserver/share/Supine.rlMotion" });
     expect(r.isError).toBe(true);
-    expect(bridge.applyPose).not.toHaveBeenCalled();
+    expect(bridge.startJob).not.toHaveBeenCalled();
   });
 
-  it("applies a pose", async () => {
-    bridge.applyPose.mockResolvedValue({ success: true, method: "LoadFile" });
+  it("applies a pose as a job", async () => {
+    const started = mockJobs(bridge, { apply_pose: { success: true, method: "LoadFile" } });
     const r = await server.getRegisteredTool("apply_pose")({ file_path: "C:/Poses/Supine.rlMotion" });
-    expect(r.content[0].text).toContain("Supine.rlMotion");
+    expect(started).toEqual([{ action: "apply_pose", params: { file_path: "C:/Poses/Supine.rlMotion" } }]);
+    expect(r.content[0].text).toBe("Applied pose Supine.rlMotion (LoadFile)");
+  });
+
+  it("returns the job id when the pose outlasts the wait", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_ab12cd34_3" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_ab12cd34_3", action: "apply_pose", status: "running" });
+    vi.useFakeTimers();
+    try {
+      const pending = server.getRegisteredTool("apply_pose")({ file_path: "C:/Poses/Supine.rlMotion" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const r = await pending;
+      expect(r.content[0].text).toContain('job_status with job_id "cmd_ab12cd34_3"');
+      expect(r.isError).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a failed pose as an error", async () => {
+    mockJobs(bridge, { apply_pose: { success: false, error: "No avatar in scene" } });
+    const r = await server.getRegisteredTool("apply_pose")({ file_path: "C:/Poses/Supine.rlMotion" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("Failed: No avatar in scene");
   });
 });
 
@@ -38,12 +63,13 @@ describe("save_character", () => {
   it("requires .ccAvatar", async () => {
     const r = await server.getRegisteredTool("save_character")({ output_path: "C:/a/b.fbx" });
     expect(r.isError).toBe(true);
+    expect(bridge.startJob).not.toHaveBeenCalled();
   });
 
-  it("saves the character", async () => {
-    bridge.saveCharacter.mockResolvedValue({ success: true, path: "C:/Bases/Male.ccAvatar" });
+  it("saves the character as a job", async () => {
+    const started = mockJobs(bridge, { save_character: { success: true, path: "C:/Bases/Male.ccAvatar" } });
     const r = await server.getRegisteredTool("save_character")({ output_path: "C:/Bases/Male.ccAvatar" });
-    expect(bridge.saveCharacter).toHaveBeenCalledWith("C:/Bases/Male.ccAvatar");
+    expect(started).toEqual([{ action: "save_character", params: { output_path: "C:/Bases/Male.ccAvatar" } }]);
     expect(r.content[0].text).toContain("Saved C:/Bases/Male.ccAvatar");
   });
 });
@@ -141,10 +167,11 @@ describe("import_fbx", () => {
 });
 
 describe("replace_mesh_from_obj", () => {
-  it("passes mesh and path", async () => {
-    bridge.replaceMeshFromObj.mockResolvedValue({ success: true });
-    await server.getRegisteredTool("replace_mesh_from_obj")({ mesh_name: "CC_Base_Body", obj_path: "C:/s/body.obj" });
-    expect(bridge.replaceMeshFromObj).toHaveBeenCalledWith("CC_Base_Body", "C:/s/body.obj");
+  it("passes mesh and path to a job", async () => {
+    const started = mockJobs(bridge, { replace_mesh_from_obj: { success: true, mesh: "CC_Base_Body" } });
+    const r = await server.getRegisteredTool("replace_mesh_from_obj")({ mesh_name: "CC_Base_Body", obj_path: "C:/s/body.obj" });
+    expect(started).toEqual([{ action: "replace_mesh_from_obj", params: { mesh_name: "CC_Base_Body", obj_path: "C:/s/body.obj" } }]);
+    expect(r.content[0].text).toBe("Replaced CC_Base_Body with body.obj");
   });
 });
 
@@ -162,10 +189,12 @@ describe("load_texture", () => {
 });
 
 describe("load_substance_textures", () => {
-  it("calls the bridge", async () => {
-    bridge.loadSubstanceTextures.mockResolvedValue({ success: true });
+  it("runs the import as a job", async () => {
+    const started = mockJobs(bridge, { load_substance_textures: { success: true, signature: "(avatar, folder)" } });
     const r = await server.getRegisteredTool("load_substance_textures")({ folder: "C:/SP/export" });
+    expect(started).toEqual([{ action: "load_substance_textures", params: { folder: "C:/SP/export" } }]);
     expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe("Applied Substance textures from C:/SP/export");
   });
 });
 

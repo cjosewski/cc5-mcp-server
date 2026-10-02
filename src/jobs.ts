@@ -4,6 +4,7 @@
  */
 
 import { BridgeHttpError, type CC5Bridge } from "./cc5-bridge.js";
+import { bridgeErrorResult, errorResult, type ToolResult } from "./util.js";
 
 export type JobOutcome =
   | { done: true; failed: boolean; result: unknown }
@@ -68,4 +69,41 @@ export async function runJob(
 
 export function formatPending(jobId: string): string {
   return `Still running in CC5 (job ${jobId}). Call job_status with job_id "${jobId}" to get the result. Do not start the same operation again.`;
+}
+
+export type JobResult = { success?: boolean; error?: string };
+
+/**
+ * One step of a multi-step run (recipe, batch) as a job: a job that failed, or is still running when the wait
+ * ends, becomes {success: false, error}. A slow load then cannot hit the bridge's 30 s limit for direct calls,
+ * which answers "still running" while CC5 goes on to finish the step.
+ */
+export async function runJobStep(
+  bridge: Pick<CC5Bridge, "startJob" | "getJob">,
+  action: string,
+  params: Record<string, unknown>,
+  opts: { waitMs?: number; signal?: AbortSignal } = {},
+): Promise<JobResult> {
+  const out = await runJob(bridge, action, params, opts);
+  if (!out.done) return { success: false, error: `still running in CC5 as job ${out.job_id} (check it with job_status)` };
+  const result = (out.result ?? {}) as JobResult;
+  return out.failed ? { ...result, success: false, error: result.error ?? "failed" } : result;
+}
+
+/** A tool that runs one action as a job: pending returns the job id, a failure is an error result. */
+export async function runJobTool<R extends JobResult>(
+  bridge: Pick<CC5Bridge, "startJob" | "getJob">,
+  action: string,
+  params: Record<string, unknown>,
+  formatOk: (result: R) => string,
+): Promise<ToolResult> {
+  try {
+    const out = await runJob(bridge, action, params);
+    if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+    const result = (out.result ?? {}) as R;
+    if (out.failed || result.success === false) return errorResult(`Failed: ${result.error ?? "unknown error"}`);
+    return { content: [{ type: "text" as const, text: formatOk(result) }] };
+  } catch (err) {
+    return bridgeErrorResult(err);
+  }
 }

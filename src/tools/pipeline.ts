@@ -8,7 +8,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, errorResult, warningNotes } from "../util.js";
 import { isLocalAbsolute } from "./unity.js";
-import { runJob, formatPending } from "../jobs.js";
+import { runJob, runJobTool, formatPending, type JobResult } from "../jobs.js";
 
 /** Local absolute path (no '..', no UNC/network or device path), extension in the allowed set. Returns an error message or null. */
 export function checkFile(filePath: string, allowed: string[]): string | null {
@@ -30,25 +30,26 @@ export const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif"
 export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "apply_pose",
-    "Apply a pose or motion file (.rlMotion, .rlPose, .iMotion, .iPose, .iMotionPlus, .ccPose, .ccMotion) to the current character, e.g. a supine pose before export. Use browse_content('pose') or browse_content('motion') to find files.",
+    "Apply a pose or motion file (.rlMotion, .rlPose, .iMotion, .iPose, .iMotionPlus, .ccPose, .ccMotion) to the current character, e.g. a supine pose before export. Use browse_content('pose') or browse_content('motion') to find files. Runs as a background job; a slow load returns a job id for job_status.",
     { file_path: z.string().describe("Absolute path to the pose/motion file") },
     async ({ file_path }) => {
       const err = checkFile(file_path, POSE_EXTENSIONS);
       if (err) return errorResult(err);
-      return bridgeCall(() => bridge.applyPose(file_path),
-        (r) => r.success ? `Applied pose ${path.basename(file_path)} (${r.method})` : `Failed: ${r.error}`);
+      // Jobs, not direct calls, for anything that can outlast the bridge's 30 s limit for direct calls.
+      return runJobTool(bridge, "apply_pose", { file_path },
+        (r: JobResult & { method?: string }) => `Applied pose ${path.basename(file_path)} (${r.method})`);
     }
   );
 
   server.tool(
     "save_character",
-    "Save the current character as a .ccAvatar file (used as the clean base for batch generation).",
+    "Save the current character as a .ccAvatar file (used as the clean base for batch generation). Runs as a background job; a slow save returns a job id for job_status.",
     { output_path: z.string().describe("Absolute path ending in .ccAvatar") },
     async ({ output_path }) => {
       const err = checkFile(output_path, [".ccavatar"]);
       if (err) return errorResult(err);
-      return bridgeCall(() => bridge.saveCharacter(output_path),
-        (r) => r.success ? `Saved ${r.path}` : `Failed: ${r.error}`);
+      return runJobTool(bridge, "save_character", { output_path },
+        (r: JobResult & { path?: string }) => `Saved ${r.path ?? output_path}`);
     }
   );
 
@@ -134,7 +135,7 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "replace_mesh_from_obj",
-    "Replace one of the character's meshes with an edited OBJ (same topology, e.g. a ZBrush or Blender sculpt of CC_Base_Body).",
+    "Replace one of the character's meshes with an edited OBJ (same topology, e.g. a ZBrush or Blender sculpt of CC_Base_Body). Runs as a background job; a slow replacement returns a job id for job_status.",
     {
       mesh_name: z.string().min(1).max(256).describe("Mesh to replace, from list_meshes"),
       obj_path: z.string().describe("Absolute path to the edited .obj"),
@@ -142,8 +143,8 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
     async ({ mesh_name, obj_path }) => {
       const err = checkFile(obj_path, [".obj"]);
       if (err) return errorResult(err);
-      return bridgeCall(() => bridge.replaceMeshFromObj(mesh_name, obj_path),
-        (r) => r.success ? `Replaced ${mesh_name} with ${path.basename(obj_path)}` : `Failed: ${r.error}`);
+      return runJobTool(bridge, "replace_mesh_from_obj", { mesh_name, obj_path },
+        () => `Replaced ${mesh_name} with ${path.basename(obj_path)}`);
     }
   );
 
@@ -166,12 +167,11 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "load_substance_textures",
-    "Apply a Substance Painter texture export folder to the current character (CC5's built-in Substance import).",
+    "Apply a Substance Painter texture export folder to the current character (CC5's built-in Substance import). Runs as a background job; a slow import returns a job id for job_status.",
     { folder: z.string().describe("Absolute path of the Substance Painter export folder") },
     async ({ folder }) => {
       if (!isLocalAbsolute(folder)) return errorResult("folder must be a local absolute path without '..' (no network/UNC paths)");
-      return bridgeCall(() => bridge.loadSubstanceTextures(folder),
-        (r) => r.success ? `Applied Substance textures from ${folder}` : `Failed: ${r.error}`);
+      return runJobTool(bridge, "load_substance_textures", { folder }, () => `Applied Substance textures from ${folder}`);
     }
   );
 

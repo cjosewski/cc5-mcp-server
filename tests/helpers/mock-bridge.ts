@@ -106,6 +106,33 @@ export function createMockBridge(): MockBridge {
   };
 }
 
+export type JobHandler = (params: Record<string, unknown>) => unknown;
+
+/**
+ * Make startJob/getJob behave like the bridge's job store: each started job finishes at once with the
+ * result its action's handler returns (default {success: true}); a result with success: false is "failed".
+ * Returns the started jobs in order, for assertions.
+ */
+export function mockJobs(bridge: MockBridge, handlers: Record<string, JobHandler | unknown> = {}) {
+  const started: Array<{ action: string; params: Record<string, unknown> }> = [];
+  const jobs = new Map<string, { action: string; result: unknown }>();
+  bridge.startJob.mockImplementation(async (action: string, params: Record<string, unknown>) => {
+    started.push({ action, params });
+    const job_id = `cmd_${started.length}`;
+    const handler = handlers[action];
+    const result = typeof handler === "function" ? (handler as JobHandler)(params) : handler ?? { success: true };
+    jobs.set(job_id, { action, result });
+    return { job_id };
+  });
+  bridge.getJob.mockImplementation(async (job_id: string) => {
+    const job = jobs.get(job_id);
+    if (!job) throw new Error(`Unknown job: ${job_id}`);
+    const failed = (job.result as { success?: unknown } | null)?.success === false;
+    return { job_id, action: job.action, status: failed ? "failed" : "done", result: job.result };
+  });
+  return started;
+}
+
 export const SUCCESS: OperationResult = { success: true };
 export const FAILURE: OperationResult = { success: false, error: "operation failed" };
 export const CREATE_SUCCESS: CreateAvatarResult = { success: true, name: "Default Character" };

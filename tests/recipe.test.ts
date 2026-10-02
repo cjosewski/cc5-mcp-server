@@ -1,17 +1,20 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { applyRecipe, formatReport, RecipeSchema } from "../src/recipe.js";
-import { createMockBridge } from "./helpers/mock-bridge.js";
+import { createMockBridge, mockJobs } from "./helpers/mock-bridge.js";
 import type { MockBridge } from "./helpers/mock-bridge.js";
 
 let bridge: MockBridge;
+let started: ReturnType<typeof mockJobs>;
 const ok = { success: true };
 
 beforeEach(() => {
   bridge = createMockBridge();
-  for (const m of ["createDefaultAvatar", "loadAsset", "setMultipleMorphs", "setSkinColor", "setSkinCondition",
-    "applySkinOverlay", "applyPose", "setExpression"] as const) bridge[m].mockResolvedValue(ok);
+  for (const m of ["setMultipleMorphs", "setSkinColor", "setSkinCondition", "applySkinOverlay", "setExpression"] as const) {
+    bridge[m].mockResolvedValue(ok);
+  }
   bridge.getAvatars.mockResolvedValue([{ name: "Old", id: "1", type: "avatar" }]);
   bridge.deleteAvatar.mockResolvedValue(ok);
+  started = mockJobs(bridge);
 });
 
 describe("applyRecipe", () => {
@@ -33,12 +36,42 @@ describe("applyRecipe", () => {
     expect(results.every((r) => r.ok)).toBe(true);
     expect(bridge.setMultipleMorphs.mock.calls[0][0][0].value).toBeCloseTo(0.35);
     expect(bridge.deleteAvatar).toHaveBeenCalledWith("Old");
-    expect(bridge.deleteAvatar.mock.invocationCallOrder[0]).toBeLessThan(bridge.createDefaultAvatar.mock.invocationCallOrder[0]);
+    expect(bridge.deleteAvatar.mock.invocationCallOrder[0]).toBeLessThan(bridge.startJob.mock.invocationCallOrder[0]);
     expect(bridge.setSkinCondition).toHaveBeenCalledWith("pale", 0.7, "all", [0.8, 0.6, 0.5]);
   });
 
+  it("loads the base, assets and pose as bridge jobs, not 30 s direct calls", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await applyRecipe(bridge as any, RecipeSchema.parse({
+      base: "C:/Bases/Male.ccAvatar", assets: ["C:/c/Jacket.iClothes"], pose_file: "C:/p/Supine.rlMotion" }));
+    expect(started).toEqual([
+      { action: "load_asset", params: { file_path: "C:/Bases/Male.ccAvatar" } },
+      { action: "load_asset", params: { file_path: "C:/c/Jacket.iClothes" } },
+      { action: "apply_pose", params: { file_path: "C:/p/Supine.rlMotion" } },
+    ]);
+    expect(bridge.loadAsset).not.toHaveBeenCalled();
+    expect(bridge.applyPose).not.toHaveBeenCalled();
+  });
+
+  it("reports a step whose job outlasts the wait as failed, naming the job", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_ab12cd34_9" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_ab12cd34_9", action: "headshot_from_photo", status: "running" });
+    const recipe = RecipeSchema.parse({ headshot_photo: "C:/p/face.jpg" });
+    vi.useFakeTimers();
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pending = applyRecipe(bridge as any, recipe);
+      await vi.advanceTimersByTimeAsync(200_000);
+      const results = await pending;
+      expect(results[0]).toMatchObject({ step: "headshot_photo", ok: false });
+      expect(results[0].detail).toContain("cmd_ab12cd34_9");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps going after a failed step", async () => {
-    bridge.loadAsset.mockResolvedValueOnce({ success: false, error: "File not found" });
+    mockJobs(bridge, { load_asset: { success: false, error: "File not found" } });
     const recipe = RecipeSchema.parse({ assets: ["C:/x/Missing.iClothes"], pose_file: "C:/p/Supine.rlMotion" });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const results = await applyRecipe(bridge as any, recipe);
@@ -47,7 +80,7 @@ describe("applyRecipe", () => {
   });
 
   it("records thrown errors as failed steps", async () => {
-    bridge.applyPose.mockRejectedValue(new Error("bridge down"));
+    bridge.startJob.mockRejectedValue(new Error("bridge down"));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const results = await applyRecipe(bridge as any, RecipeSchema.parse({ pose_file: "C:/p/a.rlMotion" }));
     expect(results[0]).toMatchObject({ ok: false, detail: "bridge down" });
@@ -60,7 +93,7 @@ describe("applyRecipe", () => {
     expect(results[0]).toMatchObject({ step: "base", ok: false });
     expect(results[0].detail).toContain("Old");
     expect(results[0].detail).toContain("locked");
-    expect(bridge.createDefaultAvatar).not.toHaveBeenCalled();
+    expect(started.map((j) => j.action)).not.toContain("create_default_avatar");
     expect(results[1]).toMatchObject({ step: "pose_file", ok: true });
   });
 });

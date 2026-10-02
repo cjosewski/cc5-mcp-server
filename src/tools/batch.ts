@@ -10,8 +10,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { errorResult, warningNotes } from "../util.js";
-import { runJob } from "../jobs.js";
-import { applyRecipe, RecipeSchema, type StepResult } from "../recipe.js";
+import { runJob, runJobStep } from "../jobs.js";
+import { applyRecipe, BASE_LOAD_WAIT_MS, RecipeSchema, type StepResult } from "../recipe.js";
 import { CHARACTER_NAME, isInUnityAssets, isLocalAbsolute, evaluateExportBudget, scanTextures, QUEST_DEFAULTS } from "./unity.js";
 
 export const BatchSchema = z.object({
@@ -47,7 +47,8 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
         const d = await bridge.deleteAvatar(a.name);
         if (d?.success === false) throw new Error(`could not remove existing avatar ${a.name}: ${d.error ?? "failed"}`);
       }
-      const loaded = await bridge.loadAsset(parsed.base_character);
+      // A job, not a direct call: a dressed base can take longer than the bridge's 30 s limit for direct calls.
+      const loaded = await runJobStep(bridge, "load_asset", { file_path: parsed.base_character }, { waitMs: BASE_LOAD_WAIT_MS });
       if (loaded.success === false) throw new Error(`base load failed: ${loaded.error}`);
       entry.steps = await applyRecipe(bridge, v.recipe);
       const out = await runJob(bridge, "export_for_unity", {
