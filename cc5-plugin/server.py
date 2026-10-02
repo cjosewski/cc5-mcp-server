@@ -62,6 +62,9 @@ response_events: dict[str, threading.Event] = {}
 
 _command_counter = 0
 _counter_lock = threading.Lock()
+# Command and job ids carry a nonce that is new each time this module loads (each CC5 start): the
+# counter restarts at 1, so without it a job id from before a restart could name a different job.
+_BOOT_ID = secrets.token_hex(4)
 _processing = False  # Re-entrance guard for process_command_queue
 _cancelled: set[str] = set()
 _running_id: str | None = None
@@ -76,7 +79,7 @@ def _next_command_id() -> str:
     global _command_counter
     with _counter_lock:
         _command_counter += 1
-        return f"cmd_{_command_counter}"
+        return f"cmd_{_BOOT_ID}_{_command_counter}"
 
 
 # --- Required parameters per action (validated before queue dispatch) ---

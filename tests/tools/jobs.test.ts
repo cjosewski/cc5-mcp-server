@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { registerJobTools } from "../../src/tools/jobs.js";
+import { BridgeHttpError, BridgeUnreachableError } from "../../src/cc5-bridge.js";
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -25,5 +26,28 @@ describe("job_status", () => {
     bridge.getJob.mockResolvedValue({ job_id: "cmd_3", action: "x", status: "done", result: { success: true, fbx: "a.fbx" } });
     const r = await server.getRegisteredTool("job_status")({ job_id: "cmd_3" });
     expect(r.content[0].text).toContain("a.fbx");
+    expect(r.isError).toBeUndefined();
+  });
+
+  it("flags a failed job as an error", async () => {
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_3", action: "export_for_unity", status: "failed", result: { success: false, error: "disk full" } });
+    const r = await server.getRegisteredTool("job_status")({ job_id: "cmd_3" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("disk full");
+  });
+
+  it("says the job was lost in a CC5 restart when the bridge no longer knows it", async () => {
+    bridge.getJob.mockRejectedValue(new BridgeHttpError("Unknown job: cmd_0f3a9b2c_12", 404));
+    const r = await server.getRegisteredTool("job_status")({ job_id: "cmd_0f3a9b2c_12" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(
+      "Job cmd_0f3a9b2c_12 not found. CC5 was probably restarted and the job's result is lost. Check the output folder, then run the operation again.");
+  });
+
+  it("asks whether CC5 is running when it cannot be reached", async () => {
+    bridge.getJob.mockRejectedValue(new BridgeUnreachableError("fetch failed"));
+    const r = await server.getRegisteredTool("job_status")({ job_id: "cmd_0f3a9b2c_12" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("Is CC5 running");
   });
 });
