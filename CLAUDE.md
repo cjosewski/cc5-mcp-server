@@ -1,217 +1,217 @@
 # CC5 MCP Server — Project Context
 
-## 概要
-Reallusion Character Creator 5 (CC5) を Claude などの LLM から自然言語で操作するための MCP サーバー。
+## Overview
+An MCP server that lets LLMs such as Claude operate Reallusion Character Creator 5 (CC5) through natural language.
 
-## アーキテクチャ
+## Architecture
 
 ```
 LLM (Claude) <--stdio--> MCP Server (Node.js) <--HTTP:5101--> CC5 Plugin (Python) <--RLPy--> CC5
 ```
 
-## 起動の仕組み（重要）
+## How startup works (important)
 
-### 自動起動フロー（通常の動作）
+### Auto-start flow (normal operation)
 
 ```
-CC5 起動
-  → OpenPlugin/CC5_MCP_Bridge/main.py を自動検出
-  → rl_plugin_info をチェック（CC5 互換性確認）
-  → initialize_plugin() を呼び出し
-    → bridge_server.start_server(port=5101) で HTTP サーバー起動
-    → QTimer(16ms) で process_command_queue を登録
-  → ブリッジが http://127.0.0.1:5101 で待機開始
+CC5 starts
+  → auto-detects OpenPlugin/CC5_MCP_Bridge/main.py
+  → checks rl_plugin_info (CC5 compatibility check)
+  → calls initialize_plugin()
+    → bridge_server.start_server(port=5101) starts the HTTP server
+    → registers process_command_queue on a QTimer(16ms)
+  → the bridge starts listening on http://127.0.0.1:5101
 ```
 
-**自動起動に必要な3つの条件:**
-1. `main.py` に `initialize_plugin()` 関数（CC5 の命名規約。`load_plugin` は不可）
-2. `main.py` に `rl_plugin_info = {"ap": "iClone", "ap_version": "8.0"}` 辞書（CC5 は iClone 8 エンジン）
-3. プラグインが `OpenPlugin/CC5_MCP_Bridge/` にインストール済み
+**Three conditions required for auto-start:**
+1. An `initialize_plugin()` function in `main.py` (CC5 naming convention; `load_plugin` does not work)
+2. An `rl_plugin_info = {"ap": "iClone", "ap_version": "8.0"}` dictionary in `main.py` (CC5 runs on the iClone 8 engine)
+3. The plugin is installed in `OpenPlugin/CC5_MCP_Bridge/`
 
-**よくある問題と対処:**
-- `load_plugin` → CC5 は無視する。必ず `initialize_plugin` を使う
-- `PySide6` → CC5 は PySide2。インポートエラーでサイレント失敗
-- `from __future__ import annotations` がない → Python 3.10 で型ヒントエラー
-- Flask 依存 → CC5 の Python に Flask はない。stdlib `http.server` を使う
+**Common problems and fixes:**
+- `load_plugin` → CC5 ignores it. Always use `initialize_plugin`
+- `PySide6` → CC5 uses PySide2. Fails silently with an import error
+- Missing `from __future__ import annotations` → type-hint errors on Python 3.10
+- Flask dependency → CC5's Python has no Flask. Use stdlib `http.server`
 
-### ウォッチドッグ（自動復旧）
+### Watchdog (auto-recovery)
 
-QTimer コールバックにサーバーヘルスチェックを内蔵:
+A server health check is built into the QTimer callback:
 ```python
 def _check_server_health():
     if _server_thread is not None and not _server_thread.is_alive():
         _server_thread = bridge_server.start_server(port=BRIDGE_PORT)
 ```
-→ HTTP サーバースレッドがクラッシュしても、次の QTimer tick で自動再起動
+→ Even if the HTTP server thread crashes, it is automatically restarted on the next QTimer tick
 
-### ホットリロード（コード変更の即時反映）
+### Hot reload (apply code changes immediately)
 
 ```
-cc5_api.py を編集
+Edit cc5_api.py
   → curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/reload
-    (または Claude が自動実行。CC5 を CC5_DEV_MODE=1 で起動している必要あり)
-  → importlib.reload(cc5_api) が実行される
-  → _auto_patch_server() が ACTION_MAP / POST_ROUTES / GET_ROUTES を更新
-  → 新しいコードが即座に有効化（CC5 再起動不要）
+    (or Claude runs it automatically; CC5 must have been started with CC5_DEV_MODE=1)
+  → importlib.reload(cc5_api) runs
+  → _auto_patch_server() updates ACTION_MAP / POST_ROUTES / GET_ROUTES
+  → the new code takes effect immediately (no CC5 restart needed)
 ```
 
-**制限:** server.py の変更（ルート追加、バリデーション変更等）は CC5 再起動が必要。
-cc5_api.py の変更（API 関数の修正、新関数追加）はリロードで即反映。
+**Limitation:** changes to server.py (adding routes, changing validation, etc.) require a CC5 restart.
+Changes to cc5_api.py (fixing API functions, adding new functions) take effect immediately on reload.
 
-### トラブルシューティング
+### Troubleshooting
 
-| 症状 | 原因 | 対処 |
+| Symptom | Cause | Fix |
 |------|------|------|
-| CC5 起動してもブリッジが立たない | `initialize_plugin` でない / `rl_plugin_info` がない | main.py の関数名・辞書を確認 |
-| ポート 5101 に接続できない | プラグイン未インストール | `install-plugin.ps1` を管理者権限で実行 |
-| `curl /reload` が 404 | 古い server.py が動いている | CC5 を再起動して新しい server.py を読み込み |
-| `curl /reload` 等が 401 | `X-CC5-Token` ヘッダーがない / トークン不一致 | `%LOCALAPPDATA%\CC5_MCP_Bridge\token` の値を `X-CC5-Token` で送る (`/health` 以外は全ルート必須) |
-| `/reload` や `/exec/python` が 403 | 開発モードが無効 (デフォルト) | CC5 を `CC5_DEV_MODE=1` で起動 (`/exec/python` のみなら `CC5_ALLOW_EXEC=1` でも可) |
-| RLPy の関数が見つからない | CC5 バージョン差異 | `hasattr()` でチェックしてグレースフルに失敗 |
-| モーフが効かない | アバターがシーンにいない | `create_avatar` で先にアバターを作成 |
-| マテリアル色が変わらない | メッシュ/マテリアル名が間違い | `get_material_info` で正しい名前を確認 |
-| Undo が効かない | `BeginAction/EndAction` で囲まれていない | 変更操作は必ず BeginAction/EndAction で囲む |
-| キャプチャが空画像 | シーンにアバターがいない | アバター作成 → モーフ適用 → キャプチャ |
-| RenderImage が失敗 | .ccProject 読み込み後に発生することがある | 自動で Windows スクリーンショットにフォールバック |
-| ウェルカムダイアログが邪魔 | CC5 起動時に表示される | `scripts/cc5-restart.ps1` で自動 Close、または「Don't show this again」にチェック |
-| FBX エクスポートがライセンスエラー | キャラに iContent ライセンスのアセットが含まれている | Help→Activate Purchased Items を試す。Content Store アセットを外せばデフォルトコンテンツはエクスポート可。アップグレードは定価の20% |
-| カメラ焦点距離が変わらない | Preview Camera は API で変更不可 | CC5 で新規カメラを作成して使用。API は正直にエラーを返す |
-| 色の範囲 | 入力は 0.0-1.0、RLPy は 0-255 を返す | API 側で正規化済み（0.0-1.0 で統一） |
-| `set_subdivision_level` で HD ディテールが増えない / `max_level` が 0 を返す | SubD（HD サブディビジョン）データの生成は CC5 UI 専用の `Modify > Subdivide` 操作。RLPy からは生成できない。アバターに HD データが未生成だと `max_level = 0` になる | これは失敗ではなく仕様。HD を使うには CC5 UI で一度 `Modify > Subdivide` を実行して HD データを生成しておく。生成済みなら API でレベル切替が効く |
-| CC5 5.07 未満で SubD/HD やプラグインの挙動がおかしい | 5.07 より前のビルドは SubD キャッシュやプラグインモジュールの再構築が必要なことがある | CC5 を 5.07 以降に更新する。更新できない場合はプロジェクトを開き直して SubD を再生成（rebuild）してから API 操作を行う |
+| The bridge does not come up after CC5 starts | Entry function is not named `initialize_plugin` / `rl_plugin_info` is missing | Check the function name and dictionary in main.py |
+| Cannot connect to port 5101 | Plugin not installed | Run `install-plugin.ps1` with administrator privileges |
+| `curl /reload` returns 404 | An old server.py is running | Restart CC5 so it loads the new server.py |
+| `curl /reload` etc. return 401 | Missing `X-CC5-Token` header / token mismatch | Send the value of `%LOCALAPPDATA%\CC5_MCP_Bridge\token` in `X-CC5-Token` (required on every route except `/health`) |
+| `/reload` or `/exec/python` returns 403 | Dev mode is disabled (the default) | Start CC5 with `CC5_DEV_MODE=1` (for `/exec/python` only, `CC5_ALLOW_EXEC=1` also works) |
+| RLPy function not found | CC5 version differences | Check with `hasattr()` and fail gracefully |
+| Morphs have no effect | No avatar in the scene | Create an avatar first with `create_avatar` |
+| Material color does not change | Wrong mesh/material name | Confirm the correct names with `get_material_info` |
+| Undo does not work | Not wrapped in `BeginAction/EndAction` | Always wrap modifying operations in BeginAction/EndAction |
+| Capture is a blank image | No avatar in the scene | Create avatar → apply morphs → capture |
+| RenderImage fails | Can happen after loading a .ccProject | Automatically falls back to a Windows screenshot |
+| Welcome dialog gets in the way | Shown when CC5 starts | Auto-close it with `scripts/cc5-restart.ps1`, or check "Don't show this again" |
+| FBX export fails with a license error | The character contains iContent-licensed assets | Try Help→Activate Purchased Items. With the Content Store assets removed, default content can be exported. Upgrading costs 20% of the list price |
+| Camera focal length does not change | The Preview Camera cannot be changed via the API | Create a new camera in CC5 and use that. The API returns an explicit error rather than reporting false success |
+| Color range | Input is 0.0-1.0; RLPy returns 0-255 | Normalized on the API side (unified to 0.0-1.0) |
+| `set_subdivision_level` does not add HD detail / `max_level` returns 0 | Generating SubD (HD subdivision) data is the CC5-UI-only `Modify > Subdivide` operation. It cannot be generated from RLPy. If the avatar has no HD data generated yet, `max_level = 0` | This is by design, not a failure. To use HD, run `Modify > Subdivide` once in the CC5 UI to generate the HD data. Once it is generated, switching levels via the API works |
+| SubD/HD or the plugin misbehaves on CC5 versions earlier than 5.07 | Builds before 5.07 sometimes need the SubD cache or plugin modules rebuilt | Update CC5 to 5.07 or later. If you cannot update, reopen the project and regenerate (rebuild) SubD before performing API operations |
 
-### サブディビジョン（SubD / HD）についての補足
+### Notes on subdivision (SubD / HD)
 
-`set_subdivision_level` はあくまで「既に生成済みの HD サブディビジョンレベルを切り替える」ツール。
-HD データそのものの**生成**は CC5 の UI 操作 `Modify > Subdivide` でのみ可能で、RLPy/API からはトリガーできない。
-そのため、HD 未生成のアバターでは `max_level = 0`（HD データなし）となり、これは**エラーではなく正常な状態**。
-`export_fbx` の `sub_d_level` も同様で、HD データが無いアバターでは高レベルを指定しても効果がない。
+`set_subdivision_level` is strictly a tool for "switching between HD subdivision levels that have already been generated".
+**Generating** the HD data itself is only possible through the CC5 UI operation `Modify > Subdivide`; it cannot be triggered from RLPy/the API.
+Therefore an avatar without generated HD data has `max_level = 0` (no HD data), and this is **a normal state, not an error**.
+The same applies to `sub_d_level` in `export_fbx`: on an avatar without HD data, specifying a high level has no effect.
 
-> **5.07 未満の注意:** CC5 5.07 より前のビルドでは、SubD キャッシュ／プラグインモジュールの再構築（rebuild）が必要になるケースがある。可能なら 5.07 以降へ更新する。
+> **Note for versions earlier than 5.07:** On CC5 builds earlier than 5.07, the SubD cache / plugin modules sometimes need to be rebuilt. Update to 5.07 or later if possible.
 
-### export_fbx の詳細
+### export_fbx details
 
-`export_fbx` は CC5「Export FBX (InstaLOD)」ダイアログを `RLPy.RExportFbxSetting` で再現する。
-全パラメータは任意（`output_path` のみ必須）で、既存の挙動と完全な後方互換を保つ。
+`export_fbx` reproduces CC5's "Export FBX (InstaLOD)" dialog using `RLPy.RExportFbxSetting`.
+All parameters are optional (only `output_path` is required), preserving full backward compatibility with the existing behavior.
 
-| パラメータ | ダイアログ項目 | 説明 |
+| Parameter | Dialog item | Description |
 |-----------|--------------|------|
-| `output_path` | 出力先 | ディレクトリ無しのファイル名（例 `character.fbx`）は `D:\CC5Export` 配下に解決される（`CC5_EXPORT_DIR` で変更可）。絶対パスはそのまま使用。 |
-| `target_tool` | Target Tool Preset | `"UE5"`/`"Unreal"` で Unreal 向けフラグ（Y-up, UE bone axis）を適用。 |
-| `export_motion` | FBX Options | `true` = "Mesh and Motion"（既定）、`false` = "Mesh" のみ。`EnableExportMotion` を使用。 |
-| `sub_d_level` | HD Character Subdivision Level | 0/1/2。`SetExportLevel`（シーンを変更しない）で適用。2-arg フォールバック時のみ `set_subdivision_level` を使用。 |
-| `embed_textures` | Texture Settings: Embed Textures | `EExportFbxOptions_EmbedTexture` を付与。 |
-| `convert_image_format` | Texture Settings: Convert Image Format | `EExportFbxOptions_ConvertTifToPNG` を付与。 |
-| `texture_size` | Texture Settings: Max Texture Size | `SetTextureSize`（0 = 元サイズ）。 |
-| `fps` | Include Motion: Frame Rate | `RLPy.RFps.Fps{n}`（例 30）にマップ。未対応値は note を付けてスキップ。 |
-| `motion_range` | Include Motion: 範囲 | `[start, end]` を `SetExportMotionRange` に渡す。省略時は既定の "All"。 |
+| `output_path` | Output destination | A file name without a directory (e.g. `character.fbx`) resolves under `D:\CC5Export` (configurable via `CC5_EXPORT_DIR`). Absolute paths are used as-is. |
+| `target_tool` | Target Tool Preset | `"UE5"`/`"Unreal"` applies the Unreal-oriented flags (Y-up, UE bone axis). |
+| `export_motion` | FBX Options | `true` = "Mesh and Motion" (default), `false` = "Mesh" only. Uses `EnableExportMotion`. |
+| `sub_d_level` | HD Character Subdivision Level | 0/1/2. Applied via `SetExportLevel` (does not modify the scene). `set_subdivision_level` is used only in the 2-arg fallback. |
+| `embed_textures` | Texture Settings: Embed Textures | Adds `EExportFbxOptions_EmbedTexture`. |
+| `convert_image_format` | Texture Settings: Convert Image Format | Adds `EExportFbxOptions_ConvertTifToPNG`. |
+| `texture_size` | Texture Settings: Max Texture Size | `SetTextureSize` (0 = original size). |
+| `fps` | Include Motion: Frame Rate | Maps to `RLPy.RFps.Fps{n}` (e.g. 30). Unsupported values are skipped with a note. |
+| `motion_range` | Include Motion: Range | Passes `[start, end]` to `SetExportMotionRange`. When omitted, the default "All" is used. |
 
-**推奨 Unreal (UE5 Skeleton) 呼び出し:** `target_tool="UE5"`, `export_motion=true`, `sub_d_level=0`, `embed_textures=true`, `fps=30`（`motion_range` は省略 = All）。InstaLOD は常に OFF。
+**Recommended Unreal (UE5 Skeleton) call:** `target_tool="UE5"`, `export_motion=true`, `sub_d_level=0`, `embed_textures=true`, `fps=30` (omit `motion_range` = All). InstaLOD is always OFF.
 
-返り値は実際に適用された値のみを正直に報告する（`export_level`, `export_motion`, `fps`, `motion_range`, `texture_size`, `embed_textures` 等）。`RExportFbxSetting` が利用できない 2-arg フォールバック時は、適用できなかったオプションを `notes` に WARNING として記録する。
+The return value accurately reports only the values that were actually applied (`export_level`, `export_motion`, `fps`, `motion_range`, `texture_size`, `embed_textures`, etc.). In the 2-arg fallback (used when `RExportFbxSetting` is unavailable), options that could not be applied are recorded as WARNINGs in `notes`.
 
-### CC5 再起動の完全手順（Claude が自動実行）
+### Full CC5 restart procedure (run automatically by Claude)
 
 ```bash
-# 1. CC5 を正常終了（//F を使わない → 未保存ダイアログ防止）
+# 1. Quit CC5 gracefully (do not use //F → avoids the unsaved-data dialog)
 pid=$(tasklist 2>/dev/null | grep "CharacterCreator" | awk '{print $2}')
 taskkill //PID $pid
-sleep 15  # 正常終了は時間がかかる。15秒待つ
-# まだ生きていたら強制終了
+sleep 15  # A graceful exit takes a while. Wait 15 seconds
+# If it is still alive, force-quit it
 tasklist 2>/dev/null | grep -q "CharacterCreator" && taskkill //F //PID $pid
 sleep 5
 
-# 2. CC5 を起動（プラグインが自動でブリッジを起動する）
+# 2. Launch CC5 (the plugin starts the bridge automatically)
 "/c/Program Files/Reallusion/Character Creator 5/Bin64/CharacterCreator.exe" &
 
-# 3. ブリッジの起動を待機（通常 7-10秒）
+# 3. Wait for the bridge to start (usually 7-10 seconds)
 for i in $(seq 1 60); do
   curl -s --connect-timeout 1 http://127.0.0.1:5101/health | grep -q "ok" && break
   sleep 2
 done
 
-# 4. 起動時ダイアログを自動クローズ（重要！）
-#   a) 「Unsaved project data found」→ Enter で OK（正常終了なら出ない）
-#   b) ウェルカム画面 → Escape で閉じる（「Don't show this again」済みなら出ない）
-#   これらを閉じないとビューポートが正しくレンダリングされない
+# 4. Auto-close the startup dialogs (important!)
+#   a) "Unsaved project data found" → press Enter for OK (does not appear after a graceful exit)
+#   b) Welcome screen → close with Escape (does not appear if "Don't show this again" is already checked)
+#   If these are not closed, the viewport does not render correctly
 sleep 5
 powershell -ExecutionPolicy Bypass -File scripts/cc5-restart.ps1
 ```
 
-### ダイアログの恒久対策
-CC5 のウェルカム画面で「Don't show this again」にチェックを入れて Close すると、
-次回以降はウェルカムダイアログが表示されなくなる。
-ユーザーに一度だけこの操作をしてもらうのが最も確実。
+### Permanent fix for the dialogs
+If you check "Don't show this again" on the CC5 welcome screen and click Close,
+the welcome dialog will no longer be shown from then on.
+Having the user do this once is the most reliable approach.
 
-### ビューポートキャプチャの仕組み
-`capture_viewport` は3段階のフォールバックで動作:
-1. **RLPy.RenderImage()** — 最速、通常はこれで成功
-2. **ForceViewportUpdate + リトライ** — RenderImage 初回失敗時
-3. **Windows スクリーンショット（PowerShell）** — .ccProject 読み込み後など RenderImage が完全に動かない場合
+### How viewport capture works
+`capture_viewport` works through a three-stage fallback:
+1. **RLPy.RenderImage()** — fastest; normally this succeeds
+2. **ForceViewportUpdate + retry** — when RenderImage fails on the first attempt
+3. **Windows screenshot (PowerShell)** — when RenderImage does not work at all, e.g. after loading a .ccProject
 
-注意: フォールバック3は全画面キャプチャなので、CC5 ウィンドウが最前面にある必要がある。
+Note: fallback 3 is a full-screen capture, so the CC5 window must be in the foreground.
 
-## ディレクトリ構成
+## Directory structure
 
 ```
 cc5-mcp-server/
 ├── src/                    # MCP Server (TypeScript)
-│   ├── index.ts            # エントリポイント
-│   ├── cc5-bridge.ts       # CC5 HTTP クライアント
-│   ├── types.ts            # 型定義
-│   ├── util.ts             # 共通ユーティリティ (bridgeCall)
-│   ├── tools/              # MCP ツール定義 (12ファイル)
-│   │   ├── morph.ts        # モーフ調整 + 検索 + リセット
-│   │   ├── scene.ts        # シーン管理 + キャプチャ
-│   │   ├── asset.ts        # アセット読込/FBX書出
-│   │   ├── character.ts    # 体型プリセット + 外見記述
-│   │   ├── content.ts      # コンテンツ管理 (衣服/髪/アクセサリー)
-│   │   ├── color.ts        # 便利色設定 (目/髪/唇)
-│   │   ├── visibility.ts   # 表示/非表示 + シーンオブジェクト一覧
+│   ├── index.ts            # Entry point
+│   ├── cc5-bridge.ts       # CC5 HTTP client
+│   ├── types.ts            # Type definitions
+│   ├── util.ts             # Shared utilities (bridgeCall)
+│   ├── tools/              # MCP tool definitions (12 files)
+│   │   ├── morph.ts        # Morph adjustment + search + reset
+│   │   ├── scene.ts        # Scene management + capture
+│   │   ├── asset.ts        # Asset loading / FBX export
+│   │   ├── character.ts    # Body presets + appearance description
+│   │   ├── content.ts      # Content management (clothes/hair/accessories)
+│   │   ├── color.ts        # Convenience color setters (eyes/hair/lips)
+│   │   ├── visibility.ts   # Show/hide + scene object list
 │   │   ├── edit.ts         # Undo/Redo
-│   │   ├── camera.ts       # カメラ制御
-│   │   ├── light.ts        # ライト制御
-│   │   ├── expression.ts   # 表情情報
-│   │   └── material.ts     # マテリアル/色制御
+│   │   ├── camera.ts       # Camera control
+│   │   ├── light.ts        # Light control
+│   │   ├── expression.ts   # Expression info
+│   │   └── material.ts     # Material/color control
 │   └── resources/
-│       └── morphs.ts       # モーフカタログリソース
-├── cc5-plugin/             # CC5 Python プラグイン
-│   ├── main.py             # プラグインエントリ (initialize_plugin/uninitialize_plugin)
-│   ├── server.py           # HTTP ブリッジサーバー
-│   ├── cc5_api.py          # RLPy API ラッパー (全API関数 + _auto_patch_server)
-│   ├── config.json         # プラグイン設定
-│   └── config.xml          # プラグイン設定 (XML)
-├── tests/                  # テスト (314件, 12ファイル)
-├── start_bridge.py         # 手動起動用（通常不要 — 自動起動が動作するため）
-├── install-plugin.ps1      # プラグインインストール (要管理者権限)
-├── claude-mcp-config.json  # Claude Code 用 MCP 設定
-└── CLAUDE.md               # このファイル
+│       └── morphs.ts       # Morph catalog resource
+├── cc5-plugin/             # CC5 Python plugin
+│   ├── main.py             # Plugin entry point (initialize_plugin/uninitialize_plugin)
+│   ├── server.py           # HTTP bridge server
+│   ├── cc5_api.py          # RLPy API wrapper (all API functions + _auto_patch_server)
+│   ├── config.json         # Plugin settings
+│   └── config.xml          # Plugin settings (XML)
+├── tests/                  # Tests (314 tests, 12 files)
+├── start_bridge.py         # For manual startup (normally unnecessary — auto-start works)
+├── install-plugin.ps1      # Plugin installer (requires administrator privileges)
+├── claude-mcp-config.json  # MCP config for Claude Code
+└── CLAUDE.md               # This file
 ```
 
-## 重要な技術情報
+## Key technical information
 
-- **CC5 Python**: Python 3.10 + PySide2（PySide6 ではない！）
-- **RLPy**: NOT スレッドセーフ — QTimer 経由でメインスレッド実行必須
-- **ブリッジ**: `http.server` (Flask 不使用) on port 5101
-- **QTimer**: 16ms 間隔（~60fps）— レスポンス最適化済み
-- **プラグイン関数名**: `initialize_plugin` / `uninitialize_plugin`（`load/unload` は不可）
-- **型ヒント互換性**: `from __future__ import annotations` 必須
-- **モーフ値範囲**: [-1.0, 1.0]（負の値で特徴を縮小）
-- **morph ID キャッシュ**: アバター変更時に自動無効化
+- **CC5 Python**: Python 3.10 + PySide2 (not PySide6!)
+- **RLPy**: NOT thread-safe — must run on the main thread via QTimer
+- **Bridge**: `http.server` (no Flask) on port 5101
+- **QTimer**: 16ms interval (~60fps) — tuned for responsiveness
+- **Plugin function names**: `initialize_plugin` / `uninitialize_plugin` (`load/unload` does not work)
+- **Type-hint compatibility**: `from __future__ import annotations` is required
+- **Morph value range**: [-1.0, 1.0] (negative values shrink the feature)
+- **morph ID cache**: automatically invalidated when the avatar changes
 
-## セットアップ手順
+## Setup steps
 
-### 1. MCP Server ビルド
+### 1. Build the MCP Server
 ```bash
 npm install && npm run build
 ```
 
-### 2. CC5 プラグインインストール (管理者権限)
+### 2. Install the CC5 plugin (administrator privileges)
 ```powershell
 powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 ```
 
-### 3. Claude Code への MCP 登録
+### 3. Register the MCP server in Claude Code
 ```json
 "cc5": {
   "command": "node",
@@ -220,112 +220,112 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 }
 ```
 
-### 4. CC5 起動 → 自動でブリッジ起動（手動操作不要）
+### 4. Launch CC5 → the bridge starts automatically (no manual steps needed)
 
-## 利用可能な MCP ツール (56個)
+## Available MCP tools (56)
 
-### シーン管理
-| ツール | 説明 |
+### Scene management
+| Tool | Description |
 |--------|------|
-| check_cc5_connection | CC5 接続確認 |
-| list_avatars | シーン内アバター一覧 |
-| get_avatar_info | アバター詳細情報・モーフ値 |
-| create_avatar | ニュートラルCC3+素体作成 (テクスチャ無し=マネキン。実顔は browse_content("character")+load_asset 推奨) |
-| delete_avatar | アバター削除 (名前指定 or 全削除。マネキン除去→実キャラ読込に使う) |
-| describe_character | 自然言語でキャラ外見を記述 |
-| get_scene_objects | シーン内全オブジェクト一覧 (アバター, プロップ, ライト, カメラ) |
+| check_cc5_connection | Check the CC5 connection |
+| list_avatars | List avatars in the scene |
+| get_avatar_info | Avatar details and morph values |
+| create_avatar | Create a neutral CC3+ base body (untextured = mannequin; for a real face, browse_content("character")+load_asset is recommended) |
+| delete_avatar | Delete avatars (by name or all; used to remove the mannequin → load a real character) |
+| describe_character | Describe the character's appearance in natural language |
+| get_scene_objects | List all objects in the scene (avatars, props, lights, cameras) |
 
-### モーフ操作
-| ツール | 説明 |
+### Morph operations
+| Tool | Description |
 |--------|------|
-| search_morphs | モーフカタログをキーワード検索 |
-| adjust_morph | 単一モーフスライダー調整 [-1, 1] |
-| adjust_multiple_morphs | 複数モーフ一括調整 (最大500) |
-| get_morph_value | モーフ現在値取得 |
-| reset_morphs | 全モーフをゼロにリセット |
-| apply_body_preset | 体型プリセット (athletic/muscular/slim/heavy/average) |
+| search_morphs | Search the morph catalog by keyword |
+| adjust_morph | Adjust a single morph slider [-1, 1] |
+| adjust_multiple_morphs | Adjust multiple morphs at once (up to 500) |
+| get_morph_value | Get a morph's current value |
+| reset_morphs | Reset all morphs to zero |
+| apply_body_preset | Body preset (athletic/muscular/slim/heavy/average) |
 
-### コンテンツ管理 (衣服・髪・アクセサリー)
-| ツール | 説明 |
+### Content management (clothes, hair, accessories)
+| Tool | Description |
 |--------|------|
-| list_clothes | アバター上の衣服一覧 |
-| list_hair | アバター上の髪型一覧 |
-| list_accessories | アバター上のアクセサリー一覧 |
-| remove_scene_item | 衣服/髪/アクセサリーを名前で削除 |
-| browse_content | CC5コンテンツフォルダを参照 (衣服/靴/アクセサリー + pose/motion/expression/props/light/camera/character) |
+| list_clothes | List the clothes on the avatar |
+| list_hair | List the hairstyles on the avatar |
+| list_accessories | List the accessories on the avatar |
+| remove_scene_item | Remove clothes/hair/accessories by name |
+| browse_content | Browse the CC5 content folders (clothes/shoes/accessories + pose/motion/expression/props/light/camera/character) |
 
-### カメラ・ライト・表情
-| ツール | 説明 |
+### Camera, lights, expressions
+| Tool | Description |
 |--------|------|
-| get_camera_info | カメラ位置・焦点距離取得 |
-| set_camera_focal_length | カメラ焦点距離設定 |
-| frame_camera | プリセット視点 (face/front/home/all 等) にカメラを移動 |
-| get_lights | シーン内ライト一覧 (重複排除済み) |
-| get_light_info | ライト詳細 (色/強度/オンオフ/影キャスト/影濃度/レンジ) |
-| set_light_color | ライトRGBカラー変更 |
-| set_light_multiplier | ライト強度 (multiplier) 設定 |
-| set_light_active | ライトのオン/オフ切替 (ライティング調整) |
-| set_light_shadow | 影キャストON/OFF + 影の濃さ (darken 0-1) 設定 |
-| get_visual_settings | 環境光取得 (ambient 色 + IBL 有効状態) |
-| set_ambient | シーンの環境(フィル)光カラー設定 (0-1) |
-| set_ibl | IBL/HDRI 有効化・無効化 + HDRI 画像ロード |
-| get_expression_info | 表情グループ・スライダー名取得 |
-| set_expression | 表情スライダーを名前で設定 (weight 0-1, 複数可) |
-| reset_expression | 全表情スライダーを 0 (ニュートラル) にリセット |
+| get_camera_info | Get camera position and focal length |
+| set_camera_focal_length | Set the camera focal length |
+| frame_camera | Move the camera to a preset viewpoint (face/front/home/all, etc.) |
+| get_lights | List the lights in the scene (deduplicated) |
+| get_light_info | Light details (color/intensity/on-off/shadow casting/shadow darkness/range) |
+| set_light_color | Change a light's RGB color |
+| set_light_multiplier | Set light intensity (multiplier) |
+| set_light_active | Turn a light on/off (lighting adjustment) |
+| set_light_shadow | Set shadow casting ON/OFF + shadow darkness (darken 0-1) |
+| get_visual_settings | Get ambient lighting (ambient color + IBL enabled state) |
+| set_ambient | Set the scene's ambient (fill) light color (0-1) |
+| set_ibl | Enable/disable IBL/HDRI + load an HDRI image |
+| get_expression_info | Get expression groups and slider names |
+| set_expression | Set expression sliders by name (weight 0-1, multiple allowed) |
+| reset_expression | Reset all expression sliders to 0 (neutral) |
 
-### マテリアル・色
-| ツール | 説明 |
+### Materials and colors
+| Tool | Description |
 |--------|------|
-| get_material_info | メッシュ・マテリアル名一覧 |
-| get_shader_parameters | Digital Human Shader パラメータ取得 (肌ラフネス/SSS/MicroNormal 等) |
-| set_shader_parameter | Digital Human Shader パラメータ設定 (名前+値リスト、検証つき) |
-| get_diffuse_color | ディフューズカラー取得 |
-| set_diffuse_color | ディフューズカラー設定 (肌色等) |
-| set_eye_color | 目の色設定 (便利ショートカット) |
-| set_hair_color | 髪の色設定 (便利ショートカット) |
-| set_lip_color | 唇の色設定 (便利ショートカット) |
+| get_material_info | List mesh and material names |
+| get_shader_parameters | Get Digital Human Shader parameters (skin roughness/SSS/MicroNormal, etc.) |
+| set_shader_parameter | Set Digital Human Shader parameters (name + value list, with validation) |
+| get_diffuse_color | Get the diffuse color |
+| set_diffuse_color | Set the diffuse color (skin tone, etc.) |
+| set_eye_color | Set the eye color (convenience shortcut) |
+| set_hair_color | Set the hair color (convenience shortcut) |
+| set_lip_color | Set the lip color (convenience shortcut) |
 
-### 表示/非表示
-| ツール | 説明 |
+### Show/hide
+| Tool | Description |
 |--------|------|
-| set_item_visible | シーンアイテムの表示/非表示切替 |
+| set_item_visible | Show or hide a scene item |
 
-### アセット・エクスポート
-| ツール | 説明 |
+### Assets and export
+| Tool | Description |
 |--------|------|
-| load_asset | アセット読込 (.iAvatar, .ccAvatar, .ccm 等) |
-| export_fbx | FBX エクスポート（CC5「Export FBX」ダイアログを再現）。詳細は下記「export_fbx の詳細」を参照。|
-| set_subdivision_level | HD 細分化レベル |
-| capture_viewport | ビューポートスクリーンショット (画像をLLMに返却) |
+| load_asset | Load an asset (.iAvatar, .ccAvatar, .ccm, etc.) |
+| export_fbx | FBX export (reproduces CC5's "Export FBX" dialog). See "export_fbx details" below.|
+| set_subdivision_level | HD subdivision level |
+| capture_viewport | Viewport screenshot (returns the image to the LLM) |
 
 ### ActorMIXER PRO
-| ツール | 説明 |
+| Tool | Description |
 |--------|------|
-| create_actor_mixer | ネイティブ「Create Mixer Assets」ダイアログを駆動して .ccMixerPreset を生成。`confirm_create` が安全ゲート (false=フィールド設定後キャンセルするドライラン / true=Create クリック)。ActorMIXER PRO プラグインが必要 |
+| create_actor_mixer | Drives the native "Create Mixer Assets" dialog to generate a .ccMixerPreset. `confirm_create` is the safety gate (false = dry run that fills in the fields and then cancels / true = clicks Create). Requires the ActorMIXER PRO plugin |
 
-### 編集
-| ツール | 説明 |
+### Editing
+| Tool | Description |
 |--------|------|
-| undo | 最後の操作を元に戻す |
-| redo | 元に戻した操作を再適用 |
+| undo | Undo the last operation |
+| redo | Re-apply an undone operation |
 
-## 開発メモ
+## Development notes
 
-- ビルド: `npm run build`
-- テスト: `npm test` (449件) / `npm run test:coverage`
-- ブリッジ認証: `/health` 以外の全ルートは `X-CC5-Token` ヘッダーが必須。トークンはプラグイン初回起動時に `%LOCALAPPDATA%\CC5_MCP_Bridge\token` へ生成される (環境変数 `CC5_BRIDGE_TOKEN` で上書き可)。MCP サーバーは自動で送信する
-- ホットリロード: `curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/reload` (cc5_api.py の変更を即反映。`CC5_DEV_MODE=1` が必要、無効時は 403)
-- API ディスカバリ: `curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/api`
-- CC5 再起動: `taskkill` → `CharacterCreator.exe &` → ブリッジ自動起動
+- Build: `npm run build`
+- Tests: `npm test` (449 tests) / `npm run test:coverage`
+- Bridge authentication: every route except `/health` requires the `X-CC5-Token` header. The token is generated at `%LOCALAPPDATA%\CC5_MCP_Bridge\token` the first time the plugin starts (can be overridden with the environment variable `CC5_BRIDGE_TOKEN`). The MCP server sends it automatically
+- Hot reload: `curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/reload` (applies cc5_api.py changes immediately; requires `CC5_DEV_MODE=1`, returns 403 when disabled)
+- API discovery: `curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/api`
+- CC5 restart: `taskkill` → `CharacterCreator.exe &` → the bridge starts automatically
 
-## 環境変数
+## Environment variables
 
-| 変数 | デフォルト | 説明 |
+| Variable | Default | Description |
 |------|-----------|------|
-| CC5_BRIDGE_URL | http://127.0.0.1:5101 | ブリッジ接続先 |
-| CC5_BRIDGE_PORT | 5101 | ブリッジポート (start_bridge.py用) |
-| CC5_BRIDGE_TOKEN | (空 = トークンファイルを使用) | ブリッジ認証トークン (`X-CC5-Token`)。プラグインと MCP サーバーの両方で同じ値にすること |
-| CC5_DEV_MODE | 0 | 開発モード (1/true/yes で /reload と /exec/python を有効化) |
-| CC5_ALLOW_EXEC | (空) | 1/true/yes で開発モード無効時も /exec/python を有効化 |
-| CC5_REQUEST_TIMEOUT_MS | 35000 | リクエストタイムアウト (ms) |
-| CC5_ROOT | (自動検出) | CC5 インストールパス |
+| CC5_BRIDGE_URL | http://127.0.0.1:5101 | Bridge endpoint URL |
+| CC5_BRIDGE_PORT | 5101 | Bridge port (for start_bridge.py) |
+| CC5_BRIDGE_TOKEN | (empty = use the token file) | Bridge authentication token (`X-CC5-Token`). Must be set to the same value in both the plugin and the MCP server |
+| CC5_DEV_MODE | 0 | Dev mode (1/true/yes enables /reload and /exec/python) |
+| CC5_ALLOW_EXEC | (empty) | 1/true/yes enables /exec/python even when dev mode is disabled |
+| CC5_REQUEST_TIMEOUT_MS | 35000 | Request timeout (ms) |
+| CC5_ROOT | (auto-detected) | CC5 install path |

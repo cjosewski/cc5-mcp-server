@@ -3168,6 +3168,7 @@ def silent_install_filter(output_dir: str, character_name: str) -> dict[str, Any
             # "Save" or "Export". Confirm process matches CC5.
             if cls == "#32770" and (cc_pid == 0 or pid.value == cc_pid):
                 low = title.lower()
+                # "保存" is "Save": matches the dialog title on Japanese-locale Windows.
                 if "save" in low or "export" in low or "保存" in title:
                     target_hwnd.append(hwnd)
                     return False
