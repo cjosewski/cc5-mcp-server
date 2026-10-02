@@ -580,4 +580,12 @@ export class CC5Bridge {
   async getMeshStats(): Promise<MeshStatsResult> {
     return this.request<MeshStatsResult>("/pipeline/mesh_stats", "POST", {});
   }
+
+  async applyPose(filePath: string): Promise<OperationResult & { method?: string }> {
+    return this.request("/pipeline/pose", "POST", { file_path: filePath });
+  }
+
+  async saveCharacter(outputPath: string): Promise<OperationResult & { path?: string }> {
+    return this.request("/pipeline/save_character", "POST", { output_path: outputPath });
+  }
 }

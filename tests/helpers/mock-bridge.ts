@@ -89,6 +89,8 @@ export function createMockBridge(): MockBridge {
     startJob: vi.fn(),
     getJob: vi.fn(),
     getMeshStats: vi.fn(),
+    applyPose: vi.fn(),
+    saveCharacter: vi.fn(),
   };
 }
 

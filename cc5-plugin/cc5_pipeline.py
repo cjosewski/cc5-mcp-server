@@ -143,6 +143,76 @@ def get_mesh_stats() -> dict[str, Any]:
     return {"success": True, "meshes": meshes, "totals": totals}
 
 
+# LIVE-VERIFY (Task 18 prints the real extensions under browse_content('pose'/'motion')): .ccpose/.ccmotion
+# are guesses for CC5-native content; keep in sync with POSE_EXTENSIONS in src/tools/pipeline.ts.
+POSE_EXTENSIONS = {".rlmotion", ".imotion", ".rlpose", ".ipose", ".imotionplus", ".ccpose", ".ccmotion"}
+
+
+def _check_existing(path: str, allowed: set[str]) -> str | None:
+    error = check_path(path)
+    if error:
+        return error
+    if os.path.splitext(path)[1].lower() not in allowed:
+        return f"Unsupported file type. Allowed: {', '.join(sorted(allowed))}"
+    if not os.path.isfile(path):
+        return f"File not found: {path}"
+    return None
+
+
+def _raise_on_error(status: Any, what: str) -> None:
+    """RLPy file calls return an RStatus instead of raising; turn an error status into an exception."""
+    is_error = getattr(status, "IsError", None)
+    if callable(is_error) and is_error() is True:
+        raise RuntimeError(f"{what} reported an error status")
+
+
+def apply_pose(file_path: str) -> dict[str, Any]:
+    """Apply a pose/motion file to the avatar (LIVE-VERIFY: LoadFile on selection, then LoadMotion)."""
+    error = _check_existing(file_path, POSE_EXTENSIONS)
+    if error:
+        return {"success": False, "error": error}
+    avatar = cc5_api.get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    RLPy.RGlobal.BeginAction("Apply Pose")
+    try:
+        RLPy.RScene.SelectObject(avatar)
+        try:
+            _raise_on_error(RLPy.RFileIO.LoadFile(file_path), "LoadFile")
+            method = "LoadFile"
+        except Exception:
+            _raise_on_error(RLPy.RFileIO.LoadMotion(file_path, RLPy.RTime(0), avatar), "LoadMotion")
+            method = "LoadMotion"
+        RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Transform)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        RLPy.RGlobal.EndAction()
+    return {"success": True, "method": method}
+
+
+def save_character(output_path: str) -> dict[str, Any]:
+    """Save the avatar as a .ccAvatar so batch runs can reload a clean base."""
+    error = check_path(output_path)
+    if error:
+        return {"success": False, "error": error}
+    if os.path.splitext(output_path)[1].lower() != ".ccavatar":
+        return {"success": False, "error": "output_path must end with .ccAvatar"}
+    avatar = cc5_api.get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    try:
+        setting = RLPy.RSaveFileSetting()
+        setting.SetSaveType(RLPy.ESaveFileType_Character)
+        _raise_on_error(RLPy.RFileIO.SaveFile(avatar, setting, output_path), "SaveFile")
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    if not os.path.isfile(output_path):
+        return {"success": False, "error": f"CC5 did not write {output_path}"}
+    return {"success": True, "path": output_path}
+
+
 def _opt_int(p: dict, key: str) -> int | None:
     return int(p[key]) if p.get(key) is not None else None
 
@@ -152,10 +222,16 @@ ACTIONS: dict[str, Any] = {
         p["unity_dir"], p["character_name"], _opt_int(p, "sub_d_level"),
         _opt_int(p, "texture_size"), bool(p.get("include_current_pose", False))),
     "get_mesh_stats": lambda p: get_mesh_stats(),
+    "apply_pose": lambda p: apply_pose(p["file_path"]),
+    "save_character": lambda p: save_character(p["output_path"]),
 }
 POST_ROUTES: dict[str, str] = {
     "/pipeline/mesh_stats": "get_mesh_stats",
+    "/pipeline/pose": "apply_pose",
+    "/pipeline/save_character": "save_character",
 }
 REQUIRED_PARAMS: dict[str, list[str]] = {
     "export_for_unity": ["unity_dir", "character_name"],
+    "apply_pose": ["file_path"],
+    "save_character": ["output_path"],
 }
