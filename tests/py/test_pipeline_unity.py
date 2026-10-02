@@ -43,6 +43,28 @@ class ExportForUnityTest(unittest.TestCase):
         self.assertFalse(r["success"])
         self.assertFalse(os.path.exists(os.path.join(self.assets, "Patient_01")))
 
+    def test_rejects_out_of_range_sub_d_level(self):
+        for level in (3, -1, 99):
+            with self.subTest(level=level):
+                with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()), \
+                        mock.patch.object(self.pipe.cc5_api, "export_fbx") as exp:
+                    r = self.pipe.export_for_unity(self.assets, "Patient_01", sub_d_level=level)
+                self.assertFalse(r["success"])
+                self.assertIn("sub_d_level", r["error"])
+                exp.assert_not_called()
+                self.assertFalse(os.path.exists(os.path.join(self.assets, "Patient_01")))
+
+    def test_rejects_unsupported_texture_size(self):
+        for size in (7, 0, 300, 8192):
+            with self.subTest(size=size):
+                with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()), \
+                        mock.patch.object(self.pipe.cc5_api, "export_fbx") as exp:
+                    r = self.pipe.export_for_unity(self.assets, "Patient_01", texture_size=size)
+                self.assertFalse(r["success"])
+                self.assertIn("texture_size", r["error"])
+                exp.assert_not_called()
+                self.assertFalse(os.path.exists(os.path.join(self.assets, "Patient_01")))
+
     def test_exports_into_named_subfolder_with_unity_preset(self):
         def fake_export(path, flags, **kw):
             with open(path, "wb") as f:

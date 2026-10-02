@@ -18,6 +18,8 @@ import RLPy
 import cc5_api
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}\Z")  # \Z, not $: $ also matches before a trailing newline
+SUB_D_LEVELS = (0, 1, 2)  # same sets as the zod schema in src/tools/unity.ts
+TEXTURE_SIZES = (512, 1024, 2048, 4096)
 
 
 def check_path(path: str) -> str | None:
@@ -77,6 +79,10 @@ def export_for_unity(
         return {"success": False, "error": f"Folder must be inside a Unity project's Assets folder: {unity_dir}"}
     if not SAFE_NAME.match(character_name or ""):
         return {"success": False, "error": "Character name must be 1-64 letters, digits, '_' or '-'"}
+    if sub_d_level is not None and (isinstance(sub_d_level, bool) or sub_d_level not in SUB_D_LEVELS):
+        return {"success": False, "error": "sub_d_level must be 0, 1 or 2"}
+    if texture_size is not None and (isinstance(texture_size, bool) or texture_size not in TEXTURE_SIZES):
+        return {"success": False, "error": "texture_size must be 512, 1024, 2048 or 4096"}
     if not cc5_api.get_first_avatar():
         return {"success": False, "error": "No avatar in scene"}
     folder = os.path.join(unity_dir, character_name)
