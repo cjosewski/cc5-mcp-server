@@ -67,7 +67,12 @@ export async function applyRecipe(bridge: CC5Bridge, recipe: Recipe): Promise<St
     // create_default_avatar and load_asset are additive, and every later step acts on
     // avatars[0], so clear the scene first or the edits land on the old character.
     await step(results, "base", async () => {
-      for (const a of (await bridge.getAvatars()) ?? []) await bridge.deleteAvatar(a.name);
+      for (const a of (await bridge.getAvatars()) ?? []) {
+        const d = await bridge.deleteAvatar(a.name);
+        if (d?.success === false) {
+          return { success: false, error: `could not remove existing avatar ${a.name}: ${d.error ?? "failed"}` };
+        }
+      }
       return base === "default" ? bridge.createDefaultAvatar() : bridge.loadAsset(base);
     });
   }

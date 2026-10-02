@@ -52,6 +52,17 @@ describe("applyRecipe", () => {
     const results = await applyRecipe(bridge as any, RecipeSchema.parse({ pose_file: "C:/p/a.rlMotion" }));
     expect(results[0]).toMatchObject({ ok: false, detail: "bridge down" });
   });
+
+  it("fails the base step and does not create when an old avatar cannot be deleted", async () => {
+    bridge.deleteAvatar.mockResolvedValueOnce({ success: false, error: "locked" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ base: "default", pose_file: "C:/p/a.rlMotion" }));
+    expect(results[0]).toMatchObject({ step: "base", ok: false });
+    expect(results[0].detail).toContain("Old");
+    expect(results[0].detail).toContain("locked");
+    expect(bridge.createDefaultAvatar).not.toHaveBeenCalled();
+    expect(results[1]).toMatchObject({ step: "pose_file", ok: true });
+  });
 });
 
 describe("formatReport", () => {
