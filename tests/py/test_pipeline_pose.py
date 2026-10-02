@@ -27,11 +27,14 @@ class PoseTest(unittest.TestCase):
         self.assertFalse(self.pipe.apply_pose(os.path.join(self.dir, "nope.rlMotion"))["success"])
 
     def test_selects_avatar_then_loads(self):
+        pose = self._file("lying.rlMotion")
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
-            r = self.pipe.apply_pose(self._file("lying.rlMotion"))
+            r = self.pipe.apply_pose(pose)
         self.assertTrue(r["success"])
         self.rl.RScene.SelectObject.assert_called_with(self.avatar)
         self.assertEqual(r["method"], "LoadFile")
+        # Live signature LoadFile(path, bRecordStep, spObject, ...): aim the pose at the avatar, not the selection.
+        self.rl.RFileIO.LoadFile.assert_called_once_with(pose, True, self.avatar)
 
     def test_falls_back_to_load_motion(self):
         self.rl.RFileIO.LoadFile.side_effect = RuntimeError("not applicable")

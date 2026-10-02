@@ -52,7 +52,8 @@ class ExportObjTest(unittest.TestCase):
             r = self.pipe.export_obj(os.path.join(tempfile.mkdtemp(), "a.obj"))
         self.assertFalse(r["success"])
 
-    def test_error_status_falls_back(self):
+    def test_error_status_fails_without_retrying_a_weaker_form(self):
+        # CC5 ran the export and reported failure: re-exporting without the options would hide that.
         def export(avatar, path, *rest):
             status = mock.MagicMock()
             if rest:
@@ -64,8 +65,23 @@ class ExportObjTest(unittest.TestCase):
         self.rl.RFileIO.ExportObjFile.side_effect = export
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()):
             r = self.pipe.export_obj(os.path.join(tempfile.mkdtemp(), "a.obj"))
+        self.assertFalse(r["success"])
+        self.assertIn("reported an error status", r["error"])
+        self.assertEqual(self.rl.RFileIO.ExportObjFile.call_count, 1)
+
+    def test_rejected_arguments_fall_back_with_a_warning(self):
+        def export(avatar, path, *rest):
+            if rest:
+                raise TypeError("Wrong number or type of arguments for overloaded function 'RFileIO_ExportObjFile'.")
+            open(path, "wb").close()
+        self.rl.RFileIO.ExportObjFile.side_effect = export
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()):
+            r = self.pipe.export_obj(os.path.join(tempfile.mkdtemp(), "a.obj"))
         self.assertTrue(r["success"])
         self.assertEqual(r["signature"], "(avatar, path)")
+        self.assertEqual(len(r["notes"]), 1)
+        self.assertTrue(r["notes"][0].startswith("WARNING: CC5 rejected (avatar, path, option)"))
+        self.assertIn("NOT applied", r["notes"][0])
 
     def test_try_signatures_falls_through(self):
         def boom():
@@ -73,3 +89,18 @@ class ExportObjTest(unittest.TestCase):
         label, err = self.pipe.try_signatures([("a", boom), ("b", lambda: None)])
         self.assertEqual(label, "b")
         self.assertIsNone(err)
+
+    def test_try_signatures_falls_through_on_old_swig_not_implemented(self):
+        def boom():
+            raise NotImplementedError("Wrong number or type of arguments")
+        self.assertEqual(self.pipe.try_signatures([("a", boom), ("b", lambda: None)]), ("b", None))
+
+    def test_try_signatures_stops_when_the_call_ran_and_failed(self):
+        second = mock.MagicMock()
+
+        def ran_and_failed():
+            raise RuntimeError("ExportObjFile reported an error status")
+        label, err = self.pipe.try_signatures([("a", ran_and_failed), ("b", second)])
+        self.assertIsNone(label)
+        self.assertIn("a: ExportObjFile reported an error status", err)
+        second.assert_not_called()

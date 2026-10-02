@@ -36,11 +36,44 @@ class ImportTest(unittest.TestCase):
         self.assertTrue(self.rl.RFileIO.LoadFbxFile.called)
 
     def test_import_fbx_reports_error_status(self):
+        # CC5 ran the import and failed: importing again with the default option could double-import.
         self.rl.RFileIO.LoadFbxFile.return_value.IsError.return_value = True
         r = self.pipe.import_fbx(self._file("stretcher.fbx"), "prop")
         self.assertFalse(r["success"])
-        self.assertEqual(self.rl.RFileIO.LoadFbxFile.call_count, 2)
+        self.assertEqual(self.rl.RFileIO.LoadFbxFile.call_count, 1)
         self.rl.RGlobal.EndAction.assert_called_once()
+
+    def test_import_prop_falls_back_with_a_warning_only_when_swig_rejects_the_option(self):
+        def load(path, *rest):
+            if rest:
+                raise TypeError("Wrong number or type of arguments for overloaded function 'RFileIO_LoadFbxFile'.")
+        self.rl.RFileIO.LoadFbxFile.side_effect = load
+        r = self.pipe.import_fbx(self._file("stretcher.fbx"), "prop")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["signature"], "LoadFbxFile(path)")
+        self.assertIn("default import option", r["notes"][0])
+        self.assertTrue(r["notes"][0].startswith("WARNING"))
+
+    def test_import_clothing_error_status_does_not_load_twice(self):
+        self.rl.RFileIO.LoadClotheFromFbx.return_value.IsError.return_value = True
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+            r = self.pipe.import_fbx(self._file("jacket.fbx"), "clothing")
+        self.assertFalse(r["success"])
+        self.assertEqual(self.rl.RFileIO.LoadClotheFromFbx.call_count, 1)
+
+    def test_import_clothing_reports_meshes_that_failed(self):
+        self.rl.WStringVector.return_value = ["Jacket_Hood", "Jacket_Zip"]
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+            r = self.pipe.import_fbx(self._file("jacket.fbx"), "clothing")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["failed_meshes"], ["Jacket_Hood", "Jacket_Zip"])
+        self.assertEqual(r["notes"], ["WARNING: 2 clothing mesh(es) did not import: Jacket_Hood, Jacket_Zip"])
+        self.assertIs(self.rl.RFileIO.LoadClotheFromFbx.call_args.args[2], self.rl.WStringVector.return_value)
+
+    def test_import_clothing_clean_import_has_no_warning(self):
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+            r = self.pipe.import_fbx(self._file("jacket.fbx"), "clothing")
+        self.assertEqual((r["failed_meshes"], r["notes"]), ([], []))
 
     def test_replace_mesh_unknown_mesh(self):
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):

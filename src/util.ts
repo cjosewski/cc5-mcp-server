@@ -15,6 +15,15 @@ function isFailure(result: unknown): boolean {
 }
 
 /**
+ * The "WARNING ..." entries of a plugin result's `notes`: settings CC5 did not apply, or parts of an
+ * operation that did not happen, on a call that otherwise succeeded.
+ */
+export function warningNotes(result: unknown): string[] {
+  const notes = typeof result === "object" && result !== null ? (result as { notes?: unknown }).notes : undefined;
+  return Array.isArray(notes) ? notes.filter((n): n is string => typeof n === "string" && n.startsWith("WARNING")) : [];
+}
+
+/**
  * Error result for a failed bridge call. Only a CC5 that could not be reached gets the
  * "Is CC5 running" hint: when CC5 answered with an error, its own message says what went wrong.
  * Logs the full error (including stack) to stderr so MCP stdio is not corrupted.

@@ -55,9 +55,19 @@ describe("export_obj", () => {
   });
 
   it("exports", async () => {
-    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)" });
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)", notes: [] });
     const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
-    expect(r.content[0].text).toContain("a.obj");
+    expect(r.content[0].text).toBe("Exported C:/x/a.obj");
+    expect(r.isError).toBeUndefined();
+  });
+
+  it("flags an OBJ written with the weaker call form, naming the form and what was dropped", async () => {
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path)",
+      notes: ["WARNING: CC5 rejected (avatar, path, option) and (avatar, path) was used instead, so the OBJ options (bind pose, Y-up axis, body and clothing parts) were NOT applied"] });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("with (avatar, path)");
+    expect(r.content[0].text).toContain("bind pose, Y-up axis");
   });
 });
 
@@ -105,7 +115,28 @@ describe("import_fbx", () => {
     bridge.startJob.mockResolvedValue({ job_id: "cmd_4" });
     bridge.getJob.mockResolvedValue({ job_id: "cmd_4", action: "import_fbx", status: "done", result: { success: true } });
     const r = await server.getRegisteredTool("import_fbx")({ file_path: "C:/a/jacket.fbx", kind: "clothing" });
-    expect(r.content[0].text).toContain("jacket.fbx");
+    expect(r.content[0].text).toBe("Imported jacket.fbx as clothing");
+  });
+
+  it("prints the meshes that did not import, and says not to import again", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_4" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_4", action: "import_fbx", status: "done", result: {
+      success: true, signature: "LoadClotheFromFbx(avatar, path, WStringVector)", failed_meshes: ["Jacket_Hood"],
+      notes: ["WARNING: 1 clothing mesh(es) did not import: Jacket_Hood"] } });
+    const r = await server.getRegisteredTool("import_fbx")({ file_path: "C:/a/jacket.fbx", kind: "clothing" });
+    expect(r.content[0].text).toContain("did not import: Jacket_Hood");
+    expect(r.content[0].text).toContain("check the scene before importing again");
+    expect(r.isError).toBeUndefined();
+  });
+
+  it("names the call form when CC5 rejected the import option", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_4" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_4", action: "import_fbx", status: "done", result: {
+      success: true, signature: "LoadFbxFile(path)",
+      notes: ["WARNING: CC5 rejected LoadFbxFile(path, option) and LoadFbxFile(path) was used instead, so CC5's default import option was used instead of EImportFbxOption_Prop"] } });
+    const r = await server.getRegisteredTool("import_fbx")({ file_path: "C:/a/stretcher.fbx", kind: "prop" });
+    expect(r.content[0].text).toContain("(LoadFbxFile(path))");
+    expect(r.content[0].text).toContain("default import option");
   });
 });
 

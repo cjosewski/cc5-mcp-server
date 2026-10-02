@@ -6,7 +6,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall, errorResult } from "../util.js";
+import { bridgeCall, errorResult, warningNotes } from "../util.js";
 import { isLocalAbsolute } from "./unity.js";
 import { runJob, formatPending } from "../jobs.js";
 
@@ -62,8 +62,16 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
     async ({ output_path, y_up }) => {
       const err = checkFile(output_path, [".obj"]);
       if (err) return errorResult(err);
-      return bridgeCall(() => bridge.exportObj(output_path, y_up),
-        (r) => r.success ? `Exported ${r.path}` : `Failed: ${r.error}`);
+      let warnings: string[] = [];
+      const res = await bridgeCall(() => bridge.exportObj(output_path, y_up), (r) => {
+        if (!r.success) return `Failed: ${r.error}`;
+        warnings = warningNotes(r);
+        if (!warnings.length) return `Exported ${r.path}`;
+        // A weaker call form drops the bind-pose and axis options; such an OBJ breaks replace_mesh_from_obj.
+        return `Exported ${r.path} with ${r.signature}, not as asked:\n${warnings.join("\n")}\n` +
+          "Do not sculpt on this OBJ or bring it back with replace_mesh_from_obj.";
+      });
+      return warnings.length ? errorResult(res.content[0].text) : res;
     }
   );
 
@@ -81,7 +89,7 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
         if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
         const r = out.result as { success: boolean; error?: string; folder?: string; files?: unknown[]; pose_applied?: boolean };
         if (out.failed || !r.success) return errorResult(`GoZ export failed: ${r.error ?? "unknown error"}`);
-        const warn = r.pose_applied === false ? `\nWARNING: pose '${pose}' was NOT applied (no pose setter on RExportGoZMeshOption); files use the character's current pose.` : "";
+        const warn = r.pose_applied === false ? `\nWARNING: pose '${pose}' was NOT applied (RExportGoZMeshOption took no pose); files use the character's current pose.` : "";
         return { content: [{ type: "text" as const, text: `GoZ files written to ${r.folder} (${r.files?.length ?? 0} files)${warn}` }] };
       } catch (e) {
         return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
@@ -102,9 +110,14 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       try {
         const out = await runJob(bridge, "import_fbx", { file_path, kind });
         if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
-        const r = out.result as { success: boolean; error?: string };
+        const r = out.result as { success: boolean; error?: string; signature?: string; notes?: string[] };
         if (out.failed || !r.success) return errorResult(`Import failed: ${r.error ?? "unknown error"}`);
-        return { content: [{ type: "text" as const, text: `Imported ${path.basename(file_path)} as ${kind}` }] };
+        const done = `Imported ${path.basename(file_path)} as ${kind}`;
+        const warnings = warningNotes(r);
+        // Not an error result: the import ran, and repeating it would add the content a second time.
+        return { content: [{ type: "text" as const, text: warnings.length
+          ? `${done} (${r.signature}), with warnings:\n${warnings.join("\n")}\nThe import ran: check the scene before importing again.`
+          : done }] };
       } catch (e) {
         return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
       }

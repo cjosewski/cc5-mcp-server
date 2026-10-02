@@ -167,7 +167,7 @@ def _raise_on_error(status: Any, what: str) -> None:
 
 
 def apply_pose(file_path: str) -> dict[str, Any]:
-    """Apply a pose/motion file to the avatar (LIVE-VERIFY: LoadFile on selection, then LoadMotion)."""
+    """Apply a pose/motion file to the avatar: LoadFile aimed at the avatar, then LoadMotion as the fallback."""
     error = _check_existing(file_path, POSE_EXTENSIONS)
     if error:
         return {"success": False, "error": error}
@@ -178,7 +178,9 @@ def apply_pose(file_path: str) -> dict[str, Any]:
     try:
         RLPy.RScene.SelectObject(avatar)
         try:
-            _raise_on_error(RLPy.RFileIO.LoadFile(file_path), "LoadFile")
+            # Live signature: LoadFile(path, bRecordStep=True, spObject=0, kTime=-1, eOption=_None).
+            # Pass the avatar so the pose lands on it whatever else is selected.
+            _raise_on_error(RLPy.RFileIO.LoadFile(file_path, True, avatar), "LoadFile")
             method = "LoadFile"
         except Exception:
             _raise_on_error(RLPy.RFileIO.LoadMotion(file_path, RLPy.RTime(0), avatar), "LoadMotion")
@@ -213,16 +215,37 @@ def save_character(output_path: str) -> dict[str, Any]:
     return {"success": True, "path": output_path}
 
 
+# How SWIG says no overload matches the arguments ("Wrong number or type of arguments"); older SWIG
+# builds raise NotImplementedError. Only these mean the call never ran.
+SIGNATURE_MISMATCH = (TypeError, NotImplementedError)
+
+
 def try_signatures(attempts: list[tuple[str, Any]]) -> tuple[str | None, str | None]:
-    """Run each (label, fn) until one doesn't raise. For RLPy calls documented only as *args."""
+    """Run each (label, fn) in order, for RLPy calls documented only as *args. Returns (label, None)
+    for the form that worked, or (None, errors).
+
+    Moves on to the next form only when SWIG rejected the arguments. Any other exception, including
+    the RuntimeError _raise_on_error makes from an error RStatus, means CC5 ran the call and it failed:
+    retrying a weaker form would repeat the operation or quietly drop its options, so it stops there.
+    """
     errors: list[str] = []
     for label, fn in attempts:
         try:
             fn()
             return label, None
+        except SIGNATURE_MISMATCH as e:
+            errors.append(f"{label}: {e}")
         except Exception as e:
             errors.append(f"{label}: {e}")
+            break
     return None, "; ".join(errors)
+
+
+def _fallback_notes(label: str | None, attempts: list[tuple[str, Any]], consequence: str) -> list[str]:
+    """A WARNING note when CC5 rejected the preferred call form and a weaker one was used."""
+    if label is None or label == attempts[0][0]:
+        return []
+    return [f"WARNING: CC5 rejected {attempts[0][0]} and {label} was used instead, so {consequence}"]
 
 
 def export_obj(output_path: str, y_up: bool = True) -> dict[str, Any]:
@@ -244,24 +267,43 @@ def export_obj(output_path: str, y_up: bool = True) -> dict[str, Any]:
         option |= getattr(RLPy, name, 0)
     if y_up:
         option |= RLPy.EExport3DFileOption_AxisYUp
-    label, err = try_signatures([
+    attempts: list[tuple[str, Any]] = [
         ("(avatar, path, option)",
          lambda: _raise_on_error(RLPy.RFileIO.ExportObjFile(avatar, output_path, option), "ExportObjFile")),
         ("(avatar, path)",
          lambda: _raise_on_error(RLPy.RFileIO.ExportObjFile(avatar, output_path), "ExportObjFile")),
-    ])
+    ]
+    label, err = try_signatures(attempts)
     if not label:
         return {"success": False, "error": f"ExportObjFile failed: {err}"}
+    notes = _fallback_notes(label, attempts, "the OBJ options (bind pose, Y-up axis, body and clothing parts) "
+                                             "were NOT applied")
     if not os.path.isfile(output_path):
-        return {"success": False, "error": f"CC5 did not write {output_path}", "signature": label}
-    return {"success": True, "path": output_path, "signature": label}
+        return {"success": False, "error": f"CC5 did not write {output_path}", "signature": label, "notes": notes}
+    return {"success": True, "path": output_path, "signature": label, "notes": notes}
 
 
 GOZ_POSES = {"current": "EExportGoZPose_Current", "tpose": "EExportGoZPose_TPose", "apose": "EExportGoZPose_APose"}
 
 
+def _set_goz_pose(option: Any, pose_enum: Any) -> bool:
+    """Put the pose on an RExportGoZMeshOption; True when it took. Live CC5 exposes it as the attribute
+    ePose (dir(): bDoScale, bIsCreate, ePose, strPoseFilePath); a setter method is only the fallback."""
+    if pose_enum is None:
+        return False
+    if hasattr(option, "ePose"):
+        option.ePose = pose_enum
+        return option.ePose == pose_enum
+    setter = next((s for s in ("SetPose", "SetExportPose", "SetGoZPose") if hasattr(option, s)), None)
+    if setter is None:
+        return False
+    getattr(option, setter)(pose_enum)
+    return True
+
+
 def export_goz(output_dir: str, pose: str = "tpose") -> dict[str, Any]:
-    """Write GoZ files for ZBrush (LIVE-VERIFY: RExportGoZMeshOption setter name)."""
+    """Write GoZ files for ZBrush. Live signature:
+    ExportGoZFile(ObjectVector kObjects, std::wstring strFolderPath, RExportGoZMeshOption kSetting) -> RStatus."""
     error = check_path(output_dir)
     if error:
         return {"success": False, "error": error}
@@ -273,21 +315,26 @@ def export_goz(output_dir: str, pose: str = "tpose") -> dict[str, Any]:
     os.makedirs(output_dir, exist_ok=True)
     started = time.time() - 2  # mtime slack; report only files this export wrote
     option = RLPy.RExportGoZMeshOption()
-    pose_enum = getattr(RLPy, GOZ_POSES[pose])
-    pose_setter = next((s for s in ("SetPose", "SetExportPose", "SetGoZPose") if hasattr(option, s)), None)
-    if pose_setter:
-        getattr(option, pose_setter)(pose_enum)
-    pose_applied = pose_setter is not None or pose == "current"
-    label, err = try_signatures([
+    pose_applied = _set_goz_pose(option, getattr(RLPy, GOZ_POSES[pose], None)) or pose == "current"
+    attempts: list[tuple[str, Any]] = []
+    if hasattr(RLPy, "ObjectVector"):
+        def export_with_object_vector() -> None:
+            objects = RLPy.ObjectVector()
+            objects.append(avatar)
+            _raise_on_error(RLPy.RFileIO.ExportGoZFile(objects, output_dir, option), "ExportGoZFile")
+        attempts.append(("(ObjectVector[avatar], folder, option)", export_with_object_vector))
+    attempts += [
         ("([avatar], folder, option)",
          lambda: _raise_on_error(RLPy.RFileIO.ExportGoZFile([avatar], output_dir, option), "ExportGoZFile")),
         ("([avatar], folder, [option])",
          lambda: _raise_on_error(RLPy.RFileIO.ExportGoZFile([avatar], output_dir, [option]), "ExportGoZFile")),
-    ])
+    ]
+    label, err = try_signatures(attempts)
     if not label:
         return {"success": False, "error": f"ExportGoZFile failed: {err}"}
     notes = [] if pose_applied else [
-        f"WARNING: pose '{pose}' NOT applied (no pose setter on RExportGoZMeshOption); files use the current pose"]
+        f"WARNING: pose '{pose}' NOT applied (RExportGoZMeshOption has no ePose attribute or pose setter); "
+        "files use the current pose"]
     return {"success": True, "folder": output_dir, "files": list_files(output_dir, since=started), "signature": label,
             "pose_applied": pose_applied, "notes": notes}
 
@@ -297,7 +344,7 @@ FBX_KINDS = {"prop": "EImportFbxOption_Prop", "character": "EImportFbxOption_Sta
 
 def import_fbx(file_path: str, kind: str) -> dict[str, Any]:
     """Import an FBX from Blender/Maya/etc. as a prop, a character, or clothing for the current avatar.
-    LIVE-VERIFY: LoadFbxFile is documented as *args; LoadClotheFromFbx's failed-mesh out-param type."""
+    Live signatures: LoadFbxFile(path, EImportFbxOption, ...); LoadClotheFromFbx(avatar, path, WStringVector)."""
     if not isinstance(kind, str) or kind not in FBX_KINDS:
         return {"success": False, "error": f"kind must be one of: {', '.join(FBX_KINDS)}"}
     error = _check_existing(file_path, {".fbx"})
@@ -308,34 +355,51 @@ def import_fbx(file_path: str, kind: str) -> dict[str, Any]:
         avatar = cc5_api.get_first_avatar()
         if not avatar:
             return {"success": False, "error": "No avatar in scene to dress"}
+    notes: list[str] = []
+    failed_meshes: list[str] = []
+    attempts: list[tuple[str, Any]] = []
     RLPy.RGlobal.BeginAction("Import FBX")
     try:
         if kind == "clothing":
-            failed: list[Any] = []
-            label, err = try_signatures([
-                ("LoadClotheFromFbx(avatar, path, WStringVector)",
-                 lambda: _raise_on_error(RLPy.RFileIO.LoadClotheFromFbx(avatar, file_path, RLPy.WStringVector()),
-                                         "LoadClotheFromFbx")),
-                ("LoadClotheFromFbx(avatar, path, list)",
-                 lambda: _raise_on_error(RLPy.RFileIO.LoadClotheFromFbx(avatar, file_path, failed),
-                                         "LoadClotheFromFbx")),
-            ])
+            # The third argument is an out-param: CC5 fills it with the meshes it could not import.
+            failed_vector = RLPy.WStringVector() if hasattr(RLPy, "WStringVector") else None
+            failed_list: list[Any] = []
+
+            def load_clothes(failed_out: Any) -> None:
+                _raise_on_error(RLPy.RFileIO.LoadClotheFromFbx(avatar, file_path, failed_out), "LoadClotheFromFbx")
+
+            if failed_vector is not None:
+                attempts.append(("LoadClotheFromFbx(avatar, path, WStringVector)", lambda: load_clothes(failed_vector)))
+            attempts.append(("LoadClotheFromFbx(avatar, path, list)", lambda: load_clothes(failed_list)))
+            label, err = try_signatures(attempts)
             if label:
                 RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Attribute)
+                filled = failed_vector if label.endswith("WStringVector)") else failed_list
+                failed_meshes = [str(name) for name in filled]
+                if failed_meshes:
+                    notes.append(f"WARNING: {len(failed_meshes)} clothing mesh(es) did not import: "
+                                 f"{', '.join(failed_meshes)}")
         else:
-            option = getattr(RLPy, FBX_KINDS[kind])
-            label, err = try_signatures([
-                ("LoadFbxFile(path, option)",
-                 lambda: _raise_on_error(RLPy.RFileIO.LoadFbxFile(file_path, option), "LoadFbxFile")),
-                ("LoadFbxFile(path)",
-                 lambda: _raise_on_error(RLPy.RFileIO.LoadFbxFile(file_path), "LoadFbxFile")),
-            ])
+            option = getattr(RLPy, FBX_KINDS[kind], None)
+            if option is None:
+                notes.append(f"WARNING: RLPy.{FBX_KINDS[kind]} not found, so CC5's default import option was used")
+            else:
+                attempts.append(("LoadFbxFile(path, option)",
+                                 lambda: _raise_on_error(RLPy.RFileIO.LoadFbxFile(file_path, option), "LoadFbxFile")))
+            attempts.append(("LoadFbxFile(path)",
+                             lambda: _raise_on_error(RLPy.RFileIO.LoadFbxFile(file_path), "LoadFbxFile")))
+            label, err = try_signatures(attempts)
+            notes += _fallback_notes(label, attempts,
+                                     f"CC5's default import option was used instead of {FBX_KINDS[kind]}")
     finally:
         RLPy.RGlobal.EndAction()
     if not label:
         return {"success": False, "error": f"FBX import failed: {err}"}
     cc5_api._invalidate_caches()
-    return {"success": True, "signature": label}
+    result: dict[str, Any] = {"success": True, "signature": label, "notes": notes}
+    if kind == "clothing":
+        result["failed_meshes"] = failed_meshes
+    return result
 
 
 def list_meshes() -> dict[str, Any]:
