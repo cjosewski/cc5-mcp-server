@@ -17,7 +17,7 @@ import sys
 import tempfile
 import threading
 import traceback
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlparse
 
@@ -63,11 +63,13 @@ response_events: dict[str, threading.Event] = {}
 _command_counter = 0
 _counter_lock = threading.Lock()
 _processing = False  # Re-entrance guard for process_command_queue
+_cancelled: set[str] = set()
+_running_id: str | None = None
 
 MAX_REQUEST_BYTES = 1 * 1024 * 1024  # 1 MB
 
 # Module-level reference for shutdown
-_httpd: HTTPServer | None = None
+_httpd: ThreadingHTTPServer | None = None
 
 
 def _next_command_id() -> str:
@@ -299,10 +301,27 @@ GET_ROUTES: dict[str, str | None] = {
     "/actor_mixer/status": "get_mixer_status",
 }
 
+# Feature modules whose ACTIONS / POST_ROUTES / REQUIRED_PARAMS are merged into the
+# dispatch tables above by load_extensions().
+EXTENSION_MODULES: list[str] = []
+
+
+def load_extensions(reload: bool = False) -> list[str]:
+    """Import (or reload) feature modules and merge their dispatch tables."""
+    loaded: list[str] = []
+    for name in EXTENSION_MODULES:
+        mod = sys.modules.get(name)
+        mod = importlib.reload(mod) if (reload and mod is not None) else importlib.import_module(name)
+        ACTION_MAP.update(mod.ACTIONS)
+        POST_ROUTES.update(mod.POST_ROUTES)
+        REQUIRED_PARAMS.update(mod.REQUIRED_PARAMS)
+        loaded.append(name)
+    return loaded
+
 
 def process_command_queue() -> None:
     """Drain the queue and execute RLPy calls on the main thread. Called by QTimer."""
-    global _processing
+    global _processing, _running_id
     if _processing:
         return
     _processing = True
@@ -317,6 +336,14 @@ def process_command_queue() -> None:
             action = cmd["action"]
             params = cmd["params"]
 
+            with _store_lock:
+                if cmd_id in _cancelled:
+                    # Its caller already got a 504 "cancelled": never run it late.
+                    _cancelled.discard(cmd_id)
+                    command_queue.task_done()
+                    continue
+                _running_id = cmd_id
+
             try:
                 handler = ACTION_MAP.get(action)
                 result = handler(params) if handler else {"success": False, "error": f"Unknown action: {action}"}
@@ -325,6 +352,7 @@ def process_command_queue() -> None:
                 result = {"success": False, "error": str(e)}
 
             with _store_lock:
+                _running_id = None
                 event = response_events.pop(cmd_id, None)
                 if event:
                     response_store[cmd_id] = result
@@ -368,9 +396,16 @@ def _execute_sync(action: str, params: dict, timeout: float = 30.0) -> tuple[int
 
     if not event.wait(timeout=timeout):
         with _store_lock:
-            response_events.pop(cmd_id, None)
-            response_store.pop(cmd_id, None)
-        return 504, {"error": "Timeout waiting for CC5 to process command"}
+            # A result stored right at the deadline means the command ran: fall through
+            # to the normal result handling below instead of discarding it.
+            if cmd_id not in response_store:
+                response_events.pop(cmd_id, None)
+                if _running_id == cmd_id:
+                    return 504, {"state": "running", "error": (
+                        "CC5 is still working on this command. Check the scene before retrying; "
+                        "the command may still complete.")}
+                _cancelled.add(cmd_id)
+                return 504, {"state": "cancelled", "error": "Timed out before CC5 started the command; it was cancelled and will not run."}
 
     with _store_lock:
         result = response_store.pop(cmd_id, None)
@@ -383,12 +418,13 @@ def _execute_sync(action: str, params: dict, timeout: float = 30.0) -> tuple[int
 
 
 def reload_modules() -> dict[str, Any]:
-    """Hot-reload cc5_api so code changes take effect without server restart."""
+    """Hot-reload cc5_api and the extension modules so code changes take effect without server restart."""
     global cc5_api
     try:
         importlib.reload(cc5_api)
         cc5_api = sys.modules["cc5_api"]
-        return {"success": True, "message": "cc5_api reloaded"}
+        loaded = load_extensions(reload=True)
+        return {"success": True, "message": f"cc5_api and {len(loaded)} extension(s) reloaded"}
     except Exception as e:
         print(f"[CC5 MCP Bridge] Reload failed: {traceback.format_exc()}")
         return {"success": False, "error": str(e)}
@@ -520,13 +556,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": f"Not found: {path}"})
 
 
-class ReusableHTTPServer(HTTPServer):
+class ReusableHTTPServer(ThreadingHTTPServer):
+    # One thread per request, so /health answers while a command runs.
+    # RLPy still runs only on CC5's main thread, via the command queue.
     allow_reuse_address = True
+    daemon_threads = True
 
 
 def start_server(port: int = 5101) -> threading.Thread:
     """Start the HTTP bridge server in a background daemon thread."""
     global _httpd
+    load_extensions()  # before binding, so a failing extension import leaves no open socket
     httpd = ReusableHTTPServer(("127.0.0.1", port), BridgeHandler)
     _httpd = httpd
 

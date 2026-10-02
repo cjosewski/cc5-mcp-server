@@ -327,5 +327,5 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 | CC5_BRIDGE_TOKEN | (空 = トークンファイルを使用) | ブリッジ認証トークン (`X-CC5-Token`)。プラグインと MCP サーバーの両方で同じ値にすること |
 | CC5_DEV_MODE | 0 | 開発モード (1/true/yes で /reload と /exec/python を有効化) |
 | CC5_ALLOW_EXEC | (空) | 1/true/yes で開発モード無効時も /exec/python を有効化 |
-| CC5_REQUEST_TIMEOUT_MS | 30000 | リクエストタイムアウト (ms) |
+| CC5_REQUEST_TIMEOUT_MS | 35000 | リクエストタイムアウト (ms) |
 | CC5_ROOT | (自動検出) | CC5 インストールパス |

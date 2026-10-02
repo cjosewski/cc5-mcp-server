@@ -17,7 +17,7 @@ if _plugin_dir not in sys.path:
     sys.path.insert(0, _plugin_dir)
 
 # Clear module cache to load latest code
-for m in ["server", "cc5_api"]:
+for m in ["server", "cc5_api", "cc5_pipeline", "cc5_skin", "cc5_builder"]:
     if m in sys.modules:
         del sys.modules[m]
 

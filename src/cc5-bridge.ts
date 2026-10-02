@@ -52,10 +52,12 @@ import type {
 import { getBridgeToken, resetTokenCache } from "./auth.js";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:5101";
-const _rawTimeout = parseInt(process.env.CC5_REQUEST_TIMEOUT_MS ?? "30000", 10);
+// Must stay above the bridge's 30 s command timeout (cc5-plugin/server.py `_execute_sync`)
+// so its 504 "cancelled" / "running" answer arrives before this client gives up.
+const _rawTimeout = parseInt(process.env.CC5_REQUEST_TIMEOUT_MS ?? "35000", 10);
 const REQUEST_TIMEOUT_MS = Number.isFinite(_rawTimeout) && _rawTimeout > 0 && _rawTimeout <= 300_000
   ? _rawTimeout
-  : 30_000;
+  : 35_000;
 
 export class CC5Bridge {
   private baseUrl: string;
@@ -94,7 +96,17 @@ export class CC5Bridge {
         options.body = JSON.stringify(body);
       }
 
-      const response = await fetch(`${this.baseUrl}${path}`, options);
+      let response: Response;
+      try {
+        response = await fetch(`${this.baseUrl}${path}`, options);
+      } catch (err) {
+        if ((err as { name?: string } | null)?.name === "AbortError") {
+          throw new Error(
+            `No reply from CC5 within ${REQUEST_TIMEOUT_MS / 1000}s. CC5 may still be running this command; ` +
+            "check the scene (list_avatars / capture_viewport) before retrying.");
+        }
+        throw err;
+      }
 
       if (response.status === 401) {
         resetTokenCache();

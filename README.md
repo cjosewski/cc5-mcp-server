@@ -218,7 +218,7 @@ Passing a bare filename (no directory component) exports into `D:\CC5Export` by 
 | `CC5_DEV_MODE` | `1` | Enable hot-reload (`/reload` endpoint) and dev surfaces (0 = production, 1 = development) |
 | `CC5_ALLOW_EXEC` | *(unset)* | Enable `/exec/python` and `/exec/rlpy` endpoints (only active when set, regardless of DEV_MODE) |
 | `CC5_RELOAD_SECRET` | *(empty)* | Auth token for the `/reload` endpoint. If set, requests must include `X-Reload-Token` header |
-| `CC5_REQUEST_TIMEOUT_MS` | `30000` | HTTP request timeout in milliseconds (MCP server side) |
+| `CC5_REQUEST_TIMEOUT_MS` | `35000` | HTTP request timeout in milliseconds (MCP server side); keep it above the bridge's 30 s command timeout |
 | `CC5_ROOT` | `C:\Program Files\Reallusion\Character Creator 5` | CC5 installation path (used for default avatar loading) |
 | `CC5_EXPORT_DIR` | `D:\CC5Export` | Default output folder for `export_fbx` when given a bare filename (no directory). Read by the bridge plugin. |
 

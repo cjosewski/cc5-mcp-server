@@ -723,6 +723,19 @@ describe("CC5Bridge internal request handling", () => {
     mockFetch({});
     await expect(bridge.getAvatars()).rejects.toThrow("CC5 bridge returned empty result");
   });
+
+  it("explains a client-side timeout instead of 'This operation was aborted'", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("This operation was aborted", "AbortError")));
+    await expect(bridge.getAvatars()).rejects.toThrow(/CC5 may still be running this command/);
+  });
+
+  it("passes the bridge's 504 cancelled message through to the caller", async () => {
+    mockFetchHttpError(504, JSON.stringify({
+      state: "cancelled",
+      error: "Timed out before CC5 started the command; it was cancelled and will not run.",
+    }));
+    await expect(bridge.getAvatars()).rejects.toThrow(/cancelled and will not run/);
+  });
 });
 
 // ── searchMorphs ──────────────────────────────────────────────────────────────
