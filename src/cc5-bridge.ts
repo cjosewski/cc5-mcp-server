@@ -601,4 +601,13 @@ export class CC5Bridge {
   async replaceMeshFromObj(meshName: string, objPath: string): Promise<OperationResult> {
     return this.request<OperationResult>("/pipeline/replace_mesh", "POST", { mesh_name: meshName, obj_path: objPath });
   }
+
+  async loadTexture(meshName: string, materialName: string, channel: string, imagePath: string): Promise<OperationResult> {
+    return this.request("/pipeline/load_texture", "POST",
+      { mesh_name: meshName, material_name: materialName, channel, image_path: imagePath });
+  }
+
+  async loadSubstanceTextures(folder: string): Promise<OperationResult> {
+    return this.request("/pipeline/substance_import", "POST", { folder });
+  }
 }

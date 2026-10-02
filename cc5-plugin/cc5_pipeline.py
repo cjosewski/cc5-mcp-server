@@ -370,6 +370,106 @@ def replace_mesh_from_obj(mesh_name: str, obj_path: str) -> dict[str, Any]:
     return {"success": True, "mesh": mesh_name}
 
 
+# Keep in sync with TEXTURE_CHANNELS and IMAGE_EXTENSIONS in src/tools/pipeline.ts.
+TEXTURE_CHANNELS = {
+    "diffuse": "EMaterialTextureChannel_Diffuse",
+    "normal": "EMaterialTextureChannel_Normal",
+    "roughness": "EMaterialTextureChannel_Roughness",
+    "metallic": "EMaterialTextureChannel_Metallic",
+    "ao": "EMaterialTextureChannel_AmbientOcclusion",
+    "opacity": "EMaterialTextureChannel_Opacity",
+    "displacement": "EMaterialTextureChannel_Displacement",
+    "specular": "EMaterialTextureChannel_Specular",
+    "glow": "EMaterialTextureChannel_Glow",
+    "bump": "EMaterialTextureChannel_Bump",
+    "diffuse_blend": "EMaterialTextureChannel_DiffuseBlend",
+}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff"}
+
+
+def resolve_material(avatar, mesh_name: str, material_name: str) -> tuple[Any, str | None]:
+    """Return (material component, error). Errors list the valid names."""
+    meshes = list(avatar.GetMeshNames(True) or [])
+    if mesh_name not in meshes:
+        return None, f"Unknown mesh '{mesh_name}'. Meshes: {', '.join(meshes)}"
+    mat_comp = avatar.GetMaterialComponent()
+    mats = list(mat_comp.GetMaterialNames(mesh_name) or [])
+    if material_name not in mats:
+        return None, f"Unknown material '{material_name}' on {mesh_name}. Materials: {', '.join(mats)}"
+    return mat_comp, None
+
+
+def load_texture(mesh_name: str, material_name: str, channel: str, image_path: str) -> dict[str, Any]:
+    """Load an image into one texture channel of one material."""
+    if not isinstance(channel, str) or channel not in TEXTURE_CHANNELS:
+        return {"success": False, "error": f"channel must be one of: {', '.join(TEXTURE_CHANNELS)}"}
+    error = _check_existing(image_path, IMAGE_EXTENSIONS)
+    if error:
+        return {"success": False, "error": error}
+    avatar = cc5_api.get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    mat_comp, error = resolve_material(avatar, mesh_name, material_name)
+    if error:
+        return {"success": False, "error": error}
+    RLPy.RGlobal.BeginAction("Load Texture")
+    try:
+        _raise_on_error(mat_comp.LoadImageToTexture(
+            mesh_name, material_name, getattr(RLPy, TEXTURE_CHANNELS[channel]), image_path), "LoadImageToTexture")
+        RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        RLPy.RGlobal.EndAction()
+    return {"success": True}
+
+
+def load_substance_textures(folder: str) -> dict[str, Any]:
+    """Apply a Substance Painter texture export folder to the avatar (CC's own Substance import)."""
+    error = check_path(folder)
+    if error:
+        return {"success": False, "error": error}
+    if not os.path.isdir(folder):
+        return {"success": False, "error": f"Folder not found: {folder}"}
+    avatar = cc5_api.get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    RLPy.RGlobal.BeginAction("Load Substance Textures")
+    try:
+        label, err = try_signatures([
+            ("(avatar, folder)",
+             lambda: _raise_on_error(RLPy.RFileIO.LoadSubstancePainterTextures(avatar, folder),
+                                     "LoadSubstancePainterTextures")),
+        ])
+        if label:
+            RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
+    finally:
+        RLPy.RGlobal.EndAction()
+    if not label:
+        return {"success": False, "error": f"Substance import failed: {err}"}
+    return {"success": True, "signature": label}
+
+
+def export_textures(output_dir: str, character_name: str) -> dict[str, Any]:
+    """Export FBX + PBR textures as image files: the starting set for Substance Painter."""
+    error = check_path(output_dir)
+    if error:
+        return {"success": False, "error": error}
+    if not SAFE_NAME.match(character_name or ""):
+        return {"success": False, "error": "Character name must be 1-64 letters, digits, '_' or '-'"}
+    if not cc5_api.get_first_avatar():
+        return {"success": False, "error": "No avatar in scene"}
+    folder = os.path.join(output_dir, character_name)
+    os.makedirs(folder, exist_ok=True)
+    fbx = os.path.join(folder, character_name + ".fbx")
+    started = time.time() - 2  # mtime slack; report only files this export wrote
+    result = cc5_api.export_fbx(fbx, 0, target_tool="", embed_textures=False, export_motion=False,
+                                convert_image_format=True)
+    if not result.get("success"):
+        return result
+    return {"success": True, "folder": folder, "files": list_files(folder, since=started)}
+
+
 def _opt_int(p: dict, key: str) -> int | None:
     return int(p[key]) if p.get(key) is not None else None
 
@@ -386,6 +486,9 @@ ACTIONS: dict[str, Any] = {
     "import_fbx": lambda p: import_fbx(p["file_path"], p["kind"]),
     "list_meshes": lambda p: list_meshes(),
     "replace_mesh_from_obj": lambda p: replace_mesh_from_obj(p["mesh_name"], p["obj_path"]),
+    "load_texture": lambda p: load_texture(p["mesh_name"], p["material_name"], p["channel"], p["image_path"]),
+    "load_substance_textures": lambda p: load_substance_textures(p["folder"]),
+    "export_textures": lambda p: export_textures(p["output_dir"], p["character_name"]),
 }
 POST_ROUTES: dict[str, str] = {
     "/pipeline/mesh_stats": "get_mesh_stats",
@@ -394,6 +497,8 @@ POST_ROUTES: dict[str, str] = {
     "/pipeline/export_obj": "export_obj",
     "/pipeline/meshes": "list_meshes",
     "/pipeline/replace_mesh": "replace_mesh_from_obj",
+    "/pipeline/load_texture": "load_texture",
+    "/pipeline/substance_import": "load_substance_textures",
 }
 REQUIRED_PARAMS: dict[str, list[str]] = {
     "export_for_unity": ["unity_dir", "character_name"],
@@ -403,4 +508,7 @@ REQUIRED_PARAMS: dict[str, list[str]] = {
     "export_goz": ["output_dir"],  # job-only: no POST route
     "import_fbx": ["file_path", "kind"],  # job-only: no POST route
     "replace_mesh_from_obj": ["mesh_name", "obj_path"],
+    "load_texture": ["mesh_name", "material_name", "channel", "image_path"],
+    "load_substance_textures": ["folder"],
+    "export_textures": ["output_dir", "character_name"],  # job-only: no POST route
 }

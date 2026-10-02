@@ -116,3 +116,41 @@ describe("replace_mesh_from_obj", () => {
     expect(bridge.replaceMeshFromObj).toHaveBeenCalledWith("CC_Base_Body", "C:/s/body.obj");
   });
 });
+
+describe("load_texture", () => {
+  it("rejects non-image files", async () => {
+    const r = await server.getRegisteredTool("load_texture")({ mesh_name: "m", material_name: "x", channel: "diffuse", image_path: "C:/a/b.exe" });
+    expect(r.isError).toBe(true);
+  });
+
+  it("loads into the channel", async () => {
+    bridge.loadTexture.mockResolvedValue({ success: true });
+    await server.getRegisteredTool("load_texture")({ mesh_name: "CC_Base_Body", material_name: "Std_Skin_Body", channel: "normal", image_path: "C:/t/n.png" });
+    expect(bridge.loadTexture).toHaveBeenCalledWith("CC_Base_Body", "Std_Skin_Body", "normal", "C:/t/n.png");
+  });
+});
+
+describe("load_substance_textures", () => {
+  it("calls the bridge", async () => {
+    bridge.loadSubstanceTextures.mockResolvedValue({ success: true });
+    const r = await server.getRegisteredTool("load_substance_textures")({ folder: "C:/SP/export" });
+    expect(r.isError).toBeUndefined();
+  });
+});
+
+describe("export_textures", () => {
+  it("runs as a job and reports the folder", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_5" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_5", action: "export_textures", status: "done",
+      result: { success: true, folder: "C:/SP/P1", files: [{ path: "C:/SP/P1/P1.fbx", bytes: 10 }] } });
+    const r = await server.getRegisteredTool("export_textures")({ output_dir: "C:/SP", character_name: "P1" });
+    expect(bridge.startJob).toHaveBeenCalledWith("export_textures", { output_dir: "C:/SP", character_name: "P1" });
+    expect(r.content[0].text).toContain("C:/SP/P1");
+  });
+
+  it("rejects a network (UNC) folder without starting a job", async () => {
+    const r = await server.getRegisteredTool("export_textures")({ output_dir: "//fileserver/share/SP", character_name: "P1" });
+    expect(r.isError).toBe(true);
+    expect(bridge.startJob).not.toHaveBeenCalled();
+  });
+});

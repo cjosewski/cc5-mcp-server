@@ -94,6 +94,8 @@ export function createMockBridge(): MockBridge {
     exportObj: vi.fn(),
     listMeshes: vi.fn(),
     replaceMeshFromObj: vi.fn(),
+    loadTexture: vi.fn(),
+    loadSubstanceTextures: vi.fn(),
   };
 }
 

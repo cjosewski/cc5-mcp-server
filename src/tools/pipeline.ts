@@ -22,6 +22,11 @@ export function checkFile(filePath: string, allowed: string[]): string | null {
 // Keep in sync with POSE_EXTENSIONS in cc5-plugin/cc5_pipeline.py.
 export const POSE_EXTENSIONS = [".rlmotion", ".imotion", ".rlpose", ".ipose", ".imotionplus", ".ccpose", ".ccmotion"];
 
+// Keep in sync with TEXTURE_CHANNELS and IMAGE_EXTENSIONS in cc5-plugin/cc5_pipeline.py.
+export const TEXTURE_CHANNELS = ["diffuse", "normal", "roughness", "metallic", "ao", "opacity",
+  "displacement", "specular", "glow", "bump", "diffuse_blend"] as const;
+export const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff"];
+
 export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "apply_pose",
@@ -126,6 +131,55 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       if (err) return errorResult(err);
       return bridgeCall(() => bridge.replaceMeshFromObj(mesh_name, obj_path),
         (r) => r.success ? `Replaced ${mesh_name} with ${path.basename(obj_path)}` : `Failed: ${r.error}`);
+    }
+  );
+
+  server.tool(
+    "load_texture",
+    "Load an image into one texture channel of one material (e.g. a new iris, a normal map from Substance or ZBrush). Use get_material_info for mesh/material names.",
+    {
+      mesh_name: z.string().min(1).max(256),
+      material_name: z.string().min(1).max(256),
+      channel: z.enum(TEXTURE_CHANNELS),
+      image_path: z.string().describe("Absolute path to the image"),
+    },
+    async ({ mesh_name, material_name, channel, image_path }) => {
+      const err = checkFile(image_path, IMAGE_EXTENSIONS);
+      if (err) return errorResult(err);
+      return bridgeCall(() => bridge.loadTexture(mesh_name, material_name, channel, image_path),
+        (r) => r.success ? `Loaded ${path.basename(image_path)} into ${material_name} (${channel})` : `Failed: ${r.error}`);
+    }
+  );
+
+  server.tool(
+    "load_substance_textures",
+    "Apply a Substance Painter texture export folder to the current character (CC5's built-in Substance import).",
+    { folder: z.string().describe("Absolute path of the Substance Painter export folder") },
+    async ({ folder }) => {
+      if (!isLocalAbsolute(folder)) return errorResult("folder must be a local absolute path without '..' (no network/UNC paths)");
+      return bridgeCall(() => bridge.loadSubstanceTextures(folder),
+        (r) => r.success ? `Applied Substance textures from ${folder}` : `Failed: ${r.error}`);
+    }
+  );
+
+  server.tool(
+    "export_textures",
+    "Export the character as FBX plus PBR texture images into <output_dir>/<character_name>/ — the starting point for texturing in Substance Painter.",
+    {
+      output_dir: z.string().describe("Absolute folder"),
+      character_name: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+    },
+    async ({ output_dir, character_name }) => {
+      if (!isLocalAbsolute(output_dir)) return errorResult("output_dir must be a local absolute path without '..' (no network/UNC paths)");
+      try {
+        const out = await runJob(bridge, "export_textures", { output_dir, character_name });
+        if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+        const r = out.result as { success: boolean; error?: string; folder?: string; files?: unknown[] };
+        if (out.failed || !r.success) return errorResult(`Texture export failed: ${r.error ?? "unknown error"}`);
+        return { content: [{ type: "text" as const, text: `Exported mesh and ${r.files?.length ?? 0} files to ${r.folder}` }] };
+      } catch (e) {
+        return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   );
 }
