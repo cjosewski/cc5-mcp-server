@@ -35,6 +35,9 @@ def headshot_from_photo(photo_path: str) -> dict[str, Any]:
             RLPy.RHeadshot.CreateHeadFromPhoto(photo_path, getattr(RLPy, mode), RLPy.RHeadshotOption()),
             "CreateHeadFromPhoto",
         )
+        avatar = cc5_api.get_first_avatar()
+        if avatar:
+            RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Attribute)
     except Exception as e:
         return {"success": False, "error": f"Headshot failed ({e}). Check the Headshot 3 plugin is installed and licensed."}
     finally:

@@ -44,6 +44,14 @@ class BuilderTest(unittest.TestCase):
         self.assertEqual(r["mode"], "EHSMode_Pro")
         self.assertEqual(self.rl.RHeadshot.CreateHeadFromPhoto.call_args[0][1], 0)
 
+    def test_headshot_tells_cc5_the_avatar_changed(self):
+        avatar = mock.MagicMock()
+        with mock.patch.object(self.b, "_headshot_modes", return_value=["EHSMode_Pro"]), \
+                mock.patch.object(self.b.cc5_api, "get_first_avatar", return_value=avatar):
+            r = self.b.headshot_from_photo(self._file("face.jpg"))
+        self.assertTrue(r["success"])
+        self.rl.RGlobal.ObjectModified.assert_called_once_with(avatar, self.rl.EObjectModifiedType_Attribute)
+
     def test_facial_profile_loads(self):
         avatar = mock.MagicMock()
         with mock.patch.object(self.b.cc5_api, "get_first_avatar", return_value=avatar):

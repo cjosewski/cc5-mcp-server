@@ -10,7 +10,7 @@ from typing import Any
 import RLPy
 
 import cc5_api
-from cc5_pipeline import IMAGE_EXTENSIONS, _check_existing
+from cc5_pipeline import IMAGE_EXTENSIONS, _check_existing, _raise_on_error
 
 REGION_KEYS = {"head": "head", "body": "body", "arms": "arm", "legs": "leg"}
 SKIN_CONDITIONS: dict[str, tuple[float, float, float]] = {
@@ -70,14 +70,17 @@ def apply_skin_overlay(image_path: str, region: str = "all", strength: float = 1
     RLPy.RGlobal.BeginAction("Apply Skin Overlay")
     try:
         for mesh, mat in targets:
-            mat_comp.LoadImageToTexture(mesh, mat, channel, image_path)
-            # LIVE-VERIFY weight scale: CC's UI shows 0-100; if the key needs 0-100, drop the division.
-            mat_comp.AddTextureWeightKey(_now_key(), mesh, mat, channel, float(strength) / 100.0)
+            _raise_on_error(mat_comp.LoadImageToTexture(mesh, mat, channel, image_path),
+                            f"LoadImageToTexture on {mat}")
+            # Live-confirmed: the weight is 0-1 (GetTextureWeights returns 1.0 at full strength).
+            _raise_on_error(mat_comp.AddTextureWeightKey(_now_key(), mesh, mat, channel, float(strength) / 100.0),
+                            f"AddTextureWeightKey on {mat}")
             applied.append(mat)
-        RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
     except Exception as e:
         return {"success": False, "error": str(e), "applied_to": applied}
     finally:
+        # Also after a failure part-way: the materials changed so far must still be redrawn.
+        RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
         RLPy.RGlobal.EndAction()
     return {"success": True, "applied_to": applied}
 
@@ -88,14 +91,22 @@ def remove_skin_overlay(region: str = "all") -> dict[str, Any]:
         return {"success": False, "error": error}
     mat_comp = avatar.GetMaterialComponent()
     removed: list[str] = []
+    refused: list[str] = []
     RLPy.RGlobal.BeginAction("Remove Skin Overlay")
     try:
+        # Removing is safe to repeat, so a refusal on one material does not stop the rest.
         for mesh, mat in targets:
-            mat_comp.RemoveMaterialTexture(mesh, mat, RLPy.EMaterialTextureChannel_DiffuseBlend)
-            removed.append(mat)
-        RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
+            try:
+                _raise_on_error(mat_comp.RemoveMaterialTexture(mesh, mat, RLPy.EMaterialTextureChannel_DiffuseBlend),
+                                "RemoveMaterialTexture")
+                removed.append(mat)
+            except Exception as e:
+                refused.append(f"{mat} ({e})")
     finally:
+        RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
         RLPy.RGlobal.EndAction()
+    if refused:
+        return {"success": False, "error": f"Overlay not removed from: {'; '.join(refused)}", "removed_from": removed}
     return {"success": True, "removed_from": removed}
 
 
@@ -119,14 +130,18 @@ def set_skin_condition(condition: str, amount: float = 1.0, region: str = "all",
     rgb = tuple(round(b * (1.0 + (t - 1.0) * amount), 4) for b, t in zip(base, (tr, tg, tb)))
     color = RLPy.RRgb(*rgb)
     mat_comp = avatar.GetMaterialComponent()
+    applied: list[str] = []
     RLPy.RGlobal.BeginAction("Set Skin Condition")
     try:
         for mesh, mat in targets:
-            mat_comp.AddDiffuseKey(_now_key(), mesh, mat, color)
-        RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
+            _raise_on_error(mat_comp.AddDiffuseKey(_now_key(), mesh, mat, color), f"AddDiffuseKey on {mat}")
+            applied.append(mat)
+    except Exception as e:
+        return {"success": False, "error": str(e), "condition": condition, "applied_to": applied}
     finally:
+        RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
         RLPy.RGlobal.EndAction()
-    return {"success": True, "condition": condition, "rgb": list(rgb), "applied_to": [m for _, m in targets]}
+    return {"success": True, "condition": condition, "rgb": list(rgb), "applied_to": applied}
 
 
 def set_wrinkle_strength(strength: float) -> dict[str, Any]:
@@ -138,13 +153,20 @@ def set_wrinkle_strength(strength: float) -> dict[str, Any]:
     if not parts:
         return {"success": False, "error": "Wrinkle API (RLPy.EWrinkleFacePart_*) not available in this CC5 build"}
     mat_comp = avatar.GetMaterialComponent()
+    done: list[str] = []
     RLPy.RGlobal.BeginAction("Set Wrinkle Strength")
     try:
         for name in parts:
-            mat_comp.SetWrinkleDetailStrength(getattr(RLPy, name), strength)
-        avatar.UpdateWrinkle()
-        RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
+            _raise_on_error(mat_comp.SetWrinkleDetailStrength(getattr(RLPy, name), strength),
+                            f"SetWrinkleDetailStrength on {name}")
+            done.append(name)
+    except Exception as e:
+        return {"success": False, "error": str(e), "parts": done}
     finally:
+        # Refresh whatever changed, also when a face part failed part-way.
+        if done:
+            avatar.UpdateWrinkle()
+        RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
         RLPy.RGlobal.EndAction()
     return {"success": True, "parts": parts}
 

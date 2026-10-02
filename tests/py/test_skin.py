@@ -77,6 +77,75 @@ class SkinTest(unittest.TestCase):
         r = self.skin.set_wrinkle_strength(0.5)
         self.assertFalse(r["success"])
         self.assertIn("EWrinkleFacePart", r["error"])
+
+    # CC5 reports these failures as an RStatus, not an exception (same check as cc5_pipeline.load_texture).
+
+    def _refuse(self, method, on_call=1):
+        """Make the material component's `method` return an error RStatus from its `on_call`-th call on."""
+        mc = self.avatar.GetMaterialComponent.return_value
+        calls = []
+
+        def status(*args):
+            calls.append(args)
+            st = mock.MagicMock()
+            st.IsError.return_value = len(calls) >= on_call
+            return st
+        getattr(mc, method).side_effect = status
+        return mc
+
+    def test_overlay_fails_when_cc5_refuses_the_image(self):
+        mc = self._refuse("LoadImageToTexture")
+        r = self.skin.apply_skin_overlay(self.png, "all", 50)
+        self.assertFalse(r["success"])
+        self.assertIn("LoadImageToTexture on Std_Skin_Head reported an error status", r["error"])
+        self.assertEqual(r["applied_to"], [])
+        mc.AddTextureWeightKey.assert_not_called()
+        self.rl.RGlobal.EndAction.assert_called_once()
+
+    def test_overlay_fails_part_way_when_cc5_refuses_a_weight_key(self):
+        self._refuse("AddTextureWeightKey", on_call=2)
+        r = self.skin.apply_skin_overlay(self.png, "all", 50)
+        self.assertFalse(r["success"])
+        self.assertIn("AddTextureWeightKey on Std_Skin_Body", r["error"])
+        self.assertEqual(r["applied_to"], ["Std_Skin_Head"])
+        # The first material did change, so the viewport is still told.
+        self.rl.RGlobal.ObjectModified.assert_called_once_with(self.avatar, self.skin.cc5_api._EOMTYPE_MATERIAL)
+        self.rl.RGlobal.EndAction.assert_called_once()
+
+    def test_remove_overlay_reports_materials_cc5_refused(self):
+        mc = self._refuse("RemoveMaterialTexture", on_call=3)
+        r = self.skin.remove_skin_overlay("all")
+        self.assertFalse(r["success"])
+        self.assertEqual(r["removed_from"], ["Std_Skin_Head", "Std_Skin_Body"])
+        self.assertIn("Std_Skin_Arm", r["error"])
+        self.assertIn("Std_Skin_Leg", r["error"])
+        self.assertEqual(mc.RemoveMaterialTexture.call_count, 4)
+        mc.RemoveMaterialTexture.assert_called_with("CC_Base_Body", "Std_Skin_Leg", self.rl.EMaterialTextureChannel_DiffuseBlend)
+        self.rl.RGlobal.EndAction.assert_called_once()
+
+    def test_remove_overlay_removes_from_every_region_material(self):
+        r = self.skin.remove_skin_overlay("all")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["removed_from"], ["Std_Skin_Head", "Std_Skin_Body", "Std_Skin_Arm", "Std_Skin_Leg"])
+
+    def test_condition_fails_when_cc5_refuses_a_diffuse_key(self):
+        self._refuse("AddDiffuseKey", on_call=2)
+        r = self.skin.set_skin_condition("pale", 1.0, "all")
+        self.assertFalse(r["success"])
+        self.assertIn("AddDiffuseKey on Std_Skin_Body", r["error"])
+        self.assertEqual(r["applied_to"], ["Std_Skin_Head"])
+        self.rl.RGlobal.ObjectModified.assert_called_once()
+        self.rl.RGlobal.EndAction.assert_called_once()
+
+    def test_wrinkle_fails_when_cc5_refuses_a_face_part(self):
+        self.rl.EWrinkleFacePart_Blink = "blink"
+        self.rl.EWrinkleFacePart_Neck = "neck"
+        self._refuse("SetWrinkleDetailStrength")
+        r = self.skin.set_wrinkle_strength(0.5)
+        self.assertFalse(r["success"])
+        self.assertIn("SetWrinkleDetailStrength on EWrinkleFacePart_", r["error"])
+        self.assertEqual(r["parts"], [])
+        self.rl.RGlobal.EndAction.assert_called_once()
         self.avatar.UpdateWrinkle.assert_not_called()
 
 
