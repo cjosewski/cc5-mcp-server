@@ -18,9 +18,9 @@ The MCP server communicates with Claude via **stdio** transport and forwards com
 
 ## Features
 
-### MCP Tools (44)
+### MCP Tools (79)
 
-The MCP server provides 44 tools across 14 modules for controlling CC5:
+The MCP server provides 79 tools across 21 modules for controlling CC5. The tables below cover the core tools; the Exonicus additions are listed under [New tools](#new-tools):
 
 #### Scene & Avatar Management
 | Tool | Description |
@@ -97,8 +97,7 @@ The MCP server provides 44 tools across 14 modules for controlling CC5:
 #### Advanced Features
 | Tool | Description |
 |------|-------------|
-| `execute_python` | Execute Python code in CC5 (dev mode only) |
-| `execute_rlpy` | Execute RLPy API calls directly (dev mode only) |
+| `exec_python` | Execute Python/RLPy code in CC5 (needs `CC5_DEV_MODE=1` or `CC5_ALLOW_EXEC=1` on the bridge) |
 | `metahuman_export` | Export to MetaHuman (when available) |
 
 ### MCP Resources
@@ -107,6 +106,39 @@ The MCP server provides 44 tools across 14 modules for controlling CC5:
 |-------------|-------------|
 | `cc5://morphs/catalog` | Complete catalog of all morph sliders grouped by category |
 | `cc5://avatar/current` | Current avatar state with all active morph values |
+
+## New tools
+
+Exonicus additions for building Trauma Simulator patients and moving them between CC5, Unity, Blender, ZBrush and Substance Painter.
+
+| Tool | Description |
+|------|-------------|
+| `job_status` | Check a long-running operation (export, headshot, batch) started earlier; returns its result when finished |
+| `export_for_unity` | Export the current character as FBX with CC5's Unity preset into `<unity_dir>/<character_name>/` inside a Unity project's `Assets` folder |
+| `check_quest_budget` | Check the current character against the Quest 3 per-character budget (faces, materials, and, given an export folder, texture size and estimated GPU memory); see [Budget defaults](#budget-defaults) |
+| `apply_pose` | Apply a pose or motion file (`.rlMotion`, `.rlPose`, `.iMotion`, `.iPose`, `.iMotionPlus`, `.ccPose`, `.ccMotion`) to the current character |
+| `save_character` | Save the current character as a `.ccAvatar` file (the clean base for batch generation) |
+| `export_obj` | Export the current character as OBJ for sculpting in ZBrush or Blender |
+| `export_goz` | Export the current character as GoZ files for ZBrush |
+| `import_fbx` | Import an FBX from Blender, Maya or another tool as a prop, a whole character, or clothing fitted to the current character |
+| `list_meshes` | List the current character's mesh names (for `replace_mesh_from_obj` and `load_texture`) |
+| `replace_mesh_from_obj` | Replace one of the character's meshes with an edited OBJ of the same topology |
+| `load_texture` | Load an image into one texture channel of one material |
+| `load_substance_textures` | Apply a Substance Painter texture export folder to the current character |
+| `export_textures` | Export the character as FBX plus PBR texture images, the starting point for texturing in Substance Painter |
+| `apply_skin_overlay` | Blend an image laid out on the CC skin UVs over the skin (bruising, abrasions, dirt, dried blood) |
+| `remove_skin_overlay` | Remove skin overlays added with `apply_skin_overlay` |
+| `set_skin_condition` | Tint the skin toward a clinical appearance: pale, cyanotic, flushed, jaundiced, or back to normal |
+| `set_wrinkle_strength` | Set facial wrinkle detail strength (0 = smooth, 1 = full) |
+| `search_content` | Search installed CC5 content (clothing, shoes, characters, poses, makeup, skin layers, textures) by file-name keywords |
+| `headshot_from_photo` | Generate the character's head from a front-facing photo (Headshot 3 plugin required) |
+| `load_facial_profile` | Load a facial profile file (expression set) onto the character |
+| `apply_character_recipe` | Build or modify a character in one call from a recipe; every step is reported and a failed step does not stop the rest |
+| `batch_generate_patients` | Generate many patient variants from one saved base character; each is exported to Unity, budget-checked, and recorded in `patients_manifest.json` |
+
+| Prompt | Description |
+|--------|-------------|
+| `create_character` | Step-by-step workflow that builds a patient from a text description, checks the Quest budget and exports it to Unity |
 
 ## Prerequisites
 
@@ -133,7 +165,7 @@ Run in an **Administrator PowerShell**:
 powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 ```
 
-This creates a symlink from CC5's OpenPlugin directory to the `cc5-plugin/` folder.
+This copies every `cc5-plugin/*.py` module plus `config.json` and `config.xml` from the script's own folder into CC5's `OpenPlugin\CC5_MCP_Bridge` directory, replacing any older install. Re-run it after changing the plugin. It also prints where the bridge writes its access token (`%LOCALAPPDATA%\CC5_MCP_Bridge\token`); the MCP server reads that file automatically.
 
 ### 3. Configure Claude Code
 
@@ -215,12 +247,35 @@ Passing a bare filename (no directory component) exports into `D:\CC5Export` by 
 |---------------------|---------|-------------|
 | `CC5_BRIDGE_URL` | `http://127.0.0.1:5101` | Full URL of the CC5 bridge HTTP server |
 | `CC5_BRIDGE_PORT` | `5101` | Port for the bridge server (set in `cc5-plugin/main.py`) |
-| `CC5_DEV_MODE` | `1` | Enable hot-reload (`/reload` endpoint) and dev surfaces (0 = production, 1 = development) |
-| `CC5_ALLOW_EXEC` | *(unset)* | Enable `/exec/python` and `/exec/rlpy` endpoints (only active when set, regardless of DEV_MODE) |
-| `CC5_RELOAD_SECRET` | *(empty)* | Auth token for the `/reload` endpoint. If set, requests must include `X-Reload-Token` header |
+| `CC5_DEV_MODE` | `0` | Plugin development only: `1` enables hot-reload (`/reload`), `exec_python` and full `/api` discovery. Read by the bridge plugin. |
+| `CC5_ALLOW_EXEC` | *(unset)* | `1` enables `exec_python` (`/exec/python`) without dev mode. Read by the bridge plugin. |
+| `CC5_BRIDGE_TOKEN` | *(unset)* | Overrides the token file `$LOCALAPPDATA/CC5_MCP_Bridge/token`. Read by both the plugin and the MCP server, so set it in both environments. |
 | `CC5_REQUEST_TIMEOUT_MS` | `35000` | HTTP request timeout in milliseconds (MCP server side); keep it above the bridge's 30 s command timeout |
 | `CC5_ROOT` | `C:\Program Files\Reallusion\Character Creator 5` | CC5 installation path (used for default avatar loading) |
 | `CC5_EXPORT_DIR` | `D:\CC5Export` | Default output folder for `export_fbx` when given a bare filename (no directory). Read by the bridge plugin. |
+
+## Long batches
+
+`batch_generate_patients` runs one recipe, export and budget check per variant and can take many minutes. So that Claude Code does not time the call out, set `MCP_TOOL_TIMEOUT=1800000` (30 minutes, in milliseconds) in the environment when starting Claude Code:
+
+```bash
+MCP_TOOL_TIMEOUT=1800000 claude
+```
+
+Long single operations (`export_for_unity`, `headshot_from_photo`) run as bridge jobs: if one is still running when the tool stops waiting, it returns a job id to poll with `job_status`.
+
+## Budget defaults
+
+`check_quest_budget` (and the per-variant check in `batch_generate_patients`) compares a character against these Quest 3 per-character limits. The environment variables (set on the MCP server) change the defaults for both tools; `check_quest_budget` also takes per-call overrides (`max_faces`, `max_materials`, `max_texture_px`, `max_texture_gpu_mb`):
+
+| Environment Variable | Default | Limit |
+|---------------------|---------|-------|
+| `CC5_BUDGET_MAX_FACES` | `65000` | Faces (triangles) across the character's meshes |
+| `CC5_BUDGET_MAX_MATERIALS` | `20` | Material slots |
+| `CC5_BUDGET_MAX_TEXTURE_PX` | `2048` | Longest texture edge, in pixels |
+| `CC5_BUDGET_MAX_TEXTURE_GPU_MB` | `66` | Estimated texture GPU memory on Quest, in MiB (ASTC 6x6 plus mips, after clamping to the px limit). File size on disk is reported but not limited. |
+
+The defaults match the heaviest shipping Trauma Sim patient, `Patient_FemaleWhite`, measured 2026-10-02: 64,783 triangles, 20 materials, 2048 px largest texture edge, and an estimated 65.1 MiB of texture GPU memory.
 
 ## Development
 
@@ -241,14 +296,10 @@ npm run test:coverage # With coverage report
 
 ### Hot-Reload the Python Plugin
 
-The bridge supports hot-reloading `cc5_api.py` without restarting CC5:
+The bridge supports hot-reloading `cc5_api.py` and the extension modules without restarting CC5. It is only available in dev mode: start CC5 with `CC5_DEV_MODE=1` in its environment, then:
 
 ```bash
-# Without auth
-curl http://127.0.0.1:5101/reload
-
-# With auth (when CC5_RELOAD_SECRET is set)
-curl -H "X-Reload-Token: <secret>" http://127.0.0.1:5101/reload
+curl -H "X-CC5-Token: $(cat $LOCALAPPDATA/CC5_MCP_Bridge/token)" http://127.0.0.1:5101/reload
 ```
 
 After reloading, the server's dispatch table is automatically patched with the updated functions.
@@ -262,27 +313,43 @@ cc5-mcp-server/
 │   ├── cc5-bridge.ts       # HTTP client for CC5 bridge
 │   ├── types.ts            # Type definitions
 │   ├── util.ts             # Shared utilities (bridgeCall wrapper)
-│   ├── tools/              # MCP tool definitions (14 files, 44 tools total)
+│   ├── auth.ts             # Bridge token lookup (CC5_BRIDGE_TOKEN or the token file)
+│   ├── jobs.ts             # Job polling helpers for long operations
+│   ├── recipe.ts           # Character recipe engine
+│   ├── image-info.ts       # Texture header scan for the Quest budget check
+│   ├── tools/              # MCP tool definitions (21 files, 79 tools total)
 │   │   ├── morph.ts        # Morph search, adjust, reset (5 tools)
-│   │   ├── scene.ts        # Scene/avatar management (6 tools)
+│   │   ├── scene.ts        # Scene/avatar management (7 tools)
 │   │   ├── asset.ts        # Asset loading / FBX export (2 tools)
 │   │   ├── character.ts    # Body presets, character description (2 tools)
 │   │   ├── content.ts      # Clothes, hair, accessories, browse (5 tools)
-│   │   ├── color.ts        # Eye, hair, lip color setters (3 tools)
-│   │   ├── material.ts     # Material info, diffuse color (7 tools)
-│   │   ├── camera.ts       # Camera focal length control (2 tools)
-│   │   ├── light.ts        # Light color and info (4 tools)
+│   │   ├── color.ts        # Eye, hair, lip, skin color setters (4 tools)
+│   │   ├── material.ts     # Material info, diffuse color, shader parameters (9 tools)
+│   │   ├── camera.ts       # Camera info, focal length, framing (3 tools)
+│   │   ├── light.ts        # Lights, ambient, IBL (9 tools)
 │   │   ├── visibility.ts   # Show/hide items (2 tools)
 │   │   ├── edit.ts         # Undo/redo (2 tools)
-│   │   ├── expression.ts   # Expression info (1 tool)
+│   │   ├── expression.ts   # Expression info, set, reset (3 tools)
 │   │   ├── scripting.ts    # Python/RLPy execution (1 tool)
-│   │   └── metahuman.ts    # MetaHuman export (2 tools)
+│   │   ├── metahuman.ts    # MetaHuman export (2 tools)
+│   │   ├── actor-mixer.ts  # ActorMIXER PRO mixer assets (1 tool)
+│   │   ├── jobs.ts         # job_status (1 tool)
+│   │   ├── unity.ts        # Unity export, Quest budget check (2 tools)
+│   │   ├── pipeline.ts     # Poses, saving, Blender/ZBrush/Substance round-trips (10 tools)
+│   │   ├── skin.ts         # Skin overlays, clinical skin condition, wrinkles (4 tools)
+│   │   ├── builder.ts      # Content search, Headshot, facial profile, recipes (4 tools)
+│   │   └── batch.ts        # Batch patient generation (1 tool)
+│   ├── prompts/
+│   │   └── create-character.ts # create_character prompt
 │   └── resources/
 │       └── morphs.ts       # Morph catalog & avatar state resources
 ├── cc5-plugin/             # CC5 Python plugin
 │   ├── main.py             # Plugin entry (initialize_plugin / uninitialize_plugin)
 │   ├── server.py           # HTTP bridge server (http.server)
 │   ├── cc5_api.py          # RLPy API wrapper
+│   ├── cc5_pipeline.py     # Extension: Unity export, mesh stats, poses, DCC round-trips
+│   ├── cc5_skin.py         # Extension: skin overlays, condition tints, wrinkles
+│   ├── cc5_builder.py      # Extension: Headshot, facial profiles
 │   └── config.json         # Plugin configuration
 ├── start_bridge.py         # Manual bridge startup script
 ├── install-plugin.ps1      # Plugin installer (requires admin)
@@ -291,13 +358,15 @@ cc5-mcp-server/
 
 ## API Reference
 
+Every endpoint except `GET /health` needs the `X-CC5-Token` header (the contents of `$LOCALAPPDATA/CC5_MCP_Bridge/token`, or `CC5_BRIDGE_TOKEN`). Requests without it get `401`.
+
 ### GET Endpoints
 
 | Endpoint | Description | Response |
 |----------|-------------|----------|
-| `GET /health` | Health check | `{"result": {"status": "ok", "service": "cc5-mcp-bridge", "version": "..."}}` |
-| `GET /api` | API discovery (all endpoints and required params) | `{"result": {"service": "...", "endpoints": {...}}}` |
-| `GET /reload` | Hot-reload cc5_api module | `{"result": {"success": true}}` |
+| `GET /health` | Health check (no token needed) | `{"result": {"status": "ok", "service": "cc5-mcp-bridge", "version": "..."}}` |
+| `GET /api` | API discovery (all endpoints and required params in dev mode; service and version only otherwise) | `{"result": {"service": "...", "endpoints": {...}}}` |
+| `GET /reload` | Hot-reload `cc5_api` and the extension modules. Dev mode only, token required | `{"result": {"success": true}}` |
 | `GET /avatars` | List all scene avatars | `{"result": [{"name": "...", "id": "...", "type": "..."}]}` |
 | `GET /avatar/info` | Current avatar details + active morphs | `{"result": {"name": "...", "active_morphs": {...}}}` |
 | `GET /morphs/catalog` | Full morph catalog grouped by category | `{"result": {"Category": [{"id": "...", "display_name": "..."}]}}` |
@@ -315,13 +384,16 @@ cc5-mcp-server/
 | `POST /viewport/capture` | `output_path` (optional) | Capture viewport screenshot |
 | `POST /subdivision` | `level` (0-2) | Set HD subdivision level |
 
-All responses follow the envelope format: `{"result": ...}` on success, `{"error": "..."}` on failure.
+POST requests must send `Content-Type: application/json`. All responses follow the envelope format: `{"result": ...}` on success, `{"error": "..."}` on failure.
 
 ## Security
 
 - **Localhost only** -- The bridge server binds exclusively to `127.0.0.1`. The MCP server validates that `CC5_BRIDGE_URL` points to localhost before connecting.
+- **Token file** -- On first start the plugin writes a random access token to `$LOCALAPPDATA/CC5_MCP_Bridge/token` and reuses it afterwards. The MCP server reads the same file and sends the token on every request. `CC5_BRIDGE_TOKEN` overrides the file on both sides.
+- **Token authentication** -- Every endpoint except `GET /health` needs the `X-CC5-Token` header; `/reload` also needs `CC5_DEV_MODE=1`.
+- **Host and Content-Type checks** -- The bridge rejects requests whose `Host` header is not `127.0.0.1:<port>` or `localhost:<port>` (blocks DNS rebinding from a browser), and POST requests that are not `Content-Type: application/json` (blocks cross-site form posts).
+- **Dev mode off by default** -- `CC5_DEV_MODE` defaults to `0`. Set `CC5_DEV_MODE=1` only for plugin development: it enables `exec_python` (arbitrary code inside CC5), `/reload` and full `/api` discovery. `CC5_ALLOW_EXEC=1` also enables `exec_python` without dev mode.
 - **Path validation** -- Both the TypeScript MCP server and the Python plugin validate file paths to prevent path traversal (`..`) attacks. Only allowed file extensions are accepted for asset loading and export.
-- **Reload authentication** -- The `/reload` endpoint supports token-based auth via the `CC5_RELOAD_SECRET` environment variable and `X-Reload-Token` header.
 - **Request size limits** -- The bridge enforces a 1 MB maximum request body size.
 - **Thread safety** -- All RLPy API calls are serialized through a command queue and executed on CC5's main thread via QTimer.
 

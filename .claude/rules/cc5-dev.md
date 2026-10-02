@@ -4,7 +4,7 @@
 
 - The bridge starts automatically when CC5 launches (port 5101, about 7-10 seconds)
 - Check whether the bridge is alive: `curl -s http://127.0.0.1:5101/health`
-- After changing cc5_api.py: `curl http://127.0.0.1:5101/reload` applies it immediately
+- After changing `cc5_api.py` or an extension module, `/reload` (needs `CC5_DEV_MODE=1` and the `X-CC5-Token` header: `curl -H "X-CC5-Token: $(cat $LOCALAPPDATA/CC5_MCP_Bridge/token)" http://127.0.0.1:5101/reload`)
 - After changing server.py: a CC5 restart is required
 
 ## Important Notes When Restarting CC5
@@ -26,14 +26,13 @@ After a .ccProject is loaded, RenderImage sometimes does not work, so the fallba
 
 ## Code Change Workflow
 
-1. Add/modify the Python function in cc5_api.py
-2. Add the new action to `_auto_patch_server()` (ACTION_MAP + routes)
-3. Add ACTION_MAP / POST_ROUTES / REQUIRED_PARAMS to server.py
-4. Reload with `curl http://127.0.0.1:5101/reload`
-5. Live test with `curl`
-6. Add the TypeScript side (types.ts → cc5-bridge.ts → tools/*.ts → index.ts)
-7. Check the build with `npm run build`
-8. Check the tests with `npm test`
+1. Add the Python function to the feature module (`cc5_pipeline.py` / `cc5_skin.py` / `cc5_builder.py`, or a new module appended to `server.EXTENSION_MODULES`).
+2. Register it in that module's module-level `ACTIONS`, `POST_ROUTES`, `REQUIRED_PARAMS` (`server.load_extensions` merges them); do not add new actions to `_auto_patch_server()` or to server.py's tables — `_auto_patch_server` is legacy for `cc5_api` only.
+3. After changing `cc5_api.py` or an extension module, `/reload` (needs `CC5_DEV_MODE=1` and the `X-CC5-Token` header: `curl -H "X-CC5-Token: $(cat $LOCALAPPDATA/CC5_MCP_Bridge/token)" http://127.0.0.1:5101/reload`)
+4. Live test with `curl` — every request except `/health` needs the same `-H "X-CC5-Token: $(cat $LOCALAPPDATA/CC5_MCP_Bridge/token)"` header
+5. Add the TypeScript side (types.ts → cc5-bridge.ts → tools/*.ts → index.ts)
+6. Check the build with `npm run build`
+7. Check the tests with `npm test`
 
 ## RLPy API Reference
 
@@ -61,5 +60,5 @@ After a .ccProject is loaded, RenderImage sometimes does not work, so the fallba
 
 - Unit tests: `npm test` (314 tests)
 - Coverage: `npm run test:coverage` (80%+ threshold)
-- Live test: send requests directly to the bridge with `curl`
-- API discovery: `curl http://127.0.0.1:5101/api`
+- Live test: send requests directly to the bridge with `curl`; every request except `/health` needs the same `-H "X-CC5-Token: $(cat $LOCALAPPDATA/CC5_MCP_Bridge/token)"` header
+- API discovery: `curl -H "X-CC5-Token: $(cat $LOCALAPPDATA/CC5_MCP_Bridge/token)" http://127.0.0.1:5101/api` (the full endpoint list needs `CC5_DEV_MODE=1`)
