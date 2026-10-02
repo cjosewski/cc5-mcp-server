@@ -1,6 +1,6 @@
 /**
  * Character-building tools: content search across categories, Headshot from a
- * photo, and facial profiles.
+ * photo, facial profiles, and whole-character recipes.
  */
 
 import path from "node:path";
@@ -11,6 +11,7 @@ import { bridgeCall, errorResult } from "../util.js";
 import { runJob, formatPending } from "../jobs.js";
 import { checkFile } from "./pipeline.js";
 import { isLocalAbsolute } from "./unity.js";
+import { applyRecipe, formatReport, RecipeSchema } from "../recipe.js";
 
 export const SEARCH_FOLDERS = [
   "cloth", "cloth_upper", "cloth_lower", "shoes", "accessory_head", "character",
@@ -101,6 +102,17 @@ export function registerBuilderTools(server: McpServer, bridge: CC5Bridge) {
       if (!isLocalAbsolute(file_path)) return errorResult("file_path must be a local absolute path without '..' (no network/UNC paths)");
       return bridgeCall(() => bridge.loadFacialProfile(file_path),
         (r) => r.success ? `Loaded facial profile ${path.basename(file_path)}` : `Failed: ${r.error}`);
+    }
+  );
+
+  server.tool(
+    "apply_character_recipe",
+    "Build or modify a character in one call from a recipe: base, headshot photo, body preset, morphs, skin colour and condition, facial profile, content assets (hair, clothes, shoes, accessories, makeup), textures, injury overlays, wrinkles, expression, pose. Every step is reported; a failed step does not stop the rest.",
+    { recipe: RecipeSchema },
+    async ({ recipe }) => {
+      const results = await applyRecipe(bridge, recipe);
+      const text = formatReport(results);
+      return results.some((r) => !r.ok) ? errorResult(text) : { content: [{ type: "text" as const, text }] };
     }
   );
 }

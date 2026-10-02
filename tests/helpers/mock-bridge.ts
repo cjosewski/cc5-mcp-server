@@ -102,6 +102,7 @@ export function createMockBridge(): MockBridge {
     setWrinkleStrength: vi.fn(),
     browseContent: vi.fn(),
     loadFacialProfile: vi.fn(),
+    setSkinColor: vi.fn(),
   };
 }
 

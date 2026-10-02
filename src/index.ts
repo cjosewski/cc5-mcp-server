@@ -34,6 +34,7 @@ import { registerPipelineTools } from "./tools/pipeline.js";
 import { registerSkinTools } from "./tools/skin.js";
 import { registerBuilderTools } from "./tools/builder.js";
 import { registerMorphResources } from "./resources/morphs.js";
+import { registerCreateCharacterPrompt } from "./prompts/create-character.js";
 
 async function main() {
   const server = new McpServer({
@@ -68,6 +69,9 @@ async function main() {
 
   // Register resources
   registerMorphResources(server, bridge);
+
+  // Register prompts
+  registerCreateCharacterPrompt(server);
 
   // Connect via stdio transport
   const transport = new StdioServerTransport();

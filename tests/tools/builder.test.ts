@@ -67,3 +67,12 @@ describe("headshot_from_photo", () => {
     expect(r.isError).toBe(true);
   });
 });
+
+describe("apply_character_recipe", () => {
+  it("flags partial failure as an error", async () => {
+    bridge.loadAsset.mockResolvedValue({ success: false, error: "File not found" });
+    const r = await server.getRegisteredTool("apply_character_recipe")({ recipe: { assets: ["C:/x/a.iClothes"] } });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("FAIL asset a.iClothes");
+  });
+});
