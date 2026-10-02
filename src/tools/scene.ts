@@ -9,7 +9,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall } from "../util.js";
+import { bridgeCall, errorResult } from "../util.js";
 
 function validateCapturePath(filePath: string): string | null {
   if (filePath.includes("..")) {
@@ -58,23 +58,14 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
     "Check if CC5 is running and the bridge plugin is active.",
     {},
     async () => {
+      const down = "CC5 bridge is NOT responding. Make sure Character Creator 5 is running with the MCP Bridge plugin loaded.";
       try {
         const connected = await bridge.healthCheck();
-        return {
-          content: [{
-            type: "text" as const,
-            text: connected
-              ? "CC5 bridge is connected and ready."
-              : "CC5 bridge is NOT responding. Make sure Character Creator 5 is running with the MCP Bridge plugin loaded.",
-          }],
-        };
+        return connected
+          ? { content: [{ type: "text" as const, text: "CC5 bridge is connected and ready." }] }
+          : errorResult(down);
       } catch {
-        return {
-          content: [{
-            type: "text" as const,
-            text: "CC5 bridge is NOT responding. Make sure Character Creator 5 is running with the MCP Bridge plugin loaded.",
-          }],
-        };
+        return errorResult(down);
       }
     }
   );
@@ -117,7 +108,7 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
       if (output_path) {
         const pathError = validateCapturePath(output_path);
         if (pathError) {
-          return { content: [{ type: "text" as const, text: pathError }] };
+          return errorResult(pathError);
         }
       }
       try {
@@ -127,7 +118,7 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
 
         // Return a clear failure message if the bridge reported an error
         if (!result.success) {
-          return { content: [{ type: "text" as const, text: `Failed: ${result.error}` }] };
+          return errorResult(`Failed: ${result.error}`);
         }
 
         // Fallback: if RenderImage succeeded but returned no image data, use Windows screenshot
@@ -153,17 +144,18 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
           }
         }
 
-        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
-        if (base64Data) {
-          content.push({ type: "image" as const, data: base64Data, mimeType: "image/png" });
-          content.push({ type: "text" as const, text: `Viewport captured: ${imgPath ?? "temp file"}` });
-        } else {
-          content.push({ type: "text" as const, text: "Failed to capture viewport via both RenderImage and screen capture." });
+        if (!base64Data) {
+          return errorResult("Failed to capture viewport via both RenderImage and screen capture.");
         }
-        return { content };
+        return {
+          content: [
+            { type: "image" as const, data: base64Data, mimeType: "image/png" },
+            { type: "text" as const, text: `Viewport captured: ${imgPath ?? "temp file"}` },
+          ],
+        };
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: "text" as const, text: `CC5 bridge error: ${message}` }] };
+        return errorResult(`CC5 bridge error: ${message}`);
       }
     }
   );

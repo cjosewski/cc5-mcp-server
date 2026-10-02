@@ -6,7 +6,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall } from "../util.js";
+import { bridgeCall, errorResult } from "../util.js";
 
 const ALLOWED_ASSET_EXTENSIONS = new Set([
   ".iavatar", ".ccavatar", ".ccproject", ".ccm",
@@ -50,7 +50,7 @@ export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
     async ({ file_path }) => {
       const pathError = validateAssetPath(file_path);
       if (pathError) {
-        return { content: [{ type: "text" as const, text: pathError }] };
+        return errorResult(pathError);
       }
       return bridgeCall(
         () => bridge.loadAsset(file_path),
@@ -97,7 +97,7 @@ export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
       const { output_path, options, ...extra } = args;
       const pathError = validateExportPath(output_path);
       if (pathError) {
-        return { content: [{ type: "text" as const, text: pathError }] };
+        return errorResult(pathError);
       }
       return bridgeCall(
         () => bridge.exportFbx(output_path, options ?? 0, extra as import("../types.js").ExportFbxOptions),

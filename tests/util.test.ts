@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { bridgeCall } from "../src/util.js";
+import { bridgeCall, errorResult } from "../src/util.js";
 
 describe("bridgeCall", () => {
   it("returns formatted success text when the fn resolves", async () => {
@@ -72,5 +72,29 @@ describe("bridgeCall", () => {
       (v) => v
     );
     expect(result.content[0].type).toBe("text");
+  });
+});
+
+describe("bridgeCall isError", () => {
+  it("flags thrown errors", async () => {
+    const r = await bridgeCall(() => Promise.reject(new Error("x")), () => "no");
+    expect(r.isError).toBe(true);
+  });
+
+  it("flags success:false results", async () => {
+    const r = await bridgeCall(() => Promise.resolve({ success: false, error: "bad" }), (v) => `Failed: ${v.error}`);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("Failed: bad");
+  });
+
+  it("does not flag successes", async () => {
+    const r = await bridgeCall(() => Promise.resolve({ success: true }), () => "ok");
+    expect(r.isError).toBeUndefined();
+  });
+});
+
+describe("errorResult", () => {
+  it("wraps text as an error", () => {
+    expect(errorResult("nope")).toEqual({ content: [{ type: "text", text: "nope" }], isError: true });
   });
 });

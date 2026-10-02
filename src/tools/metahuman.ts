@@ -10,7 +10,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall } from "../util.js";
+import { bridgeCall, errorResult } from "../util.js";
 
 const ALLOWED_RESOLUTIONS = [256, 512, 1024, 2048, 4096] as const;
 
@@ -71,9 +71,9 @@ export function registerMetaHumanTools(server: McpServer, bridge: CC5Bridge) {
     },
     async ({ output_dir, character_name, gender }) => {
       const dirError = validateOutputDir(output_dir);
-      if (dirError) return { content: [{ type: "text" as const, text: dirError }] };
+      if (dirError) return errorResult(dirError);
       const nameError = validateCharacterName(character_name);
-      if (nameError) return { content: [{ type: "text" as const, text: nameError }] };
+      if (nameError) return errorResult(nameError);
 
       return bridgeCall(
         () => bridge.exportHeadMetaHuman(output_dir, character_name, gender),

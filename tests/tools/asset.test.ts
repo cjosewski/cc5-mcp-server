@@ -293,3 +293,17 @@ describe("export_fbx handler – path traversal prevention", () => {
     expect(bridge.exportFbx).not.toHaveBeenCalled();
   });
 });
+
+describe("asset validation failures carry isError", () => {
+  it("load_asset rejects a bad path with isError", async () => {
+    const r = await server.getRegisteredTool("load_asset")({ file_path: "C:/a/../b.iAvatar" });
+    expect(r.isError).toBe(true);
+    expect(bridge.loadAsset).not.toHaveBeenCalled();
+  });
+
+  it("export_fbx rejects a bad path with isError", async () => {
+    const r = await server.getRegisteredTool("export_fbx")({ output_path: "C:/out/char.obj" });
+    expect(r.isError).toBe(true);
+    expect(bridge.exportFbx).not.toHaveBeenCalled();
+  });
+});

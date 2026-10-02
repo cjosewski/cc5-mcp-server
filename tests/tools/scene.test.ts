@@ -455,3 +455,34 @@ describe("set_subdivision_level handler", () => {
     expect(result.content[0].text).toContain("CC5 bridge error: CC5 crashed");
   });
 });
+
+describe("scene failures carry isError", () => {
+  it("check_cc5_connection: not responding", async () => {
+    bridge.healthCheck.mockResolvedValue(false);
+    expect((await server.getRegisteredTool("check_cc5_connection")({})).isError).toBe(true);
+  });
+
+  it("check_cc5_connection: healthCheck throws", async () => {
+    bridge.healthCheck.mockRejectedValue(new Error("ECONNREFUSED"));
+    expect((await server.getRegisteredTool("check_cc5_connection")({})).isError).toBe(true);
+  });
+
+  it("check_cc5_connection: connected is not an error", async () => {
+    bridge.healthCheck.mockResolvedValue(true);
+    expect((await server.getRegisteredTool("check_cc5_connection")({})).isError).toBeUndefined();
+  });
+
+  it("capture_viewport: bad path, success:false, throw", async () => {
+    const handler = server.getRegisteredTool("capture_viewport");
+    expect((await handler({ output_path: "C:/out/frame.jpg" })).isError).toBe(true);
+    bridge.captureViewport.mockResolvedValue({ success: false, error: "no render context" });
+    expect((await handler({})).isError).toBe(true);
+    bridge.captureViewport.mockRejectedValue(new Error("render failed"));
+    expect((await handler({})).isError).toBe(true);
+  });
+
+  it("capture_viewport: success is not an error", async () => {
+    bridge.captureViewport.mockResolvedValue(CAPTURE_SUCCESS);
+    expect((await server.getRegisteredTool("capture_viewport")({ output_path: "C:/temp/capture.png" })).isError).toBeUndefined();
+  });
+});
