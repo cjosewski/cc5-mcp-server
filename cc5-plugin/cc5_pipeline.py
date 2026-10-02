@@ -213,6 +213,46 @@ def save_character(output_path: str) -> dict[str, Any]:
     return {"success": True, "path": output_path}
 
 
+def try_signatures(attempts: list[tuple[str, Any]]) -> tuple[str | None, str | None]:
+    """Run each (label, fn) until one doesn't raise. For RLPy calls documented only as *args."""
+    errors: list[str] = []
+    for label, fn in attempts:
+        try:
+            fn()
+            return label, None
+        except Exception as e:
+            errors.append(f"{label}: {e}")
+    return None, "; ".join(errors)
+
+
+def export_obj(output_path: str, y_up: bool = True) -> dict[str, Any]:
+    """Export the avatar as OBJ for sculpting (LIVE-VERIFY: ExportObjFile is documented as *args)."""
+    error = check_path(output_path)
+    if error:
+        return {"success": False, "error": error}
+    if os.path.splitext(output_path)[1].lower() != ".obj":
+        return {"success": False, "error": "output_path must end with .obj"}
+    avatar = cc5_api.get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    # EExport3DFileOption is a bitmask: the part bits pick what is written and ResetToBindPose
+    # keeps the rest shape that replace_mesh_from_obj needs (same topology, bind pose).
+    option = 0
+    for name in ("EExport3DFileOption_FullBodyPart", "EExport3DFileOption_AllClothes",
+                 "EExport3DFileOption_ResetToBindPose", "EExport3DFileOption_ExportMaterial"):
+        option |= getattr(RLPy, name, 0)
+    if y_up:
+        option |= RLPy.EExport3DFileOption_AxisYUp
+    label, err = try_signatures([
+        ("(avatar, path, option)", lambda: RLPy.RFileIO.ExportObjFile(avatar, output_path, option)),
+        ("(avatar, path)", lambda: RLPy.RFileIO.ExportObjFile(avatar, output_path)),
+    ])
+    if not label:
+        return {"success": False, "error": f"ExportObjFile failed: {err}"}
+    return {"success": True, "path": output_path, "signature": label}
+
+
 def _opt_int(p: dict, key: str) -> int | None:
     return int(p[key]) if p.get(key) is not None else None
 
@@ -224,14 +264,17 @@ ACTIONS: dict[str, Any] = {
     "get_mesh_stats": lambda p: get_mesh_stats(),
     "apply_pose": lambda p: apply_pose(p["file_path"]),
     "save_character": lambda p: save_character(p["output_path"]),
+    "export_obj": lambda p: export_obj(p["output_path"], bool(p.get("y_up", True))),
 }
 POST_ROUTES: dict[str, str] = {
     "/pipeline/mesh_stats": "get_mesh_stats",
     "/pipeline/pose": "apply_pose",
     "/pipeline/save_character": "save_character",
+    "/pipeline/export_obj": "export_obj",
 }
 REQUIRED_PARAMS: dict[str, list[str]] = {
     "export_for_unity": ["unity_dir", "character_name"],
     "apply_pose": ["file_path"],
     "save_character": ["output_path"],
+    "export_obj": ["output_path"],
 }

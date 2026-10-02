@@ -417,7 +417,7 @@ def export_fbx(
         output_path: .fbx destination. A bare filename (no directory component)
             is resolved under CC5_EXPORT_DIR (default ``D:\\CC5Export``).
         options_flags: Raw EExportFbxOptions bitmask. If 0, defaults are computed from named flags.
-        target_tool: "UE5" | "Default" | "Maya" | "Unity" — sets sensible base flag preset
+        target_tool: "UE5" | "Default" | "Maya" | "Unity" | "Blender" — sets sensible base flag preset
         sub_d_level: 0|1|2. HD Character Subdivision Level. Applied via
             RExportFbxSetting.SetExportLevel (no scene mutation). Falls back to
             set_subdivision_level only on the flag-less 2-arg export path.
@@ -494,6 +494,13 @@ def export_fbx(
         flags |= _safe_flag("EExportFbxOptions_AutoSkinRigidMesh")
         flags |= _safe_flag("EExportFbxOptions_MayaAdjustMaterial")
         notes.append("target_tool=Maya preset applied")
+    elif target_upper == "BLENDER":
+        # Default flags plus the JSON sidecar that Reallusion's CC/iC Blender Tools add-on
+        # reads to rebuild materials. No Y-up flag: Blender is Z-up.
+        flags |= _safe_flag("EExportFbxOptions_AutoSkinRigidMesh")
+        flags |= _safe_flag("EExportFbxOptions_ExportRootMotion")
+        flags3 |= _safe_flag("EExportFbxOptions3_ExportJson")
+        notes.append("target_tool=Blender preset applied")
     elif flags == 0:
         # Default fallback (preserve old behavior)
         flags = _safe_flag("EExportFbxOptions_AutoSkinRigidMesh") | _safe_flag("EExportFbxOptions_ExportRootMotion")

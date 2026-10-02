@@ -45,4 +45,19 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
         (r) => r.success ? `Saved ${r.path}` : `Failed: ${r.error}`);
     }
   );
+
+  server.tool(
+    "export_obj",
+    "Export the current character as OBJ (for sculpting in ZBrush or Blender). Bring the edited mesh back with replace_mesh_from_obj.",
+    {
+      output_path: z.string().describe("Absolute path ending in .obj"),
+      y_up: z.boolean().default(true).describe("Y-up axis. Keep true for ZBrush, Maya and Blender (Blender's OBJ importer converts Y-up to Z-up); false only for a tool that expects Z-up OBJ"),
+    },
+    async ({ output_path, y_up }) => {
+      const err = checkFile(output_path, [".obj"]);
+      if (err) return errorResult(err);
+      return bridgeCall(() => bridge.exportObj(output_path, y_up),
+        (r) => r.success ? `Exported ${r.path}` : `Failed: ${r.error}`);
+    }
+  );
 }

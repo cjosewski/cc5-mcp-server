@@ -230,7 +230,7 @@ export interface SceneObject {
 // --- Mesh-to-MetaHuman pipeline ---
 
 export interface ExportFbxOptions {
-  target_tool?: "UE5" | "Default" | "Maya" | "Unity" | "Unreal";
+  target_tool?: "UE5" | "Default" | "Maya" | "Unity" | "Unreal" | "Blender";
   sub_d_level?: 0 | 1 | 2;
   include_current_pose?: boolean;
   delete_hidden_faces?: boolean;

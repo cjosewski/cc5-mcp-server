@@ -47,3 +47,16 @@ describe("save_character", () => {
     expect(r.content[0].text).toContain("Saved C:/Bases/Male.ccAvatar");
   });
 });
+
+describe("export_obj", () => {
+  it("requires .obj", async () => {
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.fbx" });
+    expect(r.isError).toBe(true);
+  });
+
+  it("exports", async () => {
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)" });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+    expect(r.content[0].text).toContain("a.obj");
+  });
+});

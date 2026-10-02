@@ -307,3 +307,11 @@ describe("asset validation failures carry isError", () => {
     expect(bridge.exportFbx).not.toHaveBeenCalled();
   });
 });
+
+describe("export_fbx Blender target", () => {
+  it("schema accepts target_tool Blender", () => {
+    const call = server.tool.mock.calls.find((c) => c[0] === "export_fbx")!;
+    const shape = call[2] as Record<string, { safeParse: (v: unknown) => { success: boolean } }>;
+    expect(shape.target_tool.safeParse("Blender").success).toBe(true);
+  });
+});

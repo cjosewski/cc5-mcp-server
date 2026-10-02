@@ -588,4 +588,8 @@ export class CC5Bridge {
   async saveCharacter(outputPath: string): Promise<OperationResult & { path?: string }> {
     return this.request("/pipeline/save_character", "POST", { output_path: outputPath });
   }
+
+  async exportObj(outputPath: string, yUp: boolean = true): Promise<OperationResult & { path?: string; signature?: string }> {
+    return this.request("/pipeline/export_obj", "POST", { output_path: outputPath, y_up: yUp });
+  }
 }
