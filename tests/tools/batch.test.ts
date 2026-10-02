@@ -1,7 +1,11 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
-import { runBatch } from "../../src/tools/batch.js";
+import { runBatch, registerBatchTools } from "../../src/tools/batch.js";
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
+import { createMockServer } from "../helpers/mock-server.js";
 
 let bridge: MockBridge;
 const ok = { success: true };
@@ -95,5 +99,49 @@ describe("runBatch scene and stats failures", () => {
     expect(m.variants[0]).toMatchObject({ ok: false, fbx: "D:/P/Assets/Pt/A/A.fbx", error: "mesh stats failed: No avatar in scene" });
     expect(m.variants[0].budget_pass).toBeUndefined();
     expect(m.variants[1].ok).toBe(true);
+  });
+});
+
+describe("runBatch with export subdivision", () => {
+  // export_for_unity subdivides only the FBX (RExportFbxSetting.SetExportLevel leaves the scene at base level),
+  // so getMeshStats counts base-mesh faces and cannot vouch for a sub_d_level > 0 export.
+  it("does not report a budget pass from base-mesh faces when sub_d_level > 0", async () => {
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 1, faces: 20_000, materials: 4 } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, { ...input, sub_d_level: 2 }, () => undefined);
+    expect(bridge.startJob).toHaveBeenCalledWith("export_for_unity", expect.objectContaining({ sub_d_level: 2 }));
+    expect(m.variants[0].budget_pass).toBeUndefined();
+    expect(m.variants[0].budget?.[0]).toMatch(/^NOT CHECKED Faces: .*sub_d_level 2.*about 16x.*320,000/);
+    expect(m.variants[0].ok).toBe(true);
+  });
+
+  it("still reports a budget fail when the base mesh is already over budget", async () => {
+    bridge.getMeshStats.mockResolvedValue({ success: true, meshes: [], totals: { vertices: 1, faces: 1000, materials: 99 } });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, { ...input, sub_d_level: 1 }, () => undefined);
+    expect(m.variants[0].budget_pass).toBe(false);
+    expect(m.variants[0].budget).toContainEqual(expect.stringMatching(/^OVER Materials: 99/));
+  });
+
+  it("checks faces as before when sub_d_level is 0", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, { ...input, sub_d_level: 0 }, () => undefined);
+    expect(m.variants[0].budget_pass).toBe(true);
+    expect(m.variants[0].budget?.[0]).toMatch(/^OK +Faces: 1,000 \//);
+  });
+
+  it("says in the tool summary that the face budget was not checked", async () => {
+    const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "cc5-batch-")), "Proj", "Assets", "Pt");
+    try {
+      const server = createMockServer();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      registerBatchTools(server as any, bridge as any);
+      const r = await server.getRegisteredTool("batch_generate_patients")({ ...input, unity_dir: dir, sub_d_level: 1 });
+      expect(r.content[0].text).toContain("OK   A (face budget not checked: sub_d_level 1)");
+      const written = JSON.parse(fs.readFileSync(path.join(dir, "patients_manifest.json"), "utf8"));
+      expect(written.variants[0].budget_pass).toBeUndefined();
+    } finally {
+      fs.rmSync(path.resolve(dir, "..", "..", ".."), { recursive: true, force: true });
+    }
   });
 });
