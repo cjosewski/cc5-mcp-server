@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { BridgeUnreachableError } from "../../src/cc5-bridge.js";
 import { registerEditTools } from "../../src/tools/edit.js";
 import { createMockBridge, SUCCESS, FAILURE } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
@@ -80,7 +81,7 @@ describe("undo handler", () => {
   });
 
   it("returns bridge error text when bridge.undo throws (does not propagate)", async () => {
-    bridge.undo.mockRejectedValue(new Error("bridge down"));
+    bridge.undo.mockRejectedValue(new BridgeUnreachableError("bridge down"));
     const handler = server.getRegisteredTool("undo");
     const result = await handler({});
     expect(result.content[0].text).toContain("CC5 bridge error: bridge down");
@@ -120,7 +121,7 @@ describe("redo handler", () => {
   });
 
   it("returns bridge error text when bridge.redo throws (does not propagate)", async () => {
-    bridge.redo.mockRejectedValue(new Error("network error"));
+    bridge.redo.mockRejectedValue(new BridgeUnreachableError("network error"));
     const handler = server.getRegisteredTool("redo");
     const result = await handler({});
     expect(result.content[0].text).toContain("CC5 bridge error: network error");

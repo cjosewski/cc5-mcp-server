@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import { bridgeCall, errorResult } from "../src/util.js";
+import { BridgeHttpError, BridgeUnreachableError } from "../src/cc5-bridge.js";
 
 describe("bridgeCall", () => {
   it("returns formatted success text when the fn resolves", async () => {
@@ -21,7 +22,19 @@ describe("bridgeCall", () => {
       () => "should not reach"
     );
     expect(result.content[0].text).toContain("CC5 bridge error: timeout");
-    expect(result.content[0].text).toContain("Is CC5 running");
+  });
+
+  it("asks whether CC5 is running only when CC5 could not be reached", async () => {
+    const down = await bridgeCall(() => Promise.reject(new BridgeUnreachableError("fetch failed (connect ECONNREFUSED 127.0.0.1:5101)")), () => "no");
+    expect(down.content[0].text).toBe(
+      "CC5 bridge error: fetch failed (connect ECONNREFUSED 127.0.0.1:5101). Is CC5 running with the MCP Bridge plugin?");
+    const refused = await bridgeCall(() => Promise.reject(new BridgeHttpError("No avatar in scene", 400)), () => "no");
+    expect(refused.content[0].text).toBe("CC5 bridge error: No avatar in scene");
+    expect(refused.isError).toBe(true);
+    const busy = await bridgeCall(() => Promise.reject(new BridgeHttpError(
+      "CC5 timed out (still running): CC5 is still working on this command. Check the scene before retrying; the command may still complete.", 504)), () => "no");
+    expect(busy.content[0].text).not.toContain("Is CC5 running");
+    expect(busy.content[0].text).toContain("still running");
   });
 
   it("returns CC5 bridge error text when fn rejects with a string", async () => {

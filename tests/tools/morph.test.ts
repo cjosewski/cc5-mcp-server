@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { BridgeUnreachableError } from "../../src/cc5-bridge.js";
 import { registerMorphTools } from "../../src/tools/morph.js";
 import { createMockBridge, SUCCESS, FAILURE } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
@@ -97,7 +98,7 @@ describe("search_morphs handler", () => {
   });
 
   it("returns bridge error text when bridge throws (does not propagate)", async () => {
-    bridge.searchMorphs.mockRejectedValue(new Error("bridge unreachable"));
+    bridge.searchMorphs.mockRejectedValue(new BridgeUnreachableError("bridge unreachable"));
     const handler = server.getRegisteredTool("search_morphs");
     const result = await handler({ query: "fat" });
     expect(result.content[0].text).toContain("CC5 bridge error: bridge unreachable");
@@ -167,7 +168,7 @@ describe("adjust_morph handler", () => {
   });
 
   it("returns bridge error text when bridge.setMorph throws (does not propagate)", async () => {
-    bridge.setMorph.mockRejectedValue(new Error("bridge down"));
+    bridge.setMorph.mockRejectedValue(new BridgeUnreachableError("bridge down"));
     const handler = server.getRegisteredTool("adjust_morph");
     const result = await handler({ morph_id: "Fat", value: 0.5 });
     expect(result.content[0].text).toContain("CC5 bridge error: bridge down");

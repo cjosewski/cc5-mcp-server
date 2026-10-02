@@ -62,6 +62,52 @@ const REQUEST_TIMEOUT_MS = Number.isFinite(_rawTimeout) && _rawTimeout > 0 && _r
   ? _rawTimeout
   : 35_000;
 
+/** CC5 could not be reached: the connection failed, or no reply came back in time. */
+export class BridgeUnreachableError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "BridgeUnreachableError";
+  }
+}
+
+/** The bridge answered with an HTTP error status. The message is CC5's own error text when the body has one. */
+export class BridgeHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "BridgeHttpError";
+  }
+}
+
+function describeFetchFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  // Node's fetch says only "fetch failed"; the cause names the socket error (e.g. ECONNREFUSED).
+  const cause = (err as { cause?: unknown } | null)?.cause;
+  const causeText = cause instanceof Error ? cause.message : "";
+  return causeText && !message.includes(causeText) ? `${message} (${causeText})` : message;
+}
+
+/**
+ * The bridge answers a failed command with HTTP 400 and the command's {success: false, error} result,
+ * and a command timeout with 504 {state: "running" | "cancelled", error}. Surface CC5's own text.
+ */
+function describeHttpError(status: number, rawBody: string): string {
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    body = undefined;
+  }
+  const fields = typeof body === "object" && body !== null ? (body as { error?: unknown; state?: unknown }) : {};
+  if (typeof fields.error !== "string" || !fields.error) {
+    return `CC5 bridge error (${status}): ${rawBody}`;
+  }
+  if (status === 504) {
+    const state = fields.state === "running" ? "still running" : typeof fields.state === "string" ? fields.state : "unknown state";
+    return `CC5 timed out (${state}): ${fields.error}`;
+  }
+  return fields.error;
+}
+
 export class CC5Bridge {
   private baseUrl: string;
 
@@ -104,24 +150,21 @@ export class CC5Bridge {
         response = await fetch(`${this.baseUrl}${path}`, options);
       } catch (err) {
         if ((err as { name?: string } | null)?.name === "AbortError") {
-          throw new Error(
+          throw new BridgeUnreachableError(
             `No reply from CC5 within ${REQUEST_TIMEOUT_MS / 1000}s. CC5 may still be running this command; ` +
             "check the scene (list_avatars / capture_viewport) before retrying.");
         }
-        throw err;
+        throw new BridgeUnreachableError(describeFetchFailure(err), { cause: err });
       }
 
       if (response.status === 401) {
         resetTokenCache();
-        throw new Error(
-          "CC5 rejected the bridge token. Start Character Creator 5 at least once so it writes its token, then try again");
+        throw new BridgeHttpError(
+          "CC5 rejected the bridge token. Start Character Creator 5 at least once so it writes its token, then try again", 401);
       }
 
       if (!response.ok) {
-        const errorBody = await response.text();
-        throw new Error(
-          `CC5 bridge error (${response.status}): ${errorBody}`
-        );
+        throw new BridgeHttpError(describeHttpError(response.status, await response.text()), response.status);
       }
 
       const data = (await response.json()) as CC5Response<T>;

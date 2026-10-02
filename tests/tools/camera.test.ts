@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { BridgeUnreachableError } from "../../src/cc5-bridge.js";
 import { registerCameraTools } from "../../src/tools/camera.js";
 import { createMockBridge, SUCCESS, FAILURE } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
@@ -112,7 +113,7 @@ describe("get_camera_info handler", () => {
   });
 
   it("returns bridge error text when bridge throws (does not propagate)", async () => {
-    bridge.getCameraInfo.mockRejectedValue(new Error("bridge down"));
+    bridge.getCameraInfo.mockRejectedValue(new BridgeUnreachableError("bridge down"));
     const handler = server.getRegisteredTool("get_camera_info");
     const result = await handler({});
     expect(result.content[0].text).toContain("CC5 bridge error: bridge down");
@@ -156,7 +157,7 @@ describe("set_camera_focal_length handler", () => {
   });
 
   it("returns bridge error text when bridge throws (does not propagate)", async () => {
-    bridge.setCameraFocalLength.mockRejectedValue(new Error("connection lost"));
+    bridge.setCameraFocalLength.mockRejectedValue(new BridgeUnreachableError("connection lost"));
     const handler = server.getRegisteredTool("set_camera_focal_length");
     const result = await handler({ focal_length: 50 });
     expect(result.content[0].text).toContain("CC5 bridge error: connection lost");

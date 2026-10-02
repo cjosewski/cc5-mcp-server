@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { BridgeUnreachableError } from "../../src/cc5-bridge.js";
 import { registerMaterialTools } from "../../src/tools/material.js";
 import { createMockBridge, SUCCESS, FAILURE } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
@@ -133,7 +134,7 @@ describe("get_material_info handler", () => {
   });
 
   it("returns bridge error text when bridge throws (does not propagate)", async () => {
-    bridge.getMaterialInfo.mockRejectedValue(new Error("bridge down"));
+    bridge.getMaterialInfo.mockRejectedValue(new BridgeUnreachableError("bridge down"));
     const handler = server.getRegisteredTool("get_material_info");
     const result = await handler({});
     expect(result.content[0].text).toContain("CC5 bridge error: bridge down");

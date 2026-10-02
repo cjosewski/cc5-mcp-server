@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { CC5Bridge } from "../src/cc5-bridge.js";
+import { CC5Bridge, BridgeHttpError, BridgeUnreachableError } from "../src/cc5-bridge.js";
 import type {
   CC5Response,
   CC5Avatar,
@@ -735,6 +735,47 @@ describe("CC5Bridge internal request handling", () => {
       error: "Timed out before CC5 started the command; it was cancelled and will not run.",
     }));
     await expect(bridge.getAvatars()).rejects.toThrow(/cancelled and will not run/);
+  });
+});
+
+// The live bridge answers a command that returned {success: false} with HTTP 400 and that result as the
+// body, and a command timeout with 504 {state, error} (cc5-plugin/server.py _execute_sync).
+describe("CC5Bridge error answers from the live bridge", () => {
+  it("turns a 400 {success: false, error} into CC5's own message", async () => {
+    mockFetchHttpError(400, JSON.stringify({ success: false, error: "No avatar in scene" }));
+    const err = await bridge.applySkinOverlay("C:/o/bruise.png", "all", 100).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BridgeHttpError);
+    expect((err as BridgeHttpError).message).toBe("No avatar in scene");
+    expect((err as BridgeHttpError).status).toBe(400);
+  });
+
+  it("says a 504 'running' command is still running in CC5", async () => {
+    mockFetchHttpError(504, JSON.stringify({
+      state: "running",
+      error: "CC5 is still working on this command. Check the scene before retrying; the command may still complete.",
+    }));
+    await expect(bridge.loadSubstanceTextures("C:/SP/export")).rejects.toThrow(
+      "CC5 timed out (still running): CC5 is still working on this command. Check the scene before retrying; the command may still complete.");
+  });
+
+  it("marks connection failures and client timeouts as unreachable, and CC5 answers as not", async () => {
+    mockFetchError("fetch failed");
+    await expect(bridge.getAvatars()).rejects.toBeInstanceOf(BridgeUnreachableError);
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("This operation was aborted", "AbortError")));
+    await expect(bridge.getAvatars()).rejects.toBeInstanceOf(BridgeUnreachableError);
+    mockFetchHttpError(400, JSON.stringify({ success: false, error: "File not found: C:/x.png" }));
+    await expect(bridge.getAvatars()).rejects.not.toBeInstanceOf(BridgeUnreachableError);
+  });
+
+  it("names the socket error behind Node's 'fetch failed'", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(
+      new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED 127.0.0.1:5101") })));
+    await expect(bridge.getAvatars()).rejects.toThrow("fetch failed (connect ECONNREFUSED 127.0.0.1:5101)");
+  });
+
+  it("keeps the raw body when an error answer is not JSON", async () => {
+    mockFetchHttpError(502, "<html>Bad Gateway</html>");
+    await expect(bridge.getAvatars()).rejects.toThrow("CC5 bridge error (502): <html>Bad Gateway</html>");
   });
 });
 

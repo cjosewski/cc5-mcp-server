@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { BridgeUnreachableError } from "../../src/cc5-bridge.js";
 import { registerExpressionTools } from "../../src/tools/expression.js";
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
@@ -122,7 +123,7 @@ describe("get_expression_info handler", () => {
   });
 
   it("returns bridge error text when bridge throws (does not propagate)", async () => {
-    bridge.getExpressionInfo.mockRejectedValue(new Error("bridge down"));
+    bridge.getExpressionInfo.mockRejectedValue(new BridgeUnreachableError("bridge down"));
     const handler = server.getRegisteredTool("get_expression_info");
     const result = await handler({});
     expect(result.content[0].text).toContain("CC5 bridge error: bridge down");

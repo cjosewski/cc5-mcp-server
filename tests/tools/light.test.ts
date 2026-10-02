@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { BridgeUnreachableError } from "../../src/cc5-bridge.js";
 import { registerLightTools } from "../../src/tools/light.js";
 import { createMockBridge, SUCCESS, FAILURE } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
@@ -157,7 +158,7 @@ describe("get_lights handler", () => {
   });
 
   it("returns bridge error text when bridge throws (does not propagate)", async () => {
-    bridge.getLights.mockRejectedValue(new Error("bridge down"));
+    bridge.getLights.mockRejectedValue(new BridgeUnreachableError("bridge down"));
     const handler = server.getRegisteredTool("get_lights");
     const result = await handler({});
     expect(result.content[0].text).toContain("CC5 bridge error: bridge down");
@@ -218,7 +219,7 @@ describe("set_light_color handler", () => {
   });
 
   it("returns bridge error text when bridge throws (does not propagate)", async () => {
-    bridge.setLightColor.mockRejectedValue(new Error("network error"));
+    bridge.setLightColor.mockRejectedValue(new BridgeUnreachableError("network error"));
     const handler = server.getRegisteredTool("set_light_color");
     const result = await handler({ light_name: "KeyLight", r: 1.0, g: 0.0, b: 0.0 });
     expect(result.content[0].text).toContain("CC5 bridge error: network error");

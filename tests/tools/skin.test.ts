@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { registerSkinTools } from "../../src/tools/skin.js";
+import { CC5Bridge } from "../../src/cc5-bridge.js";
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -34,6 +35,21 @@ describe("set_skin_condition", () => {
     bridge.setSkinCondition.mockResolvedValue({ success: true, applied_to: [] });
     await server.getRegisteredTool("set_skin_condition")({ condition: "pale", amount: 0.8, region: "all" });
     expect(bridge.setSkinCondition).toHaveBeenCalledWith("pale", 0.8, "all", undefined);
+  });
+});
+
+describe("apply_skin_overlay through the real bridge client", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reports CC5's own failure text, not a connection problem, when the bridge answers 400", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ success: false, error: "No avatar in scene" }), { status: 400 })));
+    const live = createMockServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerSkinTools(live as any, new CC5Bridge("http://127.0.0.1:5101"));
+    const r = await live.getRegisteredTool("apply_skin_overlay")({ image_path: "C:/o/bruise.png", region: "all", strength: 50 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("CC5 bridge error: No avatar in scene");
   });
 });
 
