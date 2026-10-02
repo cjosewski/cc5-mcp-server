@@ -11,7 +11,7 @@ from typing import Any
 import RLPy
 
 import cc5_api
-from cc5_pipeline import _check_existing, check_path
+from cc5_pipeline import _check_existing, _raise_on_error, check_path
 
 PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
@@ -31,7 +31,10 @@ def headshot_from_photo(photo_path: str) -> dict[str, Any]:
     mode = next((m for m in modes if "Pro" in m), modes[0])
     RLPy.RGlobal.BeginAction("Headshot From Photo")
     try:
-        RLPy.RHeadshot.CreateHeadFromPhoto(photo_path, getattr(RLPy, mode), RLPy.RHeadshotOption())
+        _raise_on_error(
+            RLPy.RHeadshot.CreateHeadFromPhoto(photo_path, getattr(RLPy, mode), RLPy.RHeadshotOption()),
+            "CreateHeadFromPhoto",
+        )
     except Exception as e:
         return {"success": False, "error": f"Headshot failed ({e}). Check the Headshot 3 plugin is installed and licensed."}
     finally:
@@ -54,7 +57,7 @@ def load_facial_profile(file_path: str) -> dict[str, Any]:
         return {"success": False, "error": "No avatar in scene"}
     RLPy.RGlobal.BeginAction("Load Facial Profile")
     try:
-        avatar.GetFacialProfileComponent().LoadProfile(file_path)
+        _raise_on_error(avatar.GetFacialProfileComponent().LoadProfile(file_path), "LoadProfile")
         RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Attribute)
     except Exception as e:
         return {"success": False, "error": str(e)}

@@ -36,6 +36,29 @@ describe("searchContent", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(await searchContent(bridge as any, "pose", ["shoes", "texture"])).toEqual([]);
   });
+
+  it("throws when every folder fails (e.g. CC5 is down)", async () => {
+    bridge.browseContent.mockRejectedValue(new Error("ECONNREFUSED"));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await expect(searchContent(bridge as any, "boots", ["cloth_upper", "shoes"])).rejects.toThrow();
+  });
+});
+
+describe("search_content", () => {
+  it("returns a bridge error when every folder fails", async () => {
+    bridge.browseContent.mockRejectedValue(new Error("ECONNREFUSED"));
+    const r = await server.getRegisteredTool("search_content")({ query: "boots", folder_types: ["cloth_upper", "shoes"], limit: 40 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("CC5 bridge error");
+  });
+
+  it("notes skipped folders when only some fail", async () => {
+    bridge.browseContent.mockRejectedValueOnce(new Error("timeout")).mockResolvedValueOnce(["C:/s/Combat Boots.ccShoes"]);
+    const r = await server.getRegisteredTool("search_content")({ query: "boots", folder_types: ["cloth_upper", "shoes"], limit: 40 });
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0].text).toContain("Combat Boots");
+    expect(r.content[0].text).toContain("skipped folders");
+  });
 });
 
 describe("headshot_from_photo", () => {

@@ -50,3 +50,18 @@ class BuilderTest(unittest.TestCase):
             r = self.b.load_facial_profile(self._file("ext.ccFacialProfile"))
         self.assertTrue(r["success"])
         avatar.GetFacialProfileComponent.return_value.LoadProfile.assert_called_once()
+
+    def test_headshot_error_status(self):
+        self.rl.RHeadshot.CreateHeadFromPhoto.return_value.IsError.return_value = True
+        with mock.patch.object(self.b, "_headshot_modes", return_value=["EHSMode_Pro"]):
+            r = self.b.headshot_from_photo(self._file("face.jpg"))
+        self.assertFalse(r["success"])
+        self.assertIn("Headshot", r["error"])
+        self.rl.RGlobal.EndAction.assert_called()
+
+    def test_facial_profile_error_status(self):
+        avatar = mock.MagicMock()
+        avatar.GetFacialProfileComponent.return_value.LoadProfile.return_value.IsError.return_value = True
+        with mock.patch.object(self.b.cc5_api, "get_first_avatar", return_value=avatar):
+            r = self.b.load_facial_profile(self._file("ext.ccFacialProfile"))
+        self.assertFalse(r["success"])

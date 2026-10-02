@@ -22,14 +22,18 @@ export async function searchContent(
   bridge: Pick<CC5Bridge, "browseContent">,
   query: string,
   folderTypes: string[],
+  skipped?: string[],
 ): Promise<Array<{ folder: string; path: string }>> {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const hits: Array<{ folder: string; path: string }> = [];
+  // Only rejected browseContent calls count here (e.g. CC5 down); in-list error strings are filtered below.
+  const failures: string[] = [];
   for (const folder of folderTypes) {
     let files: string[];
     try {
       files = await bridge.browseContent(folder);
-    } catch {
+    } catch (e) {
+      failures.push(`${folder}: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
     for (const file of files) {
@@ -40,6 +44,10 @@ export async function searchContent(
       if (words.every((w) => name.includes(w))) hits.push({ folder, path: file });
     }
   }
+  if (folderTypes.length > 0 && failures.length === folderTypes.length) {
+    throw new Error(`browse_content failed for every folder (${failures[0]})`);
+  }
+  skipped?.push(...failures);
   return hits;
 }
 
@@ -54,10 +62,12 @@ export function registerBuilderTools(server: McpServer, bridge: CC5Bridge) {
     },
     async ({ query, folder_types, limit }) => {
       try {
-        const hits = await searchContent(bridge, query, folder_types ?? SEARCH_FOLDERS);
-        if (!hits.length) return { content: [{ type: "text" as const, text: `No content matched '${query}'.` }] };
+        const skipped: string[] = [];
+        const hits = await searchContent(bridge, query, folder_types ?? SEARCH_FOLDERS, skipped);
+        const note = skipped.length ? `\n(skipped folders that failed: ${skipped.join("; ")})` : "";
+        if (!hits.length) return { content: [{ type: "text" as const, text: `No content matched '${query}'.${note}` }] };
         const lines = hits.slice(0, limit).map((h) => `[${h.folder}] ${h.path}`);
-        return { content: [{ type: "text" as const, text: `${hits.length} match(es):\n${lines.join("\n")}` }] };
+        return { content: [{ type: "text" as const, text: `${hits.length} match(es):\n${lines.join("\n")}${note}` }] };
       } catch (e) {
         return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
       }
