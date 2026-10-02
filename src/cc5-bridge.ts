@@ -108,6 +108,11 @@ function describeHttpError(status: number, rawBody: string): string {
   return fields.error;
 }
 
+/** The entry browse_content appends when more files matched than its 200-file cap. */
+export function isBrowseTruncation(entry: string): boolean {
+  return entry.startsWith("(truncated");
+}
+
 export class CC5Bridge {
   private baseUrl: string;
 
@@ -552,10 +557,14 @@ export class CC5Bridge {
     });
   }
 
-  async browseContent(folderType: string): Promise<string[]> {
-    return this.request<string[]>("/content/browse", "POST", {
-      folder_type: folderType,
-    });
+  /**
+   * Content files of one category. With `query`, CC5 keeps only file names containing every word, before
+   * its 200-file cap. A list cut at the cap ends with a "(truncated: ..." entry (see isBrowseTruncation).
+   */
+  async browseContent(folderType: string, query?: string): Promise<string[]> {
+    const body: Record<string, unknown> = { folder_type: folderType };
+    if (query) body.query = query;
+    return this.request<string[]>("/content/browse", "POST", body);
   }
 
   // --- Convenience Color Shortcuts (Tier 3) ---

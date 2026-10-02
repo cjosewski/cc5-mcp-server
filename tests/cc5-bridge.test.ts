@@ -390,6 +390,24 @@ describe("CC5Bridge.setMultipleMorphs", () => {
   });
 });
 
+// ── browseContent ─────────────────────────────────────────────────────────────
+
+describe("CC5Bridge.browseContent", () => {
+  it("sends the search words so CC5 filters before its 200-file cap", async () => {
+    mockFetch<string[]>({ result: [] });
+    await bridge.browseContent("cloth_upper", "camo jacket");
+    const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ folder_type: "cloth_upper", query: "camo jacket" });
+  });
+
+  it("sends only the folder type when there is no query", async () => {
+    mockFetch<string[]>({ result: [] });
+    await bridge.browseContent("shoes");
+    const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ folder_type: "shoes" });
+  });
+});
+
 // ── loadAsset ─────────────────────────────────────────────────────────────────
 
 describe("CC5Bridge.loadAsset", () => {

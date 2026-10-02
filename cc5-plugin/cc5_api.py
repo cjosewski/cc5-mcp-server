@@ -1942,7 +1942,12 @@ def remove_scene_item(item_name: str) -> dict[str, Any]:
     return {"success": False, "error": f"Item not found: {item_name}"}
 
 
-def browse_content(folder_type: str = "cloth_upper") -> list[str]:
+MAX_BROWSE_RESULTS = 200
+# Last list entry when more than MAX_BROWSE_RESULTS files matched; src/tools/builder.ts and content.ts look for it.
+BROWSE_TRUNCATED = f"(truncated: more than {MAX_BROWSE_RESULTS} files matched; only the first {MAX_BROWSE_RESULTS} are listed)"
+
+
+def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[str]:
     """Browse available content files by category. Returns file paths.
 
     CC5.1 API: RContentManager is gone. We resolve a '$/...' folder string via
@@ -1950,7 +1955,12 @@ def browse_content(folder_type: str = "cloth_upper") -> list[str]:
     GetCustomContentFolder) and then list files with
     RApplication.GetContentFilesInFolder(folderString). The enum is NEVER passed
     to GetContentFilesInFolder (that raises a SWIG std::wstring TypeError).
+
+    query: keep only files whose name contains every word (case-insensitive). Filtering here,
+    before the MAX_BROWSE_RESULTS cap, lets a keyword search find files past the first 200.
+    When more files match than the cap, the list ends with BROWSE_TRUNCATED.
     """
+    words = [w for w in str(query or "")[:200].lower().split() if w]
     # Map advertised folder-type keys to valid CC5.1 EContentRootFolder enum names.
     # Only enums that actually exist in this build are kept (hasattr-guarded below).
     enum_candidates = {
@@ -2030,10 +2040,13 @@ def browse_content(folder_type: str = "cloth_upper") -> list[str]:
                 ext = os.path.splitext(f)[1].lower()
                 is_image = folder_type in ("image_layer", "texture", "wrinkle_mask") and ext in (".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff")
                 if (ext.startswith((".cc", ".i")) or (folder_type in ("pose", "motion") and ext.startswith(".rl")) or is_image) and f not in seen:
+                    name = os.path.basename(f).lower()
+                    if words and not all(w in name for w in words):
+                        continue
                     seen.add(f)
+                    if len(results) >= MAX_BROWSE_RESULTS:
+                        return results + [BROWSE_TRUNCATED]
                     results.append(f)
-                    if len(results) >= 200:
-                        return results
         return results
     except Exception as e:
         return [f"Error browsing content: {e}"]
@@ -4027,7 +4040,7 @@ def _auto_patch_server() -> None:
         "list_hair":             lambda p: _self.list_hair(),
         "list_accessories":      lambda p: _self.list_accessories(),
         "remove_scene_item":     lambda p: _self.remove_scene_item(p["item_name"]),
-        "browse_content":        lambda p: _self.browse_content(p.get("folder_type", "cloth_upper")),
+        "browse_content":        lambda p: _self.browse_content(p.get("folder_type", "cloth_upper"), str(p.get("query") or "")),
         # Tier 3: Convenience Color Shortcuts
         "set_eye_color":         lambda p: _self.set_eye_color(float(p["r"]), float(p["g"]), float(p["b"])),
         "set_hair_color":        lambda p: _self.set_hair_color(float(p["r"]), float(p["g"]), float(p["b"])),

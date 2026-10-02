@@ -6,7 +6,7 @@
 import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CC5Bridge } from "../cc5-bridge.js";
+import { isBrowseTruncation, type CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, errorResult, progressReporter } from "../util.js";
 import { runJob, formatPending } from "../jobs.js";
 import { checkFile } from "./pipeline.js";
@@ -20,11 +20,17 @@ export const SEARCH_FOLDERS = [
   "image_layer", "skingen", "texture",
 ];
 
+/**
+ * Content files whose names contain every word of `query`. CC5 filters by the query before its 200-file cap
+ * (an older plugin ignores it and lists the first 200; the words are checked here as well). Folders that
+ * failed go into `skipped`, and folders CC5 cut off at the cap into `truncated`.
+ */
 export async function searchContent(
   bridge: Pick<CC5Bridge, "browseContent">,
   query: string,
   folderTypes: string[],
   skipped?: string[],
+  truncated?: string[],
 ): Promise<Array<{ folder: string; path: string }>> {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const hits: Array<{ folder: string; path: string }> = [];
@@ -33,12 +39,16 @@ export async function searchContent(
   for (const folder of folderTypes) {
     let files: string[];
     try {
-      files = await bridge.browseContent(folder);
+      files = await bridge.browseContent(folder, query);
     } catch (e) {
       failures.push(`${folder}: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
     for (const file of files) {
+      if (isBrowseTruncation(file)) {
+        truncated?.push(folder);
+        continue;
+      }
       // browse_content reports failures as a one-element list holding an error string
       // (same prefixes src/tools/content.ts filters); never treat those as file hits.
       if (/^(Unknown folder|No content folder|Content browsing|Error)/.test(file)) continue;
@@ -65,8 +75,10 @@ export function registerBuilderTools(server: McpServer, bridge: CC5Bridge) {
     async ({ query, folder_types, limit }) => {
       try {
         const skipped: string[] = [];
-        const hits = await searchContent(bridge, query, folder_types ?? SEARCH_FOLDERS, skipped);
-        const note = skipped.length ? `\n(skipped folders that failed: ${skipped.join("; ")})` : "";
+        const truncated: string[] = [];
+        const hits = await searchContent(bridge, query, folder_types ?? SEARCH_FOLDERS, skipped, truncated);
+        const note = (skipped.length ? `\n(skipped folders that failed: ${skipped.join("; ")})` : "") +
+          (truncated.length ? `\n(search incomplete in ${truncated.join(", ")}: CC5 lists at most 200 matching files per category; use more specific words)` : "");
         if (!hits.length) return { content: [{ type: "text" as const, text: `No content matched '${query}'.${note}` }] };
         const lines = hits.slice(0, limit).map((h) => `[${h.folder}] ${h.path}`);
         return { content: [{ type: "text" as const, text: `${hits.length} match(es):\n${lines.join("\n")}${note}` }] };

@@ -42,6 +42,24 @@ describe("searchContent", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await expect(searchContent(bridge as any, "boots", ["cloth_upper", "shoes"])).rejects.toThrow();
   });
+
+  it("asks CC5 to filter by the query, so items past its 200-file cap can be found", async () => {
+    bridge.browseContent.mockResolvedValue(["C:/c/Camo Jacket.ccCloth"]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hits = await searchContent(bridge as any, "camo jacket", ["cloth_upper"]);
+    expect(bridge.browseContent).toHaveBeenCalledWith("cloth_upper", "camo jacket");
+    expect(hits).toEqual([{ folder: "cloth_upper", path: "C:/c/Camo Jacket.ccCloth" }]);
+  });
+
+  it("reports folders CC5 cut off at its cap instead of treating the marker as a file", async () => {
+    const many = Array.from({ length: 200 }, (_, i) => `C:/c/Camo Shirt ${i}.ccCloth`);
+    bridge.browseContent.mockResolvedValue([...many, "(truncated: more than 200 files matched; only the first 200 are listed)"]);
+    const truncated: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const hits = await searchContent(bridge as any, "camo", ["cloth_upper"], [], truncated);
+    expect(hits).toHaveLength(200);
+    expect(truncated).toEqual(["cloth_upper"]);
+  });
 });
 
 describe("search_content", () => {
@@ -58,6 +76,14 @@ describe("search_content", () => {
     expect(r.isError).toBeFalsy();
     expect(r.content[0].text).toContain("Combat Boots");
     expect(r.content[0].text).toContain("skipped folders");
+  });
+
+  it("says the search was incomplete when CC5 cut a folder off at its cap", async () => {
+    bridge.browseContent.mockResolvedValue(["C:/c/Camo Shirt 1.ccCloth", "(truncated: more than 200 files matched; only the first 200 are listed)"]);
+    const r = await server.getRegisteredTool("search_content")({ query: "camo", folder_types: ["cloth_upper"], limit: 40 });
+    expect(r.content[0].text).toContain("1 match(es)");
+    expect(r.content[0].text).toContain("search incomplete in cloth_upper");
+    expect(r.content[0].text).not.toContain("(truncated");
   });
 });
 

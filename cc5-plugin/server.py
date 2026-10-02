@@ -193,7 +193,7 @@ ACTION_MAP: dict[str, Any] = {
     "list_hair":             lambda p: cc5_api.list_hair(),
     "list_accessories":      lambda p: cc5_api.list_accessories(),
     "remove_scene_item":     lambda p: cc5_api.remove_scene_item(p["item_name"]),
-    "browse_content":        lambda p: cc5_api.browse_content(p.get("folder_type", "cloth_upper")),
+    "browse_content":        lambda p: cc5_api.browse_content(p.get("folder_type", "cloth_upper"), str(p.get("query") or "")),
     # Tier 3: Convenience Color Shortcuts
     "set_eye_color":         lambda p: cc5_api.set_eye_color(float(p["r"]), float(p["g"]), float(p["b"])),
     "set_hair_color":        lambda p: cc5_api.set_hair_color(float(p["r"]), float(p["g"]), float(p["b"])),

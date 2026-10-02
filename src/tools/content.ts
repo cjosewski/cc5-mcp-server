@@ -4,7 +4,7 @@
 
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CC5Bridge } from "../cc5-bridge.js";
+import { isBrowseTruncation, type CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall } from "../util.js";
 
 export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
@@ -84,7 +84,9 @@ export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
     },
     async ({ folder_type }) => bridgeCall(
       () => bridge.browseContent(folder_type),
-      (files) => {
+      (listing) => {
+        const truncated = listing.length > 0 && isBrowseTruncation(listing[listing.length - 1]);
+        const files = truncated ? listing.slice(0, -1) : listing;
         if (files.length === 0) {
           return `No content files found for category '${folder_type}'.`;
         }
@@ -93,10 +95,13 @@ export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
           return files[0];
         }
         const display = files.slice(0, 50);
-        let text = `Found ${files.length} content file(s) for '${folder_type}':\n`;
+        let text = `Found ${files.length}${truncated ? "+" : ""} content file(s) for '${folder_type}':\n`;
         text += display.map(f => `- ${f}`).join("\n");
         if (files.length > 50) {
           text += `\n... and ${files.length - 50} more`;
+        }
+        if (truncated) {
+          text += `\nCC5 lists at most ${files.length} files per category, so some are not shown: use search_content with keywords to find a specific item.`;
         }
         return text;
       },
