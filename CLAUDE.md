@@ -113,6 +113,8 @@ All parameters are optional (only `output_path` is required), preserving full ba
 | `fps` | Include Motion: Frame Rate | Maps to `RLPy.RFps.Fps{n}` (e.g. 30). Unsupported values are skipped with a note. |
 | `motion_range` | Include Motion: Range | Passes `[start, end]` to `SetExportMotionRange`. When omitted, the default "All" is used. |
 
+**Switched off (Chad's ruling, 2026-10-03): `headshot_from_photo` and `import_fbx` with kind `character`.** Both crashed CC5 5.13 in live testing. They now fail at once with a plain message (Python `HEADSHOT_DISABLED` in `cc5_builder.py` and `IMPORT_CHARACTER_DISABLED` in `cc5_pipeline.py`, kept in sync with the same constants in `src/recipe.ts` and `src/tools/pipeline.ts`) and never call CC5. The user does these steps by hand: the Headshot plugin inside Character Creator 5, and File > Import in Character Creator 5. A recipe's `headshot_photo` step fails the same way. Do not test them against CC5 again until a later CC5 version is to be re-tested.
+
 **Live finding (Task 18, CC5 5.13): the first FBX export of a CC5 session crashes CC5 most of the time**, while every later export in that session works. Tested without effect: export settings, output folder and path length, RPyTimer instead of the QTimer drain, keeping the RExportFbxSetting alive, deselecting the avatar, a clean start without the recovery prompt. The README lists it, with the other CC5 5.13 findings, under Known issues.
 
 **Recommended Unreal (UE5 Skeleton) call:** `target_tool="UE5"`, `export_motion=true`, `sub_d_level=0`, `embed_textures=true`, `fps=30` (omit `motion_range` = All). InstaLOD is always OFF.

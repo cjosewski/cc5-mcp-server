@@ -429,19 +429,17 @@ if os.path.isfile(cloth):
     print("  clothing meshes that did not import:", (r or {}).get("failed_meshes"))
 else:
     skip("import_fbx clothing", "set CC5_LIVE_CLOTH_FBX to a clothing FBX")
-# Live CC5 5.13 opens its "Create Asset(s)" dialog for a character import, and the job waits there until someone
-# answers it in CC5, so this check runs only when CC5_LIVE_IMPORT_CHARACTER=1 and someone is at CC5 to press OK.
-if os.environ.get("CC5_LIVE_IMPORT_CHARACTER", "").strip().lower() not in ("1", "true", "yes"):
-    skip("import_fbx character", "CC5 asks 'Create Asset(s)': set CC5_LIVE_IMPORT_CHARACTER=1 and press OK in CC5")
-elif os.path.exists(fbx):  # last: adds a second character to the scene
-    r = job("import_fbx", {"file_path": fbx, "kind": "character"}); ok("import_fbx character", bool(r and r.get("success")), r)
-else:
-    skip("import_fbx character", "export_for_unity failed")
-photo = os.environ.get("CC5_LIVE_HEADSHOT_PHOTO", "")
-if os.path.isfile(photo):  # needs the Headshot 3 plugin; replaces the head of the current character
-    r = job("headshot_from_photo", {"photo_path": photo}, timeout=300); ok("headshot_from_photo", bool(r and r.get("success")), r)
-else:
-    skip("headshot_from_photo", "set CC5_LIVE_HEADSHOT_PHOTO to a front-facing photo (Headshot 3 required)")
+# Switched off (Chad's ruling, 2026-10-03): a whole-character import and Headshot both crashed live CC5 5.13. The
+# installed plugin must refuse them with its "do it by hand in CC5" message before touching CC5. The paths do not
+# exist, so an older plugin that still runs them fails on the missing file (and this check FAILs) instead of
+# crashing CC5. Never point these checks at a real file.
+missing = os.path.join(scratch, "no-such-file")
+r = job("import_fbx", {"file_path": missing + ".fbx", "kind": "character"}, timeout=30)
+ok("import_fbx character is switched off (do it by hand in CC5)", bool(r) and r.get("success") is False and
+   "switched off" in str(r.get("error")) and "File > Import in Character Creator 5" in str(r.get("error")), r)
+r = job("headshot_from_photo", {"photo_path": missing + ".jpg"}, timeout=30)
+ok("headshot_from_photo is switched off (do it by hand in CC5)", bool(r) and r.get("success") is False and
+   "switched off" in str(r.get("error")) and "Headshot plugin inside Character Creator 5" in str(r.get("error")), r)
 # Last: on live CC5 5.13 bake_skin_textures triggers SkinGen's "About" action, and its modal About box blocks every
 # later command (the bridge fails them with the dialog's text) until someone closes it in CC5.
 s, r = call("POST", "/skin/bake", {}, timeout=120); ok("bake_skin_textures (responds)", answered(s, r), s)

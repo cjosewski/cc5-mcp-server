@@ -33,6 +33,23 @@ class ImportTest(unittest.TestCase):
     def test_import_fbx_rejects_unknown_kind(self):
         self.assertFalse(self.pipe.import_fbx(self._file("a.fbx"), "vehicle")["success"])
 
+    # Chad's ruling (2026-10-03): live, a whole-character import drove CC5 5.13 into its import dialogs and crashed
+    # it, so kind 'character' is switched off. It must fail at once with a plain "do it by hand in CC5" message.
+    def test_import_character_is_switched_off_and_never_touches_cc5(self):
+        fbx = self._file("Patient.fbx")
+        self.rl.reset_mock()
+        r = self.pipe.import_fbx(fbx, "character")
+        self.assertFalse(r["success"])
+        self.assertEqual(r["error"], self.pipe.IMPORT_CHARACTER_DISABLED)
+        self.assertIn("File > Import in Character Creator 5", r["error"])
+        self.assertEqual(self.rl.mock_calls, [])
+
+    def test_import_character_is_refused_even_for_a_missing_file(self):
+        self.rl.reset_mock()
+        r = self.pipe.ACTIONS["import_fbx"]({"file_path": "C:/no/such.fbx", "kind": "character"})
+        self.assertEqual(r, {"success": False, "error": self.pipe.IMPORT_CHARACTER_DISABLED})
+        self.assertEqual(self.rl.mock_calls, [])
+
     def test_import_clothing_uses_load_clothe(self):
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
             r = self.pipe.import_fbx(self._file("jacket.fbx"), "clothing")

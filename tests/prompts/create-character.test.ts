@@ -25,6 +25,11 @@ describe("create_character prompt", () => {
     expect(buildCreateCharacterPrompt("x")).not.toContain("image_layer");
   });
 
+  // Chad's ruling (2026-10-03): headshot_from_photo is switched off, so the prompt must not suggest it.
+  it("does not suggest a headshot", () => {
+    expect(buildCreateCharacterPrompt("40-year-old woman, photo attached").toLowerCase()).not.toContain("headshot");
+  });
+
   it("warns in the recipe schema that 'default' is a mannequin", () => {
     expect(RecipeSchema.shape.base.description).toContain("mannequin");
     expect(RecipeSchema.shape.base.description).toContain("browse_content('character')");

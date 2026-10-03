@@ -19,38 +19,24 @@ class BuilderTest(unittest.TestCase):
         open(p, "wb").close()
         return p
 
-    def test_headshot_rejects_non_image(self):
-        self.assertFalse(self.b.headshot_from_photo(self._file("a.txt"))["success"])
-
-    def test_headshot_picks_pro_mode(self):
-        with mock.patch.object(self.b, "_headshot_modes", return_value=["EHSMode_Auto", "EHSMode_Pro"]):
-            r = self.b.headshot_from_photo(self._file("face.jpg"))
-        self.assertTrue(r["success"])
-        self.assertEqual(r["mode"], "EHSMode_Pro")
-
-    def test_headshot_licence_message(self):
-        self.rl.RHeadshot.CreateHeadFromPhoto.side_effect = RuntimeError("no licence")
-        with mock.patch.object(self.b, "_headshot_modes", return_value=["EHSMode_Pro"]):
-            r = self.b.headshot_from_photo(self._file("face.jpg"))
+    # Chad's ruling (2026-10-03): live, CreateHeadFromPhoto crashed CC5 5.13 in both Headshot modes, so the tool
+    # is switched off. It must fail at once with a plain "do it by hand in CC5" message and never touch CC5.
+    def test_headshot_is_switched_off_and_never_touches_cc5(self):
+        photo = self._file("face.jpg")
+        self.rl.reset_mock()
+        r = self.b.headshot_from_photo(photo)
         self.assertFalse(r["success"])
-        self.assertIn("Headshot", r["error"])
+        self.assertEqual(r["error"], self.b.HEADSHOT_DISABLED)
+        self.assertIn("Headshot plugin inside Character Creator 5", r["error"])
+        self.assertEqual(self.rl.mock_calls, [])
 
-    def test_headshot_finds_rlpy_mode_enum(self):
-        # Unpatched: real RLPy exposes the mode enum as EHSMode_Pro / EHSMode_Auto.
-        self.rl.EHSMode_Auto = 1
-        self.rl.EHSMode_Pro = 0
-        r = self.b.headshot_from_photo(self._file("face.jpg"))
-        self.assertTrue(r["success"])
-        self.assertEqual(r["mode"], "EHSMode_Pro")
-        self.assertEqual(self.rl.RHeadshot.CreateHeadFromPhoto.call_args[0][1], 0)
-
-    def test_headshot_tells_cc5_the_avatar_changed(self):
-        avatar = mock.MagicMock()
-        with mock.patch.object(self.b, "_headshot_modes", return_value=["EHSMode_Pro"]), \
-                mock.patch.object(self.b.cc5_api, "get_first_avatar", return_value=avatar):
-            r = self.b.headshot_from_photo(self._file("face.jpg"))
-        self.assertTrue(r["success"])
-        self.rl.RGlobal.ObjectModified.assert_called_once_with(avatar, self.rl.EObjectModifiedType_Attribute)
+    def test_headshot_action_fails_with_the_same_message_whatever_the_params(self):
+        self.rl.reset_mock()
+        for params in ({"photo_path": self._file("face.jpg")}, {"photo_path": "C:/no/such.gif"}, {}):
+            r = self.b.ACTIONS["headshot_from_photo"](params)
+            self.assertEqual(r, {"success": False, "error": self.b.HEADSHOT_DISABLED})
+        self.assertNotIn("headshot_from_photo", self.b.REQUIRED_PARAMS)
+        self.assertEqual(self.rl.mock_calls, [])
 
     def test_facial_profile_loads(self):
         avatar = mock.MagicMock()
@@ -58,14 +44,6 @@ class BuilderTest(unittest.TestCase):
             r = self.b.load_facial_profile(self._file("ext.ccFacialProfile"))
         self.assertTrue(r["success"])
         avatar.GetFacialProfileComponent.return_value.LoadProfile.assert_called_once()
-
-    def test_headshot_error_status(self):
-        self.rl.RHeadshot.CreateHeadFromPhoto.return_value.IsError.return_value = True
-        with mock.patch.object(self.b, "_headshot_modes", return_value=["EHSMode_Pro"]):
-            r = self.b.headshot_from_photo(self._file("face.jpg"))
-        self.assertFalse(r["success"])
-        self.assertIn("Headshot", r["error"])
-        self.rl.RGlobal.EndAction.assert_called()
 
     def test_facial_profile_error_status(self):
         avatar = mock.MagicMock()

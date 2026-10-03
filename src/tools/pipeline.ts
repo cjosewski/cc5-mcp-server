@@ -27,6 +27,14 @@ export const TEXTURE_CHANNELS = ["diffuse", "normal", "roughness", "metallic", "
   "displacement", "specular", "glow", "bump", "diffuse_blend"] as const;
 export const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff"];
 
+// Chad's ruling (2026-10-03): switched off. Live in CC5 5.13 (Task 18), a whole-character FBX import stopped in CC5's
+// "Create Asset(s)" dialog and crashed CC5. Keep the text in sync with IMPORT_CHARACTER_DISABLED in
+// cc5-plugin/cc5_pipeline.py.
+export const IMPORT_CHARACTER_DISABLED =
+  "import_fbx with kind 'character' is switched off because it crashed Character Creator 5. Import the whole " +
+  "character by hand instead: use File > Import in Character Creator 5. Importing a 'prop' or 'clothing' " +
+  "still works.";
+
 export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "apply_pose",
@@ -100,18 +108,19 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "import_fbx",
-    "Import an FBX made in Blender, Maya or another tool: as a 'prop', a whole 'character', or 'clothing' fitted to the current character. CC5 can stop to ask about the import (its 'Import Settings' frame-rate question for some files, or 'Create Asset(s)' for a character): the import, and every other CC5 command, waits until it is answered in CC5.",
+    "Import an FBX made in Blender, Maya or another tool: as a 'prop', or as 'clothing' fitted to the current character. Kind 'character' is switched off (it crashed Character Creator 5) and fails at once: ask the user to import a whole character by hand with File > Import in Character Creator 5. CC5 can stop to ask about the import (its 'Import Settings' frame-rate question for some files): the import, and every other CC5 command, waits until it is answered in CC5.",
     {
       file_path: z.string().describe("Absolute path to the .fbx"),
-      kind: z.enum(["prop", "character", "clothing"]),
+      kind: z.enum(["prop", "character", "clothing"]).describe("'prop' or 'clothing'; 'character' is switched off"),
     },
     async ({ file_path, kind }) => {
+      if (kind === "character") return errorResult(IMPORT_CHARACTER_DISABLED);  // Chad's ruling: never calls CC5
       const err = checkFile(file_path, [".fbx"]);
       if (err) return errorResult(err);
       try {
         const out = await runJob(bridge, "import_fbx", { file_path, kind });
         if (!out.done) {
-          return { content: [{ type: "text" as const, text: `${formatPending(out.job_id)} If CC5 shows an import dialog (Import Settings or Create Asset(s)), answer it in CC5: the import waits for it.` }] };
+          return { content: [{ type: "text" as const, text: `${formatPending(out.job_id)} If CC5 shows its Import Settings dialog, answer it in CC5: the import waits for it.` }] };
         }
         const r = out.result as { success: boolean; error?: string; signature?: string; notes?: string[] };
         if (out.failed || !r.success) return errorResult(`Import failed: ${r.error ?? "unknown error"}`);

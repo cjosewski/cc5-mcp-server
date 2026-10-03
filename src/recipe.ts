@@ -11,11 +11,16 @@ import { isLocalAbsolute } from "./tools/unity.js";
 import { TEXTURE_CHANNELS } from "./tools/pipeline.js";
 import { runJobStep } from "./jobs.js";
 
-// Loads, the headshot and poses run as bridge jobs: a dressed .ccAvatar can take longer than the bridge's
+// Loads and poses run as bridge jobs: a dressed .ccAvatar can take longer than the bridge's
 // 30 s limit for direct calls, which would report the step failed while CC5 goes on to finish it.
 export const BASE_LOAD_WAIT_MS = 300_000;
 const STEP_JOB_WAIT_MS = 120_000;
-const HEADSHOT_WAIT_MS = 180_000;
+
+// Chad's ruling (2026-10-03): switched off. Live in CC5 5.13 (Task 18), Headshot's CreateHeadFromPhoto crashed CC5
+// in both modes. Keep the text in sync with HEADSHOT_DISABLED in cc5-plugin/cc5_builder.py.
+export const HEADSHOT_DISABLED =
+  "headshot_from_photo is switched off because it crashed Character Creator 5. Make the head by hand instead: " +
+  "use the Headshot plugin inside Character Creator 5.";
 
 const rgb = z.tuple([z.number().min(0).max(1), z.number().min(0).max(1), z.number().min(0).max(1)]);
 const absPath = z.string().refine(isLocalAbsolute, "must be a local absolute path without '..' (no network/UNC paths)");
@@ -23,7 +28,8 @@ const absPath = z.string().refine(isLocalAbsolute, "must be a local absolute pat
 export const RecipeSchema = z.object({
   base: z.union([z.literal("default"), absPath]).optional()
     .describe("A .ccAvatar/.iAvatar path, best a textured character template from browse_content('character'); omit to modify the current character. 'default' loads CC5's neutral base, a mannequin with no skin or eye textures, eyebrows, eyelashes or hair. Setting it replaces any character already in the scene"),
-  headshot_photo: absPath.optional(),
+  headshot_photo: absPath.optional()
+    .describe("Switched off: the step fails without calling CC5. Make the head by hand with the Headshot plugin inside Character Creator 5"),
   body_preset: z.object({
     preset: z.enum(["athletic", "muscular", "slim", "heavy", "average"]),
     intensity: z.number().min(0).max(1).default(1),
@@ -103,10 +109,8 @@ export async function applyRecipe(bridge: CC5Bridge, recipe: Recipe, opts: Recip
         : runJobStep(bridge, "load_asset", { file_path: base }, jobOpts(BASE_LOAD_WAIT_MS));
     });
   }
-  const photo = recipe.headshot_photo;
-  if (photo) {
-    await step("headshot_photo",
-      () => runJobStep(bridge, "headshot_from_photo", { photo_path: photo }, jobOpts(HEADSHOT_WAIT_MS)));
+  if (recipe.headshot_photo) {
+    await step("headshot_photo", async () => ({ success: false, error: HEADSHOT_DISABLED }));
   }
   const preset = recipe.body_preset;
   if (preset) {

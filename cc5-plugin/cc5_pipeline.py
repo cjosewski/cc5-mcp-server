@@ -381,7 +381,16 @@ def export_goz(output_dir: str, pose: str = "tpose") -> dict[str, Any]:
             "pose_applied": pose_applied, "notes": notes}
 
 
-FBX_KINDS = {"prop": "EImportFbxOption_Prop", "character": "EImportFbxOption_StandardHumanCharacter", "clothing": None}
+FBX_KINDS = {"prop": "EImportFbxOption_Prop", "clothing": None}
+
+# Chad's ruling (2026-10-03): kind 'character' is switched off. Live in CC5 5.13 (Task 18), LoadFbxFile with
+# EImportFbxOption_StandardHumanCharacter stopped in CC5's "Create Asset(s)" dialog and crashed CC5 (Qt5Core) when
+# that dialog was answered from a script. Keep the text in sync with IMPORT_CHARACTER_DISABLED in
+# src/tools/pipeline.ts.
+IMPORT_CHARACTER_DISABLED = (
+    "import_fbx with kind 'character' is switched off because it crashed Character Creator 5. Import the whole "
+    "character by hand instead: use File > Import in Character Creator 5. Importing a 'prop' or 'clothing' "
+    "still works.")
 
 
 def _worn_names(avatar: Any) -> list[str]:
@@ -391,8 +400,11 @@ def _worn_names(avatar: Any) -> list[str]:
 
 
 def import_fbx(file_path: str, kind: str) -> dict[str, Any]:
-    """Import an FBX from Blender/Maya/etc. as a prop, a character, or clothing for the current avatar.
+    """Import an FBX from Blender/Maya/etc. as a prop, or as clothing for the current avatar. Kind 'character' is
+    switched off (IMPORT_CHARACTER_DISABLED) and never touches CC5.
     Live signatures: LoadFbxFile(path, EImportFbxOption, ...); LoadClotheFromFbx(avatar, path, WStringVector)."""
+    if kind == "character":
+        return {"success": False, "error": IMPORT_CHARACTER_DISABLED}
     if not isinstance(kind, str) or kind not in FBX_KINDS:
         return {"success": False, "error": f"kind must be one of: {', '.join(FBX_KINDS)}"}
     error = _check_existing(file_path, {".fbx"})

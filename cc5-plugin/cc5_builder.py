@@ -1,6 +1,6 @@
 """
-Character-building helpers that go beyond morphs: Headshot photo-to-head and
-facial profiles. Content search lives on the TypeScript side (browse_content).
+Character-building helpers that go beyond morphs: facial profiles, and the switched-off
+Headshot photo-to-head. Content search lives on the TypeScript side (browse_content).
 """
 
 from __future__ import annotations
@@ -11,39 +11,19 @@ from typing import Any
 import RLPy
 
 import cc5_api
-from cc5_pipeline import _check_existing, _raise_on_error, check_path
+from cc5_pipeline import _raise_on_error, check_path
 
-PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+# Chad's ruling (2026-10-03): switched off. Live in CC5 5.13 (Task 18), RHeadshot.CreateHeadFromPhoto crashed CC5
+# (CharacterCreator.exe+0xcc1e1b) in both Headshot modes. Keep the text in sync with HEADSHOT_DISABLED in
+# src/recipe.ts. The RLPy implementation is in git history (commit 664b455) for when a later CC5 is re-tested.
+HEADSHOT_DISABLED = (
+    "headshot_from_photo is switched off because it crashed Character Creator 5. Make the head by hand instead: "
+    "use the Headshot plugin inside Character Creator 5.")
 
 
-def _headshot_modes() -> list[str]:
-    return [n for n in dir(RLPy) if n.startswith("EHSMode_")]
-
-
-def headshot_from_photo(photo_path: str) -> dict[str, Any]:
-    """Generate a head from a front-facing photo (needs the Headshot 3 plugin)."""
-    error = _check_existing(photo_path, PHOTO_EXTENSIONS)
-    if error:
-        return {"success": False, "error": error}
-    modes = _headshot_modes()
-    if not modes:
-        return {"success": False, "error": "Headshot is not available in this CC5 install (Headshot 3 plugin required)"}
-    mode = next((m for m in modes if "Pro" in m), modes[0])
-    RLPy.RGlobal.BeginAction("Headshot From Photo")
-    try:
-        _raise_on_error(
-            RLPy.RHeadshot.CreateHeadFromPhoto(photo_path, getattr(RLPy, mode), RLPy.RHeadshotOption()),
-            "CreateHeadFromPhoto",
-        )
-        avatar = cc5_api.get_first_avatar()
-        if avatar:
-            RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Attribute)
-    except Exception as e:
-        return {"success": False, "error": f"Headshot failed ({e}). Check the Headshot 3 plugin is installed and licensed."}
-    finally:
-        RLPy.RGlobal.EndAction()
-    cc5_api._invalidate_caches()
-    return {"success": True, "mode": mode}
+def headshot_from_photo(photo_path: Any = None) -> dict[str, Any]:
+    """Switched off: fails at once with HEADSHOT_DISABLED and never touches CC5."""
+    return {"success": False, "error": HEADSHOT_DISABLED}
 
 
 def load_facial_profile(file_path: str) -> dict[str, Any]:
@@ -70,11 +50,10 @@ def load_facial_profile(file_path: str) -> dict[str, Any]:
 
 
 ACTIONS: dict[str, Any] = {
-    "headshot_from_photo": lambda p: headshot_from_photo(p["photo_path"]),
+    "headshot_from_photo": lambda p: headshot_from_photo(),
     "load_facial_profile": lambda p: load_facial_profile(p["file_path"]),
 }
 POST_ROUTES: dict[str, str] = {"/builder/facial_profile": "load_facial_profile"}
 REQUIRED_PARAMS: dict[str, list[str]] = {
-    "headshot_from_photo": ["photo_path"],
     "load_facial_profile": ["file_path"],
 }

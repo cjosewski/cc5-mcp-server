@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { registerPipelineTools } from "../../src/tools/pipeline.js";
+import { registerPipelineTools, IMPORT_CHARACTER_DISABLED } from "../../src/tools/pipeline.js";
 import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -132,12 +132,29 @@ describe("export_goz", () => {
 });
 
 describe("import_fbx", () => {
-  // Live CC5 5.13 (Task 18): LoadFbxFile opens CC5's own "Import Settings" (frame rate) dialog for some files and
-  // "Create Asset(s)" for a character, and the job waits inside it until someone answers in CC5.
+  // Live CC5 5.13 (Task 18): LoadFbxFile opens CC5's own "Import Settings" (frame rate) dialog for some files, and
+  // the job waits inside it until someone answers in CC5.
   it("says the import can wait for CC5's own import dialog", () => {
     const description = server.tool.mock.calls.find((c) => c[0] === "import_fbx")?.[1] as string;
     expect(description).toContain("Import Settings");
-    expect(description).toContain("Create Asset(s)");
+  });
+
+  // Chad's ruling (2026-10-03): a whole-character import crashed CC5 5.13, so kind 'character' is switched off.
+  it("refuses kind 'character' at once with the do-it-in-CC5 message, and sends CC5 nothing", async () => {
+    for (const file_path of ["C:/a/Patient.fbx", "C:/a/b.obj"]) {
+      const r = await server.getRegisteredTool("import_fbx")({ file_path, kind: "character" });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe(IMPORT_CHARACTER_DISABLED);
+    }
+    expect(IMPORT_CHARACTER_DISABLED).toContain("use File > Import in Character Creator 5");
+    expect(bridge.startJob).not.toHaveBeenCalled();
+  });
+
+  it("says in its description that a whole character is imported by hand in CC5", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "import_fbx")?.[1] as string;
+    expect(description).toContain("'character' is switched off");
+    expect(description).toContain("File > Import in Character Creator 5");
+    expect(description).not.toContain("Create Asset(s)");
   });
 
   it("asks to answer CC5's import dialog when the import is still running", async () => {
@@ -145,11 +162,12 @@ describe("import_fbx", () => {
     try {
       bridge.startJob.mockResolvedValue({ job_id: "cmd_7" });
       bridge.getJob.mockResolvedValue({ job_id: "cmd_7", action: "import_fbx", status: "running" });
-      const pending = server.getRegisteredTool("import_fbx")({ file_path: "C:/a/Patient.fbx", kind: "character" });
+      const pending = server.getRegisteredTool("import_fbx")({ file_path: "C:/a/Stretcher.fbx", kind: "prop" });
       await vi.advanceTimersByTimeAsync(30_000);
       const r = await pending;
       expect(r.content[0].text).toContain("cmd_7");
       expect(r.content[0].text).toContain("answer it in CC5");
+      expect(r.content[0].text).not.toContain("Create Asset(s)");
     } finally {
       vi.useRealTimers();
     }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { applyRecipe, formatReport, RecipeSchema } from "../src/recipe.js";
+import { applyRecipe, formatReport, RecipeSchema, HEADSHOT_DISABLED } from "../src/recipe.js";
 import { createMockBridge, mockJobs } from "./helpers/mock-bridge.js";
 import type { MockBridge } from "./helpers/mock-bridge.js";
 
@@ -55,19 +55,33 @@ describe("applyRecipe", () => {
 
   it("reports a step whose job outlasts the wait as failed, naming the job", async () => {
     bridge.startJob.mockResolvedValue({ job_id: "cmd_ab12cd34_9" });
-    bridge.getJob.mockResolvedValue({ job_id: "cmd_ab12cd34_9", action: "headshot_from_photo", status: "running" });
-    const recipe = RecipeSchema.parse({ headshot_photo: "C:/p/face.jpg" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_ab12cd34_9", action: "apply_pose", status: "running" });
+    const recipe = RecipeSchema.parse({ pose_file: "C:/p/Supine.rlMotion" });
     vi.useFakeTimers();
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const pending = applyRecipe(bridge as any, recipe);
       await vi.advanceTimersByTimeAsync(200_000);
       const results = await pending;
-      expect(results[0]).toMatchObject({ step: "headshot_photo", ok: false });
+      expect(results[0]).toMatchObject({ step: "pose_file", ok: false });
       expect(results[0].detail).toContain("cmd_ab12cd34_9");
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Chad's ruling (2026-10-03): live, Headshot crashed CC5 5.13. The step fails with the do-it-in-CC5 message
+  // and CC5 is never asked; the steps after it still run.
+  it("fails the headshot_photo step without calling CC5, and runs the rest", async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({
+      headshot_photo: "C:/p/face.jpg", skin_condition: { condition: "pale", amount: 0.5 } }));
+    expect(results).toEqual([
+      { step: "headshot_photo", ok: false, detail: HEADSHOT_DISABLED },
+      { step: "skin_condition", ok: true, detail: "" },
+    ]);
+    expect(started).toEqual([]);
+    expect(RecipeSchema.shape.headshot_photo.description).toContain("Switched off");
   });
 
   it("keeps going after a failed step", async () => {

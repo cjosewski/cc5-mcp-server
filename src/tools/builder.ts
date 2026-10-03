@@ -1,6 +1,6 @@
 /**
- * Character-building tools: content search across categories, Headshot from a
- * photo, facial profiles, and whole-character recipes.
+ * Character-building tools: content search across categories, facial profiles,
+ * whole-character recipes, and the switched-off Headshot from a photo.
  */
 
 import path from "node:path";
@@ -8,10 +8,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isBrowseTruncation, type CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, errorResult, progressReporter } from "../util.js";
-import { runJob, formatPending } from "../jobs.js";
-import { checkFile } from "./pipeline.js";
 import { isLocalAbsolute } from "./unity.js";
-import { applyRecipe, formatReport, RecipeSchema } from "../recipe.js";
+import { applyRecipe, formatReport, RecipeSchema, HEADSHOT_DISABLED } from "../recipe.js";
 import { claimScene } from "../scene-lock.js";
 
 export const SEARCH_FOLDERS = [
@@ -90,21 +88,10 @@ export function registerBuilderTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "headshot_from_photo",
-    "Generate the character's head from a front-facing photo (Headshot 3 plugin required). Takes a minute or more; returns a job id if still running.",
-    { photo_path: z.string().describe("Absolute path to a .jpg/.png front-facing photo") },
-    async ({ photo_path }) => {
-      const err = checkFile(photo_path, [".jpg", ".jpeg", ".png"]);
-      if (err) return errorResult(err);
-      try {
-        const out = await runJob(bridge, "headshot_from_photo", { photo_path }, { waitMs: 120_000 });
-        if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
-        const r = out.result as { success: boolean; error?: string; mode?: string };
-        if (out.failed || !r.success) return errorResult(`Headshot failed: ${r.error ?? "unknown error"}`);
-        return { content: [{ type: "text" as const, text: `Head generated from ${path.basename(photo_path)} (${r.mode})` }] };
-      } catch (e) {
-        return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    }
+    "Switched off: it crashed Character Creator 5, so it fails at once and does nothing in CC5. To make a head from a photo, ask the user to use the Headshot plugin inside Character Creator 5 by hand.",
+    { photo_path: z.string().describe("Absolute path to a .jpg/.png front-facing photo (ignored: the tool is switched off)") },
+    // Chad's ruling (2026-10-03): never calls CC5.
+    async () => errorResult(HEADSHOT_DISABLED)
   );
 
   server.tool(
@@ -120,7 +107,7 @@ export function registerBuilderTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "apply_character_recipe",
-    "Build or modify a character in one call from a recipe: base, headshot photo, body preset, morphs, skin colour and condition, facial profile, content assets (hair, clothes, shoes, accessories, makeup), textures, injury overlays, wrinkles, expression, pose. Every step is reported; a failed step does not stop the rest. Not while batch_generate_patients runs: both edit the same scene.",
+    "Build or modify a character in one call from a recipe: base, body preset, morphs, skin colour and condition, facial profile, content assets (hair, clothes, shoes, accessories, makeup), textures, injury overlays, wrinkles, expression, pose. Every step is reported; a failed step does not stop the rest. Not while batch_generate_patients runs: both edit the same scene.",
     { recipe: RecipeSchema },
     async ({ recipe }, extra) => {
       const release = claimScene("apply_character_recipe");

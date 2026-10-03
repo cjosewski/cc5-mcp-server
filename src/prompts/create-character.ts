@@ -13,7 +13,7 @@ export function buildCreateCharacterPrompt(description: string): string {
     "Work in this order and show me a viewport capture after steps 3 and 6:",
     "1. check_cc5_connection. Unless I ask to keep the character already in the scene, start from a textured character template: browse_content('character') (or search_content with folder_types ['character'] and words from the description), and use the template's path as the recipe base. Do not use base 'default': it is CC5's neutral mannequin, with no skin or eye textures, eyebrows, eyelashes or hair.",
     "2. Find content with search_content (clothing, shoes, makeup). Pick real file paths from the results; never invent paths. Hair is not searchable: keep the template's hair, or use a .ccHair file path I give you.",
-    "3. Call apply_character_recipe once with: base, body_preset or morphs (search_morphs for specific features), skin_rgb, skin_condition (pale for blood loss/shock, cyanotic for hypoxia), assets, and expression. Use headshot_photo only if I gave a photo.",
+    "3. Call apply_character_recipe once with: base, body_preset or morphs (search_morphs for specific features), skin_rgb, skin_condition (pale for blood loss/shock, cyanotic for hypoxia), assets, and expression.",
     "4. Read the step report. Fix any failed step with the individual tool, then capture_viewport.",
     "5. Injuries: apply_skin_overlay with PNG/JPG/TGA overlay images I provide (ask me for them; CC5 content has none); set_wrinkle_strength for age.",
     "6. pose_file via apply_pose if a pose is needed (browse_content('pose')). capture_viewport.",

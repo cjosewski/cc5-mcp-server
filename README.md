@@ -113,14 +113,14 @@ Exonicus additions for building Trauma Simulator patients and moving them betwee
 
 | Tool | Description |
 |------|-------------|
-| `job_status` | Check a long-running operation (export, headshot, batch) started earlier; returns its result when finished |
+| `job_status` | Check a long-running operation (export, import, batch) started earlier; returns its result when finished |
 | `export_for_unity` | Export the current character as FBX with CC5's Unity preset into `<unity_dir>/<character_name>/` inside a Unity project's `Assets` folder. With `include_current_pose`, the pose is a one-frame animation clip in the FBX (the model's default pose stays the bind pose) |
 | `check_quest_budget` | Check the current character against the Quest 3 per-character budget (triangles, materials, and, given an export folder, texture size and estimated GPU memory); see [Budget defaults](#budget-defaults) |
 | `apply_pose` | Apply a pose or motion file (`.rlMotion`, `.rlPose`, `.iMotion`, `.iPose`, `.iMotionPlus`, `.ccPose`, `.ccMotion`) to the current character |
 | `save_character` | Save the current character as a `.ccAvatar` file (the clean base for batch generation) |
 | `export_obj` | Export the current character as OBJ for sculpting in ZBrush or Blender |
 | `export_goz` | Export the current character as GoZ files for ZBrush |
-| `import_fbx` | Import an FBX from Blender, Maya or another tool as a prop, a whole character, or clothing fitted to the current character (a garment must be skinned to the character's armature). CC5 may stop on its own import dialog (Import Settings, Create Asset(s)); the import waits until it is answered in CC5 |
+| `import_fbx` | Import an FBX from Blender, Maya or another tool as a prop, or as clothing fitted to the current character (a garment must be skinned to the character's armature). Kind `character` is switched off (it crashed CC5) and fails at once: import a whole character by hand with File > Import in Character Creator 5. CC5 may stop on its own Import Settings dialog; the import waits until it is answered in CC5 |
 | `list_meshes` | List the current character's mesh names (for `replace_mesh_from_obj` and `load_texture`) |
 | `replace_mesh_from_obj` | Replace one of the character's meshes with an edited OBJ of the same topology |
 | `load_texture` | Load an image into one texture channel of one material |
@@ -131,7 +131,7 @@ Exonicus additions for building Trauma Simulator patients and moving them betwee
 | `set_skin_condition` | Move the skin toward a clinical appearance: pale (lighter and less saturated, through the Digital Human skin shader), cyanotic, flushed, jaundiced (colour tints), or back to normal |
 | `set_wrinkle_strength` | Set facial wrinkle detail strength (0 = smooth, 1 = full) |
 | `search_content` | Search installed CC5 content (clothing, shoes, characters, poses, makeup, skin layers, textures) by file-name keywords |
-| `headshot_from_photo` | Generate the character's head from a front-facing photo (Headshot 3 plugin required) |
+| `headshot_from_photo` | Switched off (it crashed CC5): fails at once and does nothing in CC5. Make a head from a photo by hand with the Headshot plugin inside Character Creator 5 |
 | `load_facial_profile` | Load a facial profile file (expression set) onto the character |
 | `apply_character_recipe` | Build or modify a character in one call from a recipe; every step is reported and a failed step does not stop the rest |
 | `batch_generate_patients` | Generate many patient variants from one saved base character; each is exported to Unity, budget-checked, and recorded in `patients_manifest.json` |
@@ -280,7 +280,7 @@ In Git Bash: `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT=7200000 claude`. Leave `MCP_TOOL
 
 Cancelling the call (Esc, or Claude Code giving up) stops the batch before its next CC5 command. Finished variants stay in place, and `patients_manifest.json` says which variants never started. One `batch_generate_patients` or `apply_character_recipe` runs at a time; another is refused until it finishes, because both edit the same scene.
 
-Long operations run as bridge jobs: `export_for_unity`, `export_goz`, `import_fbx`, `export_textures`, `headshot_from_photo`, `apply_pose`, `save_character`, `replace_mesh_from_obj` and `load_substance_textures`. If one is still running when the tool stops waiting, it returns a job id to poll with `job_status`; do not start the same operation again. If CC5 restarts, an old job id is reported as not found and its result is lost.
+Long operations run as bridge jobs: `export_for_unity`, `export_goz`, `import_fbx`, `export_textures`, `apply_pose`, `save_character`, `replace_mesh_from_obj` and `load_substance_textures`. If one is still running when the tool stops waiting, it returns a job id to poll with `job_status`; do not start the same operation again. If CC5 restarts, an old job id is reported as not found and its result is lost.
 
 ## Budget defaults
 
@@ -302,8 +302,9 @@ The scene stats count the base mesh. An FBX exported with `sub_d_level` 1 or 2 h
 Found in live testing on CC5 5.13.2030.1. None of them can be fixed from the bridge:
 
 - **The first FBX export after CC5 starts often crashes CC5.** In testing, CC5 closed on about three in four sessions' first FBX export (`export_fbx`, `export_for_unity`, `export_textures`, a batch), whatever the settings, folder or call route. Once one FBX export had worked, every later export in that session worked (more than 30). Save your scene before the first export. If CC5 crashes, start it again, answer its "Unsaved project data found" question (OK restores your unsaved work), and run the export again.
-- **`headshot_from_photo` crashed CC5** in both Headshot modes with the test photo. Use Headshot from CC5's own menu until this is resolved.
-- **`import_fbx` can wait for CC5's own import dialog** ("Import Settings" for the frame rate, "Create Asset(s)" for a character): answer it in CC5 and the import finishes.
+- **`headshot_from_photo` is switched off.** It crashed CC5 in both Headshot modes with the test photo. The tool, and a recipe's `headshot_photo` step, now fail at once with a message and never call CC5. Make the head by hand with the Headshot plugin inside Character Creator 5.
+- **`import_fbx` with kind `character` is switched off.** A whole-character import stopped in CC5's "Create Asset(s)" dialog and crashed CC5. It now fails at once with a message and never calls CC5. Import a whole character by hand with File > Import in Character Creator 5. Kinds `prop` and `clothing` still work.
+- **`import_fbx` can wait for CC5's own import dialog** ("Import Settings" for the frame rate): answer it in CC5 and the import finishes.
 - **Convert Image Format is refused**: every scripted export with it crashed CC5. Exported textures keep their source formats.
 - **`bake_skin_textures` opens SkinGen's About box.** While it is open, other commands wait and then fail with its title; close it in CC5.
 
@@ -369,7 +370,7 @@ cc5-mcp-server/
 │   │   ├── unity.ts        # Unity export, Quest budget check (2 tools)
 │   │   ├── pipeline.ts     # Poses, saving, Blender/ZBrush/Substance round-trips (10 tools)
 │   │   ├── skin.ts         # Skin overlays, clinical skin condition, wrinkles (4 tools)
-│   │   ├── builder.ts      # Content search, Headshot, facial profile, recipes (4 tools)
+│   │   ├── builder.ts      # Content search, facial profile, recipes, Headshot (switched off) (4 tools)
 │   │   └── batch.ts        # Batch patient generation (1 tool)
 │   ├── prompts/
 │   │   └── create-character.ts # create_character prompt
@@ -381,7 +382,7 @@ cc5-mcp-server/
 │   ├── cc5_api.py          # RLPy API wrapper
 │   ├── cc5_pipeline.py     # Extension: Unity export, mesh stats, poses, DCC round-trips
 │   ├── cc5_skin.py         # Extension: skin overlays, condition tints, wrinkles
-│   ├── cc5_builder.py      # Extension: Headshot, facial profiles
+│   ├── cc5_builder.py      # Extension: facial profiles, Headshot (switched off)
 │   └── config.json         # Plugin configuration
 ├── start_bridge.py         # Manual bridge startup script
 ├── install-plugin.ps1      # Plugin installer (requires admin)

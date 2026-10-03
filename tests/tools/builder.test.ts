@@ -3,6 +3,7 @@ import { registerBuilderTools, searchContent } from "../../src/tools/builder.js"
 import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
+import { HEADSHOT_DISABLED } from "../../src/recipe.js";
 
 let bridge: MockBridge;
 let server: ReturnType<typeof createMockServer>;
@@ -87,14 +88,31 @@ describe("search_content", () => {
   });
 });
 
+// Chad's ruling (2026-10-03): live, Headshot crashed CC5 5.13, so the tool is switched off and never calls CC5.
 describe("headshot_from_photo", () => {
-  it("rejects non-photos", async () => {
-    const r = await server.getRegisteredTool("headshot_from_photo")({ photo_path: "C:/a/b.gif" });
-    expect(r.isError).toBe(true);
+  it("is switched off: fails at once with the do-it-in-CC5 message and sends CC5 nothing", async () => {
+    for (const photo_path of ["C:/a/face.jpg", "C:/a/b.gif"]) {
+      const r = await server.getRegisteredTool("headshot_from_photo")({ photo_path });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe(HEADSHOT_DISABLED);
+    }
+    expect(HEADSHOT_DISABLED).toContain("use the Headshot plugin inside Character Creator 5");
+    expect(bridge.startJob).not.toHaveBeenCalled();
+  });
+
+  it("says in its description that it is switched off and what to do instead", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "headshot_from_photo")?.[1] as string;
+    expect(description).toContain("Switched off");
+    expect(description).toContain("Headshot plugin inside Character Creator 5");
   });
 });
 
 describe("apply_character_recipe", () => {
+  it("does not offer a headshot photo", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "apply_character_recipe")?.[1] as string;
+    expect(description.toLowerCase()).not.toContain("headshot");
+  });
+
   it("flags partial failure as an error", async () => {
     mockJobs(bridge, { load_asset: { success: false, error: "File not found" } });
     const r = await server.getRegisteredTool("apply_character_recipe")({ recipe: { assets: ["C:/x/a.iClothes"] } });
