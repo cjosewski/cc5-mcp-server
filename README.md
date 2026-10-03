@@ -128,7 +128,7 @@ Exonicus additions for building Trauma Simulator patients and moving them betwee
 | `export_textures` | Export the character as FBX plus its texture images (in their source formats), the starting point for texturing in Substance Painter |
 | `apply_skin_overlay` | Blend an image laid out on the CC skin UVs over the skin (bruising, abrasions, dirt, dried blood) |
 | `remove_skin_overlay` | Remove skin overlays added with `apply_skin_overlay` |
-| `set_skin_condition` | Tint the skin toward a clinical appearance: pale, cyanotic, flushed, jaundiced, or back to normal |
+| `set_skin_condition` | Move the skin toward a clinical appearance: pale (lighter and less saturated, through the Digital Human skin shader), cyanotic, flushed, jaundiced (colour tints), or back to normal |
 | `set_wrinkle_strength` | Set facial wrinkle detail strength (0 = smooth, 1 = full) |
 | `search_content` | Search installed CC5 content (clothing, shoes, characters, poses, makeup, skin layers, textures) by file-name keywords |
 | `headshot_from_photo` | Generate the character's head from a front-facing photo (Headshot 3 plugin required) |

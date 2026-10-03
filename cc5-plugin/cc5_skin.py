@@ -13,13 +13,19 @@ import cc5_api
 from cc5_pipeline import IMAGE_EXTENSIONS, _check_existing, _raise_on_error
 
 REGION_KEYS = {"head": "head", "body": "body", "arms": "arm", "legs": "leg"}
+# Diffuse tints (multiplied into the skin colour). Pale has none: a tint can only darken.
 SKIN_CONDITIONS: dict[str, tuple[float, float, float]] = {
     "normal": (1.0, 1.0, 1.0),
-    "pale": (0.93, 0.90, 0.88),
+    "pale": (1.0, 1.0, 1.0),
     "cyanotic": (0.80, 0.86, 0.98),
     "flushed": (1.0, 0.82, 0.80),
     "jaundiced": (1.0, 0.95, 0.70),
 }
+# Pallor: Digital Human skin shader offsets at amount 1 (0 = the texture as authored). Live CC5 5.13 (Task 18): the old
+# pale tint (0.93, 0.90, 0.88) made CC4 Camila's cheeks darker and more saturated; pale 0.8 with these offsets
+# (+0.048, -0.2) took them from lightness 0.42 to 0.54 and saturation 0.27 to 0.12. Every condition writes them, so
+# normal and the tints clear the pallor.
+PALLOR_OFFSETS: dict[str, float] = {"_BaseColorMap Brightness": 0.06, "_BaseColorMap Saturation": -0.25}
 
 
 def skin_targets(avatar, region: str) -> list[tuple[str, str]]:
@@ -116,12 +122,24 @@ def remove_skin_overlay(region: str = "all") -> dict[str, Any]:
     return {"success": True, "removed_from": removed, "no_overlay": no_overlay}
 
 
+def _has_pallor_offsets(mat_comp: Any, mesh: str, mat: str) -> bool:
+    """Whether the material's shader has both pallor offsets, each holding one value (the count SWIG expects)."""
+    try:
+        names = set(mat_comp.GetShaderParameterNames(mesh, mat) or [])
+        return all(name in names and len(list(mat_comp.GetShaderParameter(mesh, mat, name))) == 1
+                   for name in PALLOR_OFFSETS)
+    except Exception:
+        return False
+
+
 def set_skin_condition(condition: str, amount: float = 1.0, region: str = "all",
                        base_rgb: Any = None) -> dict[str, Any]:
-    """Tint skin toward a clinical appearance (pale = shock, cyanotic = hypoxia).
+    """Move skin toward a clinical appearance (pale = shock, cyanotic = hypoxia).
 
     Writes the same diffuse key as cc5_api.set_skin_color, so it replaces the skin
-    colour. Pass that colour as base_rgb to tint it instead of losing it.
+    colour. Pass that colour as base_rgb to tint it instead of losing it. Pallor
+    lightens and desaturates through the skin shader's PALLOR_OFFSETS; every other
+    condition sets them back to 0.
     """
     if condition not in SKIN_CONDITIONS:
         return {"success": False, "error": f"condition must be one of: {', '.join(SKIN_CONDITIONS)}"}
@@ -132,22 +150,38 @@ def set_skin_condition(condition: str, amount: float = 1.0, region: str = "all",
     avatar, targets, error = _prepare(region)
     if error:
         return {"success": False, "error": error}
+    mat_comp = avatar.GetMaterialComponent()
+    with_offsets = [target for target in targets if _has_pallor_offsets(mat_comp, *target)]
+    if condition == "pale" and amount > 0 and not with_offsets:
+        return {"success": False, "error": "This character's skin shader has no _BaseColorMap Brightness / "
+                                           "_BaseColorMap Saturation offsets (CC5's Digital Human skin), so pale "
+                                           "cannot lighten its skin"}
+    scale = amount if condition == "pale" else 0.0
+    offsets = {name: round(full * scale, 4) + 0.0 for name, full in PALLOR_OFFSETS.items()}
     tr, tg, tb = SKIN_CONDITIONS[condition]
     rgb = tuple(round(b * (1.0 + (t - 1.0) * amount), 4) for b, t in zip(base, (tr, tg, tb)))
     color = RLPy.RRgb(*rgb)
-    mat_comp = avatar.GetMaterialComponent()
     applied: list[str] = []
     RLPy.RGlobal.BeginAction("Set Skin Condition")
     try:
         for mesh, mat in targets:
             _raise_on_error(mat_comp.AddDiffuseKey(_now_key(), mesh, mat, color), f"AddDiffuseKey on {mat}")
+            if (mesh, mat) in with_offsets:
+                for name, value in offsets.items():
+                    mat_comp.SetShaderParameter(mesh, mat, name, [value])
             applied.append(mat)
     except Exception as e:
         return {"success": False, "error": str(e), "condition": condition, "applied_to": applied}
     finally:
         RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
         RLPy.RGlobal.EndAction()
-    return {"success": True, "condition": condition, "rgb": list(rgb), "applied_to": applied}
+    result: dict[str, Any] = {"success": True, "condition": condition, "rgb": list(rgb), "applied_to": applied}
+    if condition == "pale":
+        result["shader"] = offsets
+        without = [mat for mesh, mat in targets if (mesh, mat) not in with_offsets]
+        if without:
+            result["notes"] = [f"WARNING: no pallor offsets on {', '.join(without)}, so pale did not lighten them"]
+    return result
 
 
 def set_wrinkle_strength(strength: float) -> dict[str, Any]:

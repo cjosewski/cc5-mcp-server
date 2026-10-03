@@ -12,6 +12,10 @@ def _avatar():
     mats = {"CC_Base_Body": ["Std_Skin_Head", "Std_Skin_Body", "Std_Skin_Arm", "Std_Skin_Leg", "Std_Eyelash"],
             "CC_Base_Eye": ["Std_Eye_R"]}
     a.GetMaterialComponent.return_value.GetMaterialNames.side_effect = lambda m: mats[m]
+    # Live CC5 5.13 Digital Human skin shader: both pallor offsets exist and hold one value, 0 by default.
+    a.GetMaterialComponent.return_value.GetShaderParameterNames.return_value = [
+        "SSS Radius", "_BaseColorMap Brightness", "_BaseColorMap Saturation"]
+    a.GetMaterialComponent.return_value.GetShaderParameter.return_value = [0.0]
     return a
 
 
@@ -42,16 +46,55 @@ class SkinTest(unittest.TestCase):
         self.assertFalse(self.skin.apply_skin_overlay(self.png, "all", 150)["success"])
 
     def test_condition_tint(self):
-        r = self.skin.set_skin_condition("pale", 0.5, "all")
+        r = self.skin.set_skin_condition("cyanotic", 0.5, "all")
         self.assertTrue(r["success"])
-        self.rl.RRgb.assert_called_with(0.965, 0.95, 0.94)
+        self.rl.RRgb.assert_called_with(0.9, 0.93, 0.99)
 
     def test_condition_tints_base_skin_tone(self):
-        r = self.skin.set_skin_condition("pale", 0.7, "all", (0.4, 0.3, 0.25))
+        r = self.skin.set_skin_condition("cyanotic", 0.5, "all", (0.4, 0.3, 0.25))
         self.assertTrue(r["success"])
-        self.rl.RRgb.assert_called_with(0.3804, 0.279, 0.229)
+        self.rl.RRgb.assert_called_with(0.36, 0.279, 0.2475)
         self.assertEqual(self.skin.ACTIONS["set_skin_condition"]({"condition": "normal", "base_rgb": [0.4, 0.3, 0.25]})["rgb"], [0.4, 0.3, 0.25])
         self.assertFalse(self.skin.set_skin_condition("pale", 1.0, "all", [0.1, 0.2])["success"])
+
+    def test_pale_lightens_and_desaturates_through_the_skin_shader(self):
+        # Live CC5 5.13 (Task 18): the old pale tint (0.93, 0.90, 0.88) made the face darker and MORE saturated;
+        # +0.048 brightness and -0.2 saturation (pale 0.8) took Camila's cheeks from lightness 0.42 to 0.54 and
+        # saturation 0.27 to 0.12.
+        r = self.skin.set_skin_condition("pale", 0.8, "all", (0.4, 0.3, 0.25))
+        self.assertTrue(r["success"])
+        self.rl.RRgb.assert_called_with(0.4, 0.3, 0.25)  # pale keeps the skin tone: no darkening tint
+        mc = self.avatar.GetMaterialComponent.return_value
+        for mat in ("Std_Skin_Head", "Std_Skin_Body", "Std_Skin_Arm", "Std_Skin_Leg"):
+            mc.SetShaderParameter.assert_any_call("CC_Base_Body", mat, "_BaseColorMap Brightness", [0.048])
+            mc.SetShaderParameter.assert_any_call("CC_Base_Body", mat, "_BaseColorMap Saturation", [-0.2])
+        self.assertEqual(r["shader"], {"_BaseColorMap Brightness": 0.048, "_BaseColorMap Saturation": -0.2})
+
+    def test_other_conditions_clear_the_pallor(self):
+        for condition in ("normal", "cyanotic"):
+            with self.subTest(condition=condition):
+                mc = self.avatar.GetMaterialComponent.return_value
+                mc.SetShaderParameter.reset_mock()
+                r = self.skin.set_skin_condition(condition, 1.0, "head")
+                self.assertTrue(r["success"])
+                mc.SetShaderParameter.assert_any_call("CC_Base_Body", "Std_Skin_Head", "_BaseColorMap Brightness", [0.0])
+                mc.SetShaderParameter.assert_any_call("CC_Base_Body", "Std_Skin_Head", "_BaseColorMap Saturation", [0.0])
+
+    def test_pale_fails_when_the_skin_shader_has_no_pallor_offsets(self):
+        mc = self.avatar.GetMaterialComponent.return_value
+        mc.GetShaderParameterNames.return_value = ["SSS Radius"]
+        r = self.skin.set_skin_condition("pale", 0.8, "all")
+        self.assertFalse(r["success"])
+        self.assertIn("_BaseColorMap Brightness", r["error"])
+        mc.SetShaderParameter.assert_not_called()
+        self.assertTrue(self.skin.set_skin_condition("cyanotic", 0.8, "all")["success"])  # a tint needs no offsets
+
+    def test_pallor_offsets_are_not_written_with_the_wrong_value_count(self):
+        mc = self.avatar.GetMaterialComponent.return_value
+        mc.GetShaderParameter.return_value = [0.0, 0.0]
+        r = self.skin.set_skin_condition("pale", 0.8, "all")
+        self.assertFalse(r["success"])
+        mc.SetShaderParameter.assert_not_called()
 
     def test_unknown_condition(self):
         self.assertFalse(self.skin.set_skin_condition("glowing", 1.0, "all")["success"])

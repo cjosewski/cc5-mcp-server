@@ -7,7 +7,7 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall, errorResult } from "../util.js";
+import { bridgeCall, errorResult, warningNotes } from "../util.js";
 import { checkFile, IMAGE_EXTENSIONS } from "./pipeline.js";
 
 export const SKIN_REGIONS = ["all", "head", "body", "arms", "legs"] as const;
@@ -42,7 +42,7 @@ export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "set_skin_condition",
-    "Tint the skin toward a clinical appearance: pale (shock/blood loss), cyanotic (hypoxia), flushed, jaundiced, or back to normal. amount 0-1. This replaces the colour set by set_skin_color; pass that colour as base_rgb to tint it instead (normal + base_rgb restores it).",
+    "Move the skin toward a clinical appearance: pale (shock/blood loss: lighter and less saturated, through CC5's Digital Human skin shader), cyanotic (hypoxia), flushed or jaundiced (colour tints), or back to normal. amount 0-1. This replaces the colour set by set_skin_color; pass that colour as base_rgb to tint it instead (normal + base_rgb restores it).",
     {
       condition: z.enum(SKIN_CONDITIONS),
       amount: z.number().min(0).max(1).default(1),
@@ -51,7 +51,9 @@ export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
         .describe("Skin tone to tint (the RGB given to set_skin_color); defaults to white"),
     },
     async ({ condition, amount, region, base_rgb }) => bridgeCall(() => bridge.setSkinCondition(condition, amount, region, base_rgb),
-      (r) => r.success ? `Skin set to ${condition} (${Math.round(amount * 100)}%) on: ${(r.applied_to ?? []).join(", ")}` : `Failed: ${r.error}`)
+      (r) => r.success
+        ? [`Skin set to ${condition} (${Math.round(amount * 100)}%) on: ${(r.applied_to ?? []).join(", ")}`, ...warningNotes(r)].join("\n")
+        : `Failed: ${r.error}`)
   );
 
   server.tool(

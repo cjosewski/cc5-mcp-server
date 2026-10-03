@@ -57,6 +57,20 @@ describe("set_skin_condition", () => {
     await server.getRegisteredTool("set_skin_condition")({ condition: "pale", amount: 0.8, region: "all" });
     expect(bridge.setSkinCondition).toHaveBeenCalledWith("pale", 0.8, "all", undefined);
   });
+
+  it("says pale lightens and desaturates rather than tints", () => {
+    // Live CC5 5.13 (Task 18): a tint can only darken, so pallor uses the Digital Human skin shader's offsets.
+    const description = server.tool.mock.calls.find((c) => c[0] === "set_skin_condition")?.[1] as string;
+    expect(description).toContain("lighter and less saturated");
+  });
+
+  it("prints CC5's warnings for skin it could not make pale", async () => {
+    bridge.setSkinCondition.mockResolvedValue({ success: true, applied_to: ["Std_Skin_Head", "Std_Skin_Arm"],
+      notes: ["WARNING: no pallor offsets on Std_Skin_Arm, so pale did not lighten them"] });
+    const r = await server.getRegisteredTool("set_skin_condition")({ condition: "pale", amount: 0.8, region: "all" });
+    expect(r.content[0].text).toContain("Skin set to pale (80%) on: Std_Skin_Head, Std_Skin_Arm");
+    expect(r.content[0].text).toContain("WARNING: no pallor offsets on Std_Skin_Arm");
+  });
 });
 
 describe("apply_skin_overlay through the real bridge client", () => {
