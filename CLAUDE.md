@@ -119,7 +119,7 @@ All parameters are optional (only `output_path` is required), preserving full ba
 
 **Recommended Unreal (UE5 Skeleton) call:** `target_tool="UE5"`, `export_motion=true`, `sub_d_level=0`, `embed_textures=true`, `fps=30` (omit `motion_range` = All). InstaLOD is always OFF.
 
-The return value accurately reports only the values that were actually applied (`export_level`, `export_motion`, `fps`, `motion_range`, `texture_size`, `embed_textures`, etc.). In the fallback (used when `RExportFbxSetting` is unavailable or fails), CC5 exports through the flags overload `ExportFbxFile(obj, path, flags, flags2, flags3)` (CC5 5.13 has no 2-argument form): the option flags still apply, and the `RExportFbxSetting`-only options that could not be applied (motion, frame rate/range, texture size) are recorded as WARNINGs in `notes`.
+The return value accurately reports only the values that were actually applied (`export_level`, `export_motion`, `fps`, `motion_range`, `texture_size`, `embed_textures`, etc.). In the fallback (used when `RExportFbxSetting` is unavailable or fails), CC5 exports through the flags overload `ExportFbxFile(obj, path, flags, flags2, flags3)` (CC5 5.13 has no 2-argument form): the option flags still apply, and the `RExportFbxSetting`-only options that could not be applied (motion, frame rate/range, texture size) are recorded as WARNINGs in `notes`. Live CC5 5.13 (Task 18 fix round) ran this overload, forced through `exec_python`, 3 of 3 times without a crash (default, Unity and Blender presets in a session whose first export had survived).
 
 ### Full CC5 restart procedure (run automatically by Claude)
 

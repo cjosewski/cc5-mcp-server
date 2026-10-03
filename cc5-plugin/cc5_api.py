@@ -578,9 +578,12 @@ def export_fbx(
         if dir_path:
             os.makedirs(dir_path, exist_ok=True)
 
-        # --- Always use RExportFbxSetting object path (UR-16).
-        # Passing a bare int as the 3rd arg to ExportFbxFile can crash CC5.
-        # Fall back to the flags overload only if RExportFbxSetting is unavailable or fails.
+        # --- Use the RExportFbxSetting path: only it carries the export level, motion, frame rate/range and
+        # texture size. Fall back to the flags overload ExportFbxFile(obj, path, flags, flags2, flags3) only if
+        # RExportFbxSetting is unavailable or fails. Live CC5 5.13 (Task 18 fix round, 2026-10-03) ran that
+        # overload, forced through exec_python, 3 of 3 times without a crash (default, Unity and Blender presets,
+        # binary FBX written; the Blender preset's flags3 wrote its .json). The old crash warning (UR-16) was
+        # about a 3-argument call with a bare int, ExportFbxFile(obj, path, flags), which this code never makes.
         used_setting_object = False
         setting_error = ""
         applied_flags2 = False
