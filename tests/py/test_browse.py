@@ -39,6 +39,40 @@ class BrowseSearchTest(unittest.TestCase):
         self.assertEqual(len(r), 200)
         self.assertNotIn(self.api.BROWSE_TRUNCATED, r)
 
+    def test_lists_files_in_subfolders(self):
+        # Live CC5: GetContentFilesInFolder does not recurse. Pose, Motion and Texture keep every file in
+        # subfolders ($/Animation/Pose/1.Male Pose/...), which GetContentFoldersInFolder lists.
+        tree = {"$/Upper": ["$/Upper/A/"], "$/Upper/A/": ["$/Upper/A/Deep/"], "$/Upper/A/Deep/": []}
+        files = {"$/Upper": ["C:/u/Root.ccCloth"], "$/Upper/A/": ["C:/u/A/Jacket.ccCloth"],
+                 "$/Upper/A/Deep/": ["C:/u/A/Deep/Vest.ccCloth"]}
+        self.rl.RApplication.GetContentFoldersInFolder.side_effect = lambda f: tree[f]
+        self.rl.RApplication.GetContentFilesInFolder.side_effect = lambda f: files[f]
+        self.assertEqual(self.api.browse_content("cloth_upper"),
+                         ["C:/u/Root.ccCloth", "C:/u/A/Jacket.ccCloth", "C:/u/A/Deep/Vest.ccCloth"])
+
+    def test_subfolder_walk_stops_on_a_folder_listing_itself(self):
+        self.rl.RApplication.GetContentFoldersInFolder.side_effect = lambda f: [f, "$/Upper/A/"]
+        self.rl.RApplication.GetContentFilesInFolder.side_effect = lambda f: [f"C:/u/{f[-2]}.ccCloth"]
+        self.assertEqual(self.api.browse_content("cloth_upper"), ["C:/u/e.ccCloth", "C:/u/A.ccCloth"])
+
+    def test_subfolder_walk_is_bounded(self):
+        # A huge library must not stall CC5's main thread: at most MAX_BROWSE_FOLDERS folders are read.
+        self.rl.RApplication.GetContentFoldersInFolder.side_effect = lambda f: [f + "x/"]
+        self.rl.RApplication.GetContentFilesInFolder.return_value = []
+        self.assertEqual(self.api.browse_content("cloth_upper"), [])
+        self.assertEqual(self.rl.RApplication.GetContentFilesInFolder.call_count, self.api.MAX_BROWSE_FOLDERS)
+
+    def test_cap_counts_files_across_subfolders(self):
+        tree = {"$/Upper": ["$/Upper/A/"], "$/Upper/A/": []}
+        files = {"$/Upper": [f"C:/u/R_{i:03}.ccCloth" for i in range(150)],
+                 "$/Upper/A/": [f"C:/u/A_{i:03}.ccCloth" for i in range(100)]}
+        self.rl.RApplication.GetContentFoldersInFolder.side_effect = lambda f: tree[f]
+        self.rl.RApplication.GetContentFilesInFolder.side_effect = lambda f: files[f]
+        r = self.api.browse_content("cloth_upper")
+        self.assertEqual(len(r), 201)
+        self.assertEqual(r[199], "C:/u/A_049.ccCloth")
+        self.assertEqual(r[-1], self.api.BROWSE_TRUNCATED)
+
     def test_bridge_passes_the_query(self):
         srv = _support.fresh_import("server")
         with mock.patch.object(srv.cc5_api, "browse_content", return_value=[]) as browse:

@@ -667,7 +667,7 @@ export class CC5Bridge {
     return this.request("/skin/overlay", "POST", { image_path: imagePath, region, strength });
   }
 
-  async removeSkinOverlay(region: string): Promise<OperationResult & { removed_from?: string[] }> {
+  async removeSkinOverlay(region: string): Promise<OperationResult & { removed_from?: string[]; no_overlay?: string[] }> {
     return this.request("/skin/overlay/remove", "POST", { region });
   }
 

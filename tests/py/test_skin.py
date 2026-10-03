@@ -123,6 +123,20 @@ class SkinTest(unittest.TestCase):
         mc.RemoveMaterialTexture.assert_called_with("CC_Base_Body", "Std_Skin_Leg", self.rl.EMaterialTextureChannel_DiffuseBlend)
         self.rl.RGlobal.EndAction.assert_called_once()
 
+    def test_remove_overlay_skips_materials_without_an_overlay(self):
+        # Live CC5: RemoveMaterialTexture returns an error status (Failure) on a material whose Diffuse
+        # Blend channel is empty, so 'all' failed whenever only some regions had an overlay.
+        mc = self.avatar.GetMaterialComponent.return_value
+        mc.HasImage.side_effect = lambda mesh, mat, ch: mat == "Std_Skin_Head"
+        mc.RemoveMaterialTexture.return_value.IsError.return_value = False
+        r = self.skin.remove_skin_overlay("all")
+        self.assertTrue(r["success"])
+        self.assertEqual(r["removed_from"], ["Std_Skin_Head"])
+        self.assertEqual(r["no_overlay"], ["Std_Skin_Body", "Std_Skin_Arm", "Std_Skin_Leg"])
+        mc.RemoveMaterialTexture.assert_called_once_with(
+            "CC_Base_Body", "Std_Skin_Head", self.rl.EMaterialTextureChannel_DiffuseBlend)
+        mc.HasImage.assert_called_with("CC_Base_Body", "Std_Skin_Leg", self.rl.EMaterialTextureChannel_DiffuseBlend)
+
     def test_remove_overlay_removes_from_every_region_material(self):
         r = self.skin.remove_skin_overlay("all")
         self.assertTrue(r["success"])

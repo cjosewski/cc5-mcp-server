@@ -16,7 +16,7 @@ export const SKIN_CONDITIONS = ["normal", "pale", "cyanotic", "flushed", "jaundi
 export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "apply_skin_overlay",
-    "Blend an image over the character's skin (bruising, abrasions, dirt, dried blood). The image should be laid out on the CC skin UVs (author it in Substance Painter or Photoshop, or browse_content('image_layer')). Strength 0-100.",
+    "Blend an image over the character's skin (bruising, abrasions, dirt, dried blood). The overlay is a PNG/JPG/TGA file the user provides, laid out on the CC skin UVs (author it in Substance Painter or Photoshop). Strength 0-100.",
     {
       image_path: z.string().describe("Absolute path to a PNG/JPG/TGA overlay"),
       region: z.enum(SKIN_REGIONS).default("all"),
@@ -35,7 +35,9 @@ export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
     "Remove skin overlays previously added with apply_skin_overlay.",
     { region: z.enum(SKIN_REGIONS).default("all") },
     async ({ region }) => bridgeCall(() => bridge.removeSkinOverlay(region),
-      (r) => r.success ? `Removed overlays from: ${(r.removed_from ?? []).join(", ")}` : `Failed: ${r.error}`)
+      (r) => !r.success ? `Failed: ${r.error}`
+        : (r.removed_from ?? []).length ? `Removed overlays from: ${(r.removed_from ?? []).join(", ")}`
+        : `No skin overlay to remove in region '${region}'`)
   );
 
   server.tool(

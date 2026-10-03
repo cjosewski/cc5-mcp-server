@@ -1945,6 +1945,8 @@ def remove_scene_item(item_name: str) -> dict[str, Any]:
 MAX_BROWSE_RESULTS = 200
 # Last list entry when more than MAX_BROWSE_RESULTS files matched; src/tools/builder.ts and content.ts look for it.
 BROWSE_TRUNCATED = f"(truncated: more than {MAX_BROWSE_RESULTS} files matched; only the first {MAX_BROWSE_RESULTS} are listed)"
+# Most content folders browse_content reads, subfolders included, so a huge library cannot stall CC5's main thread.
+MAX_BROWSE_FOLDERS = 500
 
 
 def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[str]:
@@ -1955,6 +1957,9 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
     GetCustomContentFolder) and then list files with
     RApplication.GetContentFilesInFolder(folderString). The enum is NEVER passed
     to GetContentFilesInFolder (that raises a SWIG std::wstring TypeError).
+    GetContentFilesInFolder does not recurse (live CC5: $/Animation/Pose holds only
+    subfolders), so subfolders from GetContentFoldersInFolder are read too, breadth
+    first, up to MAX_BROWSE_FOLDERS folders.
 
     query: keep only files whose name contains every word (case-insensitive). Filtering here,
     before the MAX_BROWSE_RESULTS cap, lets a keyword search find files past the first 200.
@@ -2031,11 +2036,21 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
         # Literal tuple, not cc5_pipeline.IMAGE_EXTENSIONS: cc5_pipeline imports this module.
         results: list[str] = []
         seen: set[str] = set()
-        for fs in folder_strs:
+        pending = list(folder_strs)
+        visited: set[str] = set()
+        while pending and len(visited) < MAX_BROWSE_FOLDERS:
+            fs = pending.pop(0)
+            if fs in visited:
+                continue
+            visited.add(fs)
             try:
                 files = RLPy.RApplication.GetContentFilesInFolder(fs)
             except Exception:
                 files = None
+            try:
+                pending += [s for s in (RLPy.RApplication.GetContentFoldersInFolder(fs) or []) if s]
+            except Exception:
+                pass
             for f in (files or []):
                 ext = os.path.splitext(f)[1].lower()
                 is_image = folder_type in ("image_layer", "texture", "wrinkle_mask") and ext in (".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff")

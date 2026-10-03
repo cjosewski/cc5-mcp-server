@@ -15,6 +15,12 @@ beforeEach(() => {
 });
 
 describe("browse_content", () => {
+  it("does not promise overlay images from image_layer (live CC5 lists only .iImgLayer files there)", () => {
+    const shape = server.tool.mock.calls.find((c) => c[0] === "browse_content")?.[2] as { folder_type: { description?: string } };
+    expect(shape.folder_type.description).toContain("image_layer holds CC5 .iImgLayer");
+    expect(shape.folder_type.description).not.toMatch(/image_layer\/texture/);
+  });
+
   it("says when CC5 cut the list off at its cap, without counting the marker as a file", async () => {
     const files = Array.from({ length: 200 }, (_, i) => `C:/c/Shirt ${i}.ccCloth`);
     bridge.browseContent.mockResolvedValue([...files, "(truncated: more than 200 files matched; only the first 200 are listed)"]);

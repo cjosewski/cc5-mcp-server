@@ -22,11 +22,32 @@ describe("apply_skin_overlay", () => {
     expect(bridge.applySkinOverlay).not.toHaveBeenCalled();
   });
 
+  it("says overlays are image files the user provides, not CC5 image_layer content", () => {
+    // Live CC5: browse_content('image_layer') lists .iImgLayer stage items, never PNG/JPG/TGA overlays.
+    const description = server.tool.mock.calls.find((c) => c[0] === "apply_skin_overlay")?.[1] as string;
+    expect(description).toContain("PNG/JPG/TGA");
+    expect(description).not.toContain("image_layer");
+  });
+
   it("applies and lists materials", async () => {
     bridge.applySkinOverlay.mockResolvedValue({ success: true, applied_to: ["Std_Skin_Head"] });
     const r = await server.getRegisteredTool("apply_skin_overlay")({ image_path: "C:/o/bruise.png", region: "head", strength: 70 });
     expect(bridge.applySkinOverlay).toHaveBeenCalledWith("C:/o/bruise.png", "head", 70);
     expect(r.content[0].text).toContain("Std_Skin_Head");
+  });
+});
+
+describe("remove_skin_overlay", () => {
+  it("lists the materials it cleared", async () => {
+    bridge.removeSkinOverlay.mockResolvedValue({ success: true, removed_from: ["Std_Skin_Head"], no_overlay: ["Std_Skin_Body"] });
+    const r = await server.getRegisteredTool("remove_skin_overlay")({ region: "all" });
+    expect(r.content[0].text).toBe("Removed overlays from: Std_Skin_Head");
+  });
+
+  it("says when the region had no overlay to remove", async () => {
+    bridge.removeSkinOverlay.mockResolvedValue({ success: true, removed_from: [], no_overlay: ["Std_Skin_Head"] });
+    const r = await server.getRegisteredTool("remove_skin_overlay")({ region: "head" });
+    expect(r.content[0].text).toBe("No skin overlay to remove in region 'head'");
   });
 });
 

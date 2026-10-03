@@ -18,6 +18,13 @@ describe("create_character prompt", () => {
     expect(step1).not.toMatch(/base will be 'default'/);
   });
 
+  it("asks for overlay images instead of pointing at image_layer content (live CC5 lists only .iImgLayer files there)", () => {
+    const step5 = buildCreateCharacterPrompt("40-year-old woman").split("\n").find((l) => l.startsWith("5. "));
+    expect(step5).toContain("PNG/JPG/TGA");
+    expect(step5).not.toContain("image_layer");
+    expect(buildCreateCharacterPrompt("x")).not.toContain("image_layer");
+  });
+
   it("warns in the recipe schema that 'default' is a mannequin", () => {
     expect(RecipeSchema.shape.base.description).toContain("mannequin");
     expect(RecipeSchema.shape.base.description).toContain("browse_content('character')");

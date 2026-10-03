@@ -90,15 +90,20 @@ def remove_skin_overlay(region: str = "all") -> dict[str, Any]:
     if error:
         return {"success": False, "error": error}
     mat_comp = avatar.GetMaterialComponent()
+    channel = RLPy.EMaterialTextureChannel_DiffuseBlend
     removed: list[str] = []
+    no_overlay: list[str] = []
     refused: list[str] = []
     RLPy.RGlobal.BeginAction("Remove Skin Overlay")
     try:
         # Removing is safe to repeat, so a refusal on one material does not stop the rest.
         for mesh, mat in targets:
+            # Live CC5: RemoveMaterialTexture returns an error status when the channel is already empty.
+            if not mat_comp.HasImage(mesh, mat, channel):
+                no_overlay.append(mat)
+                continue
             try:
-                _raise_on_error(mat_comp.RemoveMaterialTexture(mesh, mat, RLPy.EMaterialTextureChannel_DiffuseBlend),
-                                "RemoveMaterialTexture")
+                _raise_on_error(mat_comp.RemoveMaterialTexture(mesh, mat, channel), "RemoveMaterialTexture")
                 removed.append(mat)
             except Exception as e:
                 refused.append(f"{mat} ({e})")
@@ -106,8 +111,9 @@ def remove_skin_overlay(region: str = "all") -> dict[str, Any]:
         RLPy.RGlobal.ObjectModified(avatar, cc5_api._EOMTYPE_MATERIAL)
         RLPy.RGlobal.EndAction()
     if refused:
-        return {"success": False, "error": f"Overlay not removed from: {'; '.join(refused)}", "removed_from": removed}
-    return {"success": True, "removed_from": removed}
+        return {"success": False, "error": f"Overlay not removed from: {'; '.join(refused)}", "removed_from": removed,
+                "no_overlay": no_overlay}
+    return {"success": True, "removed_from": removed, "no_overlay": no_overlay}
 
 
 def set_skin_condition(condition: str, amount: float = 1.0, region: str = "all",
