@@ -33,6 +33,13 @@ describe("isLocalAbsolute", () => {
 describe("export_for_unity", () => {
   const handler = () => server.getRegisteredTool("export_for_unity");
 
+  // Live CC5 5.13 (Task 18): the first FBX export of a CC5 session crashed CC5 in about 3 of 4 sessions.
+  it("tells the agent to save the character before the session's first FBX export", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "export_for_unity")?.[1] as string;
+    expect(description).toContain("save_character");
+    expect(description).toContain("first FBX export");
+  });
+
   it("refuses a folder outside Assets without calling CC5", async () => {
     const r = await handler()({ unity_dir: "D:/Exports", character_name: "P1" });
     expect(r.isError).toBe(true);

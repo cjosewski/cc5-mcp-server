@@ -140,7 +140,7 @@ export function evaluateExportBudget(stats: MeshStatsResult, textures: TextureIn
 export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "export_for_unity",
-    "Export the current character as FBX with CC5's Unity preset into <unity_dir>/<character_name>/. unity_dir must be inside a Unity project's Assets folder. Runs as a background job; long exports return a job id for job_status.",
+    "Export the current character as FBX with CC5's Unity preset into <unity_dir>/<character_name>/. unity_dir must be inside a Unity project's Assets folder. Runs as a background job; long exports return a job id for job_status. CC5 5.13 often crashes on the first FBX export after it starts: call save_character before the session's first FBX export, so the character is not lost.",
     {
       unity_dir: z.string().describe("Absolute folder inside a Unity project's Assets folder"),
       character_name: CHARACTER_NAME,

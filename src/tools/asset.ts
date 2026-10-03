@@ -61,7 +61,7 @@ export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "export_fbx",
-    "Export the current avatar as an FBX file, mirroring the CC5 'Export FBX' dialog (target tool preset, mesh+motion, subdivision, embed textures, frame rate). A bare filename (no directory) exports into D:\\CC5Export (override via the CC5_EXPORT_DIR env var). Recommended Unreal call: target_tool='UE5', export_motion=true, embed_textures=true, fps=30, sub_d_level=0. target_tool \"Blender\" writes a JSON material sidecar for Reallusion's Blender add-on.",
+    "Export the current avatar as an FBX file, mirroring the CC5 'Export FBX' dialog (target tool preset, mesh+motion, subdivision, embed textures, frame rate). A bare filename (no directory) exports into D:\\CC5Export (override via the CC5_EXPORT_DIR env var). Recommended Unreal call: target_tool='UE5', export_motion=true, embed_textures=true, fps=30, sub_d_level=0. target_tool \"Blender\" writes a JSON material sidecar for Reallusion's Blender add-on. CC5 5.13 often crashes on the first FBX export after it starts: call save_character before the session's first FBX export, so the character is not lost.",
     {
       output_path: z.string().describe("Path for the exported FBX file. A bare filename (e.g. 'character.fbx') exports into D:\\CC5Export; an absolute path (e.g. 'C:/Export/character.fbx') is used as-is."),
       target_tool: z.enum(["UE5", "Default", "Maya", "Unity", "Unreal", "Blender"]).optional()

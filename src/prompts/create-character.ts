@@ -17,7 +17,7 @@ export function buildCreateCharacterPrompt(description: string): string {
     "4. Read the step report. Fix any failed step with the individual tool, then capture_viewport.",
     "5. Injuries: apply_skin_overlay with PNG/JPG/TGA overlay images I provide (ask me for them; CC5 content has none); set_wrinkle_strength for age.",
     "6. pose_file via apply_pose if a pose is needed (browse_content('pose')). capture_viewport.",
-    "7. Ask me for the Unity Assets folder and a character name, then export_for_unity with sub_d_level 0 and texture_size 2048 (and include_current_pose: true if a pose was applied in step 6).",
+    "7. Ask me for the Unity Assets folder and a character name. Then call save_character (a .ccAvatar path outside the Assets folder) before the first FBX export of this CC5 session, because CC5 5.13 often crashes on that export and the character would be lost. Then export_for_unity with sub_d_level 0 and texture_size 2048 (and include_current_pose: true if a pose was applied in step 6).",
     "8. check_quest_budget with the export folder. If it fails, tell me what is over budget and suggest fixes (fewer clothing layers, texture_size 1024).",
     "9. Summarise: what was built, any failed steps, and the budget result.",
   ].join("\n");

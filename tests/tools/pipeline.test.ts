@@ -240,6 +240,12 @@ describe("load_substance_textures", () => {
 });
 
 describe("export_textures", () => {
+  it("tells the agent to save the character before the session's first FBX export", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "export_textures")?.[1] as string;
+    expect(description).toContain("save_character");
+    expect(description).toContain("first FBX export");
+  });
+
   it("runs as a job and reports the folder", async () => {
     bridge.startJob.mockResolvedValue({ job_id: "cmd_5" });
     bridge.getJob.mockResolvedValue({ job_id: "cmd_5", action: "export_textures", status: "done",

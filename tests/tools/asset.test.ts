@@ -235,6 +235,12 @@ describe("export_fbx handler – dialog options forwarding", () => {
     });
   });
 
+  it("tells the agent to save the character before the session's first FBX export", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "export_fbx")?.[1] as string;
+    expect(description).toContain("save_character");
+    expect(description).toContain("first FBX export");
+  });
+
   it("says Convert Image Format is refused, because CC5 5.13 crashes after a scripted export with it", () => {
     const shape = server.tool.mock.calls.find((c) => c[0] === "export_fbx")?.[2] as Record<string, { description?: string }>;
     expect(shape.convert_image_format.description).toContain("refuses");

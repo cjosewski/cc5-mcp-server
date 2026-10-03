@@ -188,7 +188,7 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "export_textures",
-    "Export the character as FBX plus its texture images (in their source formats) into <output_dir>/<character_name>/ — the starting point for texturing in Substance Painter.",
+    "Export the character as FBX plus its texture images (in their source formats) into <output_dir>/<character_name>/ — the starting point for texturing in Substance Painter. CC5 5.13 often crashes on the first FBX export after it starts: call save_character before the session's first FBX export, so the character is not lost.",
     {
       output_dir: z.string().describe("Absolute folder"),
       character_name: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),

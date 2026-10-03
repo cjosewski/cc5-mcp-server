@@ -30,6 +30,13 @@ describe("create_character prompt", () => {
     expect(buildCreateCharacterPrompt("40-year-old woman, photo attached").toLowerCase()).not.toContain("headshot");
   });
 
+  // Live CC5 5.13 (Task 18): the first FBX export of a CC5 session crashed CC5 in about 3 of 4 sessions.
+  it("saves the character before the export in step 7", () => {
+    const step7 = buildCreateCharacterPrompt("40-year-old woman").split("\n").find((l) => l.startsWith("7. ")) ?? "";
+    expect(step7).toContain("save_character");
+    expect(step7.indexOf("save_character")).toBeLessThan(step7.indexOf("export_for_unity"));
+  });
+
   it("warns in the recipe schema that 'default' is a mannequin", () => {
     expect(RecipeSchema.shape.base.description).toContain("mannequin");
     expect(RecipeSchema.shape.base.description).toContain("browse_content('character')");
