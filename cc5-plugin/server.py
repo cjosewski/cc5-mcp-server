@@ -16,6 +16,7 @@ import secrets
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -322,14 +323,104 @@ def load_extensions(reload: bool = False) -> list[str]:
     return loaded
 
 
+# --- Modal dialogs: never run a command inside a dialog's nested event loop ---
+
+# How long a queued command waits for an open modal dialog (CC5's crash-recovery prompt, a file dialog)
+# to close before it fails with the dialog's text.
+MODAL_WAIT_SECONDS = 5.0
+# Actions built to run while their own dialog is open, plus exec_python (dev-mode debugging).
+MODAL_SAFE_ACTIONS = {"silent_configure_and_click", "silent_finalize", "get_export_status",
+                      "get_mixer_status", "exec_python"}
+_RECOVERY_PROMPT = "Unsaved project data found"
+
+
+def _active_modal_dialog() -> tuple[str, str] | None:
+    """(title, text) of the modal dialog CC5 is showing, or None.
+
+    None also when PySide2 or a QApplication is unavailable (outside CC5, in the unit tests).
+    """
+    try:
+        from PySide2.QtWidgets import QApplication, QDialog, QMessageBox  # type: ignore
+    except Exception:
+        return None
+    try:
+        if QApplication.instance() is None:
+            return None
+        dialog = QApplication.activeModalWidget()
+        if dialog is None:
+            dialog = next((w for w in QApplication.topLevelWidgets()
+                           if isinstance(w, QDialog) and w.isVisible() and w.isModal()), None)
+        if dialog is None:
+            return None
+        text = dialog.text() if isinstance(dialog, QMessageBox) else ""
+        return _window_name(dialog), str(text or "")
+    except Exception:
+        return None
+
+
+def _window_name(widget: Any) -> str:
+    """Its window title, else its Qt class (CC5's untitled "What's New" page is CRLWhatsNewWebEngineWidget)."""
+    title = str(widget.windowTitle() or "")
+    if title:
+        return title
+    try:
+        return str(widget.metaObject().className())
+    except Exception:
+        return type(widget).__name__
+
+
+def _modal_dialog_error(title: str, text: str) -> str:
+    question = " ".join((text or title or "a dialog").split())
+    if len(question) > 300:
+        question = question[:297] + "..."
+    where = f' (the "{title}" window)' if title and text else ""
+    if question.startswith(_RECOVERY_PROMPT):
+        action = "answer it in CC5 (OK restores your last unsaved work, Cancel discards it)"
+    else:
+        action = "answer or close it in CC5"
+    return f'CC5 is waiting for an answer to "{question}"{where} - {action}, then try again.'
+
+
+def _blocked_by_modal_dialog() -> tuple[bool, str | None]:
+    """Whether the next queued command must wait for a modal dialog, and its error once the wait is over.
+
+    (True, None): leave it queued, the next timer tick checks again. (False, error): run nothing, fail it.
+    (False, None): run it.
+    """
+    with command_queue.mutex:
+        head = command_queue.queue[0] if command_queue.queue else None
+    if head is None or head["action"] in MODAL_SAFE_ACTIONS:
+        return False, None
+    with _store_lock:
+        if head["id"] in _cancelled:
+            return False, None
+    dialog = _active_modal_dialog()
+    if dialog is None:
+        return False, None
+    waiting_since = head.setdefault("modal_since", time.monotonic())
+    if time.monotonic() - waiting_since < MODAL_WAIT_SECONDS:
+        return True, None
+    return False, _modal_dialog_error(*dialog)
+
+
 def process_command_queue() -> None:
-    """Drain the queue and execute RLPy calls on the main thread. Called by QTimer."""
+    """Drain the queue and execute RLPy calls on the main thread. Called by QTimer.
+
+    While a modal dialog is open this timer fires inside the dialog's nested event loop, so a command
+    would run under the dialog: under CC5's crash-recovery prompt, before the user has decided whether
+    the unsaved scene comes back, and inside an event loop RLPy calls are not made for (Task 18 traced
+    CC5 crashes during FBX exports to sessions that most likely had that prompt open). Commands then
+    wait in the queue, and fail with the dialog's text after MODAL_WAIT_SECONDS.
+    """
     global _processing, _running_id
     if _processing:
         return
     _processing = True
     try:
         while not command_queue.empty():
+            wait, modal_error = _blocked_by_modal_dialog()
+            if wait:
+                break
             try:
                 cmd = command_queue.get_nowait()
             except queue.Empty:
@@ -351,7 +442,12 @@ def process_command_queue() -> None:
 
             try:
                 handler = ACTION_MAP.get(action)
-                result = handler(params) if handler else {"success": False, "error": f"Unknown action: {action}"}
+                if modal_error:
+                    result = {"success": False, "error": modal_error}
+                elif handler:
+                    result = handler(params)
+                else:
+                    result = {"success": False, "error": f"Unknown action: {action}"}
             except Exception as e:
                 print(f"[CC5 MCP Bridge] Action '{action}' failed: {traceback.format_exc()}")
                 result = {"success": False, "error": str(e)}
