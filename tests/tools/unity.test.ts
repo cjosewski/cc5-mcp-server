@@ -103,6 +103,17 @@ describe("export_for_unity", () => {
     const r = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1", sub_d_level: 0 });
     expect(r.content[0].text).not.toContain("sub_d_level");
   });
+
+  it("says a posed export carries the pose as a one-frame animation clip", async () => {
+    // Live CC5 5.13 (Task 18): the FBX's default bone transforms stay in the bind pose; the pose is in a 1-frame take.
+    exported({});
+    const r = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1", include_current_pose: true });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toContain("one-frame animation clip");
+    exported({});
+    const plain = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1" });
+    expect(plain.content[0].text).not.toContain("animation clip");
+  });
 });
 
 describe("evaluateBudget", () => {

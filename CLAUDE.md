@@ -44,6 +44,10 @@ def _check_server_health():
 ```
 → Even if the HTTP server thread crashes, it is automatically restarted on the next QTimer tick
 
+### Modal dialogs (queue guard)
+
+While CC5 shows a modal dialog, the 16 ms QTimer fires inside that dialog's nested event loop, so a command would run under the dialog: under the "Unsaved project data found" crash-recovery prompt that means before the user has decided whether the unsaved scene comes back, inside an event loop RLPy calls are not made for (CC5 crashes during FBX exports were traced to sessions that most likely had that prompt open). `process_command_queue` therefore leaves the next command queued while `_active_modal_dialog()` reports a dialog, and after `MODAL_WAIT_SECONDS` (5 s) fails it with the dialog's title and text. The actions in `MODAL_SAFE_ACTIONS` (the silent head-export steps, the export/mixer status reads and `exec_python`) still run. The plugin never answers the recovery prompt itself: keeping or discarding unsaved work is the user's choice.
+
 ### Hot reload (apply code changes immediately)
 
 ```
@@ -102,16 +106,16 @@ All parameters are optional (only `output_path` is required), preserving full ba
 | `output_path` | Output destination | A file name without a directory (e.g. `character.fbx`) resolves under `D:\CC5Export` (configurable via `CC5_EXPORT_DIR`). Absolute paths are used as-is. |
 | `target_tool` | Target Tool Preset | `"UE5"`/`"Unreal"` applies the Unreal-oriented flags (Y-up, UE bone axis). |
 | `export_motion` | FBX Options | `true` = "Mesh and Motion" (default), `false` = "Mesh" only. Uses `EnableExportMotion`. |
-| `sub_d_level` | HD Character Subdivision Level | 0/1/2. Applied via `SetExportLevel` (does not modify the scene). `set_subdivision_level` is used only in the 2-arg fallback. |
+| `sub_d_level` | HD Character Subdivision Level | 0/1/2. Applied via `SetExportLevel` (does not modify the scene). A level above the character's highest one (`GetMaxSubdivMeshLevel`) is refused. `set_subdivision_level` is used only in the flags-only fallback. |
 | `embed_textures` | Texture Settings: Embed Textures | Adds `EExportFbxOptions_EmbedTexture`. |
-| `convert_image_format` | Texture Settings: Convert Image Format | Adds `EExportFbxOptions_ConvertTifToPNG`. |
+| `convert_image_format` | Texture Settings: Convert Image Format | Refused (`CONVERT_IMAGE_FORMAT_REFUSED`): on CC5 5.13 every scripted export with `EExportFbxOptions_ConvertTifToPNG` wrote an ASCII FBX with a `.json` sidecar and PBR-split textures, then crashed CC5 within a second. |
 | `texture_size` | Texture Settings: Max Texture Size | `SetTextureSize` (0 = original size). |
 | `fps` | Include Motion: Frame Rate | Maps to `RLPy.RFps.Fps{n}` (e.g. 30). Unsupported values are skipped with a note. |
 | `motion_range` | Include Motion: Range | Passes `[start, end]` to `SetExportMotionRange`. When omitted, the default "All" is used. |
 
 **Recommended Unreal (UE5 Skeleton) call:** `target_tool="UE5"`, `export_motion=true`, `sub_d_level=0`, `embed_textures=true`, `fps=30` (omit `motion_range` = All). InstaLOD is always OFF.
 
-The return value accurately reports only the values that were actually applied (`export_level`, `export_motion`, `fps`, `motion_range`, `texture_size`, `embed_textures`, etc.). In the 2-arg fallback (used when `RExportFbxSetting` is unavailable), options that could not be applied are recorded as WARNINGs in `notes`.
+The return value accurately reports only the values that were actually applied (`export_level`, `export_motion`, `fps`, `motion_range`, `texture_size`, `embed_textures`, etc.). In the fallback (used when `RExportFbxSetting` is unavailable or fails), CC5 exports through the flags overload `ExportFbxFile(obj, path, flags, flags2, flags3)` (CC5 5.13 has no 2-argument form): the option flags still apply, and the `RExportFbxSetting`-only options that could not be applied (motion, frame rate/range, texture size) are recorded as WARNINGs in `notes`.
 
 ### Full CC5 restart procedure (run automatically by Claude)
 

@@ -10,7 +10,7 @@ import _support
 
 
 class ExportFbxTest(unittest.TestCase):
-    """cc5_api.export_fbx: RStatus checks, the 2-arg fallback, and the texture-size enum."""
+    """cc5_api.export_fbx: RStatus checks, the flags-overload fallback, and the texture-size enum."""
 
     def setUp(self):
         self.rl = _support.install_fake_rlpy()
@@ -23,7 +23,8 @@ class ExportFbxTest(unittest.TestCase):
         self.setting = self.rl.RExportFbxSetting.return_value
         self.export = self.rl.RFileIO.ExportFbxFile
         self.fbx = os.path.join(tempfile.mkdtemp(), "P.fbx")
-        p = mock.patch.object(self.api, "get_first_avatar", return_value=mock.MagicMock())
+        self.avatar = mock.MagicMock()
+        p = mock.patch.object(self.api, "get_first_avatar", return_value=self.avatar)
         p.start()
         self.addCleanup(p.stop)
 
@@ -58,15 +59,64 @@ class ExportFbxTest(unittest.TestCase):
         self.assertIn("requested FBX settings", r["error"])
         self.export.assert_not_called()
 
-    def test_by_default_a_settings_failure_falls_back_with_warnings(self):
+    def test_by_default_a_settings_failure_falls_back_to_the_flags_overload(self):
+        # Live CC5 5.13 has no 2-argument ExportFbxFile(obj, path) (TypeError). Its other overload is
+        # ExportFbxFile(obj, path, EExportFbxOptions, EExportFbxOptions2, EExportFbxOptions3).
         self.setting.SetOption.side_effect = TypeError("in method 'RExportFbxSetting_SetOption'")
-        r = self.api.export_fbx(self.fbx, 0, target_tool="Unity")
+        r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", texture_size=1024)
         self.assertTrue(r["success"])
-        self.assertFalse(r["flags_applied"])
-        self.export.assert_called_once_with(mock.ANY, self.fbx)
-        self.assertTrue(any(n.startswith("WARNING: option flags") for n in r["notes"]))
+        self.assertTrue(r["flags_applied"])
+        self.export.assert_called_once()
+        avatar, path, flags, flags2, flags3 = self.export.call_args.args
+        self.assertEqual((path, flags, flags2, flags3), (self.fbx, r["flags"], r["flags2"], r["flags3"]))
+        self.assertNotEqual(flags2, 0)  # the Unity preset bits reach CC5
+        self.assertFalse(any(n.startswith("WARNING: option flags") for n in r["notes"]))
+        self.assertTrue(any(n.startswith("WARNING") and "texture" in n for n in r["notes"]))
+        self.assertNotIn("texture_size", r)
 
-    def test_error_status_from_the_2_arg_fallback_fails(self):
+    def test_flags_fallback_keeps_flag_based_texture_options(self):
+        self.setting.SetOption.side_effect = TypeError("in method 'RExportFbxSetting_SetOption'")
+        r = self.api.export_fbx(self.fbx, 0, embed_textures=True)
+        self.assertTrue(r["embed_textures"])
+        flags = self.export.call_args.args[2]
+        self.assertTrue(flags & self.rl.EExportFbxOptions_EmbedTexture)
+
+    def test_convert_image_format_is_refused_before_any_export(self):
+        # Live CC5 5.13 (Task 18): every scripted export with Convert Image Format, with the Unity or the default
+        # preset, wrote an ASCII FBX with a .json sidecar and PBR-split textures, then crashed CC5 (7 of 7).
+        r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", convert_image_format=True)
+        self.assertFalse(r["success"])
+        self.assertIn("Convert Image Format", r["error"])
+        self.assertIn("crash", r["error"])
+        self.rl.RExportFbxSetting.assert_not_called()
+        self.export.assert_not_called()
+
+    def test_keeping_the_current_pose_clears_the_t_pose_bit(self):
+        # export_for_unity's posed export (one frame of motion) depends on this to carry the pose.
+        tpose = self.rl.EExportFbxOptions_TPoseOnMotionFirstFrame
+        r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", export_motion=True)
+        self.assertTrue(self.setting.SetOption.call_args.args[0] & tpose)
+        r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", export_motion=True, include_current_pose=True,
+                                motion_range=[0, 0])
+        self.assertFalse(self.setting.SetOption.call_args.args[0] & tpose)
+        self.assertEqual(r["motion_range"], [0, 0])
+
+    def test_sub_d_level_above_the_characters_highest_level_is_refused(self):
+        # Live CC5 5.13: the neutral CC3_Base_Plus reports GetMaxSubdivMeshLevel() == 0.
+        self.avatar.GetMaxSubdivMeshLevel.return_value = 0
+        r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", sub_d_level=1)
+        self.assertFalse(r["success"])
+        self.assertIn("highest subdivision level (0)", r["error"])
+        self.export.assert_not_called()
+
+    def test_sub_d_level_within_the_characters_levels_is_set(self):
+        self.avatar.GetMaxSubdivMeshLevel.return_value = 2
+        r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", sub_d_level=1)
+        self.assertTrue(r["success"])
+        self.setting.SetExportLevel.assert_called_once_with(1)
+        self.assertEqual(r["export_level"], 1)
+
+    def test_error_status_from_the_flags_fallback_fails(self):
         self.setting.SetOption.side_effect = TypeError("in method 'RExportFbxSetting_SetOption'")
         self.export.return_value.IsError.return_value = True
         r = self.api.export_fbx(self.fbx, 0)

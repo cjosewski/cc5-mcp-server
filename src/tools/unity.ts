@@ -146,7 +146,8 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
       character_name: CHARACTER_NAME,
       sub_d_level: z.number().int().min(0).max(2).optional().describe("Subdivision level (0 = base mesh, best for Quest)"),
       texture_size: z.union([z.literal(512), z.literal(1024), z.literal(2048), z.literal(4096)]).optional(),
-      include_current_pose: z.boolean().optional().describe("Export in the current pose instead of T-pose"),
+      include_current_pose: z.boolean().optional()
+        .describe("Export the current pose. The FBX carries it as a one-frame animation clip; the model's default pose stays the bind pose"),
       wait_seconds: z.number().int().min(0).max(120).default(25),
     },
     async ({ unity_dir, character_name, sub_d_level, texture_size, include_current_pose, wait_seconds }) => {
@@ -168,7 +169,10 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
         const subdivided = level > 0
           ? ` Exported at sub_d_level ${level}: if the character has HD data, the FBX has about ${4 ** level}x the base mesh's triangles, so give check_quest_budget sub_d_level ${level}.`
           : "";
-        const exported = `Exported ${r.fbx} (${formatFiles(r.files ?? [])}).${subdivided}`;
+        const posed = include_current_pose
+          ? " The pose is a one-frame animation clip in the FBX: the model's default pose stays the bind pose, so apply that clip (e.g. as the Animator's default state) to show the pose in Unity."
+          : "";
+        const exported = `Exported ${r.fbx} (${formatFiles(r.files ?? [])}).${subdivided}${posed}`;
         if (warnings.length) {
           return errorResult(`${exported}\nCC5 did not apply every export setting, so do not use this FBX until that is fixed:${warningText}`);
         }

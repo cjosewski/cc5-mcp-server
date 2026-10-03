@@ -69,7 +69,7 @@ export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
       sub_d_level: z.number().int().min(0).max(2).optional()
         .describe("HD Character Subdivision Level (0/1/2). Applied via SetExportLevel (no scene mutation). Higher = smoother mesh."),
       include_current_pose: z.boolean().optional()
-        .describe("If true, keep current pose (do NOT force T-pose on motion first frame)."),
+        .describe("If true, keep current pose (do NOT force T-pose on motion first frame). A mesh-only export (export_motion false) is always in the bind pose; to export a pose, use export_motion true with a 1-frame motion_range [0, 0]."),
       delete_hidden_faces: z.boolean().optional()
         .describe("If true, removes hidden mesh faces from the exported FBX (EExportFbxOptions_RemoveHiddenMesh)."),
       use_smooth_mesh: z.boolean().optional()
@@ -87,7 +87,7 @@ export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
       motion_range: z.tuple([z.number().int(), z.number().int()]).optional()
         .describe("Include Motion frame range [start, end]. Omit for 'All' (the dialog default)."),
       convert_image_format: z.boolean().optional()
-        .describe("Texture Settings 'Convert Image Format' (TIF -> PNG)."),
+        .describe("Texture Settings 'Convert Image Format' (TIF -> PNG). Leave it off: CC5 5.13 crashes right after a scripted export with it, so the bridge refuses it."),
       texture_size: z.number().int().min(0).optional()
         .describe("Texture Settings 'Max Texture Size' in pixels (0 = original)."),
       options: z.number().int().optional()

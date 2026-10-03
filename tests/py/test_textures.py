@@ -41,14 +41,16 @@ class TextureTest(unittest.TestCase):
         r = self.pipe.load_substance_textures(os.path.join(self.dir, "missing"))
         self.assertFalse(r["success"])
 
-    def test_export_textures_uses_png_conversion(self):
+    def test_export_textures_keeps_the_source_image_formats(self):
+        # Live CC5 5.13 crashes right after an export with Convert Image Format (Task 18), so it is never asked for.
         def fake_export(path, flags, **kw):
             open(path, "wb").close()
             return {"success": True, "flags_applied": True, "notes": []}
         with mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake_export) as exp:
             r = self.pipe.export_textures(self.dir, "P1")
         self.assertTrue(r["success"])
-        self.assertTrue(exp.call_args.kwargs["convert_image_format"])
+        self.assertFalse(exp.call_args.kwargs.get("convert_image_format", False))
+        self.assertFalse(exp.call_args.kwargs["export_motion"])
         self.assertFalse(exp.call_args.kwargs["allow_fallback"])
 
     def test_export_textures_fails_when_no_fbx_was_written_or_settings_were_dropped(self):

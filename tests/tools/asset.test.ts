@@ -235,6 +235,13 @@ describe("export_fbx handler – dialog options forwarding", () => {
     });
   });
 
+  it("says Convert Image Format is refused, because CC5 5.13 crashes after a scripted export with it", () => {
+    const shape = server.tool.mock.calls.find((c) => c[0] === "export_fbx")?.[2] as Record<string, { description?: string }>;
+    expect(shape.convert_image_format.description).toContain("refuses");
+    expect(shape.convert_image_format.description).toContain("crashes");
+    expect(shape.include_current_pose.description).toContain("1-frame motion_range");
+  });
+
   it("accepts a bare filename and forwards it unchanged (default dir resolved server-side)", async () => {
     bridge.exportFbx.mockResolvedValue(SUCCESS);
     const handler = server.getRegisteredTool("export_fbx");

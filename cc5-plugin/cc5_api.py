@@ -400,6 +400,23 @@ def load_asset(file_path: str) -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+# Live CC5 5.13 (Task 18): every scripted export with "Convert Image Format" (EExportFbxOptions_ConvertTifToPNG), with
+# the Unity or the default preset, wrote an ASCII FBX with a .json sidecar and PBR-split textures and then crashed CC5
+# within a second (CharacterCreator.exe+0x16a879c and other null reads; 7 of 7 exports).
+CONVERT_IMAGE_FORMAT_REFUSED = (
+    "Convert Image Format is not available: CC5 5.13 crashes a moment after any scripted FBX export that converts "
+    "image formats, so the bridge never asks for it. Export without convert_image_format; the textures keep their "
+    "source formats.")
+
+
+def _highest_subdiv_level(avatar: Any) -> int | None:
+    """The highest subdivision level the avatar's mesh supports, or None when CC5 does not say."""
+    try:
+        return int(avatar.GetMaxSubdivMeshLevel())
+    except Exception:
+        return None
+
+
 def export_fbx(
     output_path: str,
     options_flags: int = 0,
@@ -426,9 +443,12 @@ def export_fbx(
         options_flags: Raw EExportFbxOptions bitmask. If 0, defaults are computed from named flags.
         target_tool: "UE5" | "Default" | "Maya" | "Unity" | "Blender" — sets sensible base flag preset
         sub_d_level: 0|1|2. HD Character Subdivision Level. Applied via
-            RExportFbxSetting.SetExportLevel (no scene mutation). Falls back to
-            set_subdivision_level only on the flag-less 2-arg export path.
-        include_current_pose: Keep the current pose (do NOT force T-pose on first motion frame)
+            RExportFbxSetting.SetExportLevel (no scene mutation). A level above the character's highest
+            one (GetMaxSubdivMeshLevel) is refused. Falls back to set_subdivision_level only on the
+            flags-only fallback export.
+        include_current_pose: Keep the current pose (do NOT force T-pose on first motion frame). A
+            mesh-only export (export_motion False) is in the bind pose either way (live CC5 5.13); to
+            export a pose, export motion with a 1-frame motion_range.
         delete_hidden_faces: Add EExportFbxOptions_RemoveHiddenMesh
         use_smooth_mesh: Enable RExportFbxSetting.EnableBakeSubdivision (CC5 UI "Use Smooth Mesh")
                          — falls back to setting sub_d_level=1 if RExportFbxSetting variant fails.
@@ -438,12 +458,14 @@ def export_fbx(
         export_motion: "Mesh and Motion" when True, "Mesh" (mesh only) when False.
         fps: "Frame Rate" for included motion (e.g. 30). Mapped to RLPy.RFps.Fps{n}.
         motion_range: [start, end] frame range. None/"all" leaves the dialog default ("All").
-        convert_image_format: "Convert Image Format" — add EExportFbxOptions_ConvertTifToPNG.
+        convert_image_format: "Convert Image Format" (EExportFbxOptions_ConvertTifToPNG). Refused: live
+            CC5 5.13 crashes right after a scripted export with it (CONVERT_IMAGE_FORMAT_REFUSED).
         texture_size: "Max Texture Size" in pixels (0 = original), passed to SetTextureSize as its
             EExportTextureSize_* enum.
-        allow_fallback: When the RExportFbxSetting path fails, export with the flag-less 2-arg
-            ExportFbxFile instead (notes say what was lost). Pass False when the settings are the
-            point of the export (export_for_unity): the call then fails instead.
+        allow_fallback: When the RExportFbxSetting path fails, export with the flags overload
+            ExportFbxFile(obj, path, flags, flags2, flags3) instead: the option flags still apply, the
+            RExportFbxSetting-only options do not (notes say which). Pass False when the settings are
+            the point of the export (export_for_unity): the call then fails instead.
     """
     # Defense-in-depth path validation
     _decoded_out = urllib.parse.unquote(output_path)
@@ -462,14 +484,21 @@ def export_fbx(
     resolved = os.path.realpath(output_path)
     if not resolved.lower().endswith(".fbx"):
         return {"success": False, "error": "Output path must end with .fbx"}
+    if convert_image_format:
+        return {"success": False, "error": CONVERT_IMAGE_FORMAT_REFUSED}
 
     avatar = get_first_avatar()
     if not avatar:
         return {"success": False, "error": "No avatar in scene"}
+    if sub_d_level is not None:
+        highest = _highest_subdiv_level(avatar)
+        if highest is not None and int(sub_d_level) > highest:
+            return {"success": False, "error": f"sub_d_level {int(sub_d_level)} is above this character's highest "
+                                               f"subdivision level ({highest})"}
 
     # Subdivision is applied via RExportFbxSetting.SetExportLevel inside the
     # setting-object block below (no scene mutation). The set_subdivision_level
-    # snapshot/rollback dance is only used on the flag-less 2-arg fallback path.
+    # snapshot/rollback dance is only used on the flags-only fallback path.
     _orig_subd = None
 
     # --- Build option flags ---
@@ -535,8 +564,6 @@ def export_fbx(
     # Texture Settings (CC5 dialog)
     if embed_textures:
         flags |= _safe_flag("EExportFbxOptions_EmbedTexture")  # "Embed Textures"
-    if convert_image_format:
-        flags |= _safe_flag("EExportFbxOptions_ConvertTifToPNG")  # "Convert Image Format"
 
     # Honest-reporting trackers for the RExportFbxSetting-only options. Each is
     # set to the actually-applied value only after its setter succeeds.
@@ -553,7 +580,7 @@ def export_fbx(
 
         # --- Always use RExportFbxSetting object path (UR-16).
         # Passing a bare int as the 3rd arg to ExportFbxFile can crash CC5.
-        # Fall back to the 2-arg call only if RExportFbxSetting is unavailable.
+        # Fall back to the flags overload only if RExportFbxSetting is unavailable or fails.
         used_setting_object = False
         setting_error = ""
         applied_flags2 = False
@@ -637,7 +664,7 @@ def export_fbx(
                 used_setting_object = True
             except Exception as e:
                 setting_error = str(e)
-                notes.append(f"RExportFbxSetting overload failed ({e}); falling back to 2-arg export"
+                notes.append(f"RExportFbxSetting overload failed ({e}); falling back to the flags overload"
                              if allow_fallback else f"RExportFbxSetting overload failed ({e})")
             else:
                 # The export ran with the settings: an error status is CC5's answer, not a reason to
@@ -651,16 +678,11 @@ def export_fbx(
                     "error": f"CC5 could not export with the requested FBX settings: {setting_error}"}
 
         if not used_setting_object:
-            if flags or flags2 or flags3:
-                notes.append(
-                    "WARNING: option flags (target-tool preset / axis / etc.) were NOT "
-                    "applied — used the flag-less 2-arg ExportFbxFile fallback."
-                )
             if export_motion is False:
                 notes.append("WARNING: export_motion=False NOT applied (RExportFbxSetting unavailable)")
-            if fps is not None or motion_range is not None or texture_size is not None or embed_textures or convert_image_format:
-                notes.append("WARNING: motion/texture options NOT applied (RExportFbxSetting unavailable)")
-            # 2-arg fallback can only honor subdivision via the scene-mutating
+            if fps is not None or motion_range is not None or texture_size is not None:
+                notes.append("WARNING: motion frame rate/range and texture size NOT applied (RExportFbxSetting unavailable)")
+            # The flags fallback can only honor subdivision via the scene-mutating
             # set_subdivision_level (snapshot for rollback on failure).
             if sub_d_level is not None:
                 try:
@@ -672,7 +694,7 @@ def export_fbx(
                     sub_result = set_subdivision_level(int(sub_d_level))
                     if sub_result.get("success", False):
                         applied_export_level = int(sub_d_level)
-                        notes.append(f"sub_d_level={sub_d_level} applied via set_subdivision_level (2-arg fallback)")
+                        notes.append(f"sub_d_level={sub_d_level} applied via set_subdivision_level (flags fallback)")
                     else:
                         notes.append(f"set_subdivision_level failed: {sub_result.get('error')}")
                 except Exception as e:
@@ -692,15 +714,18 @@ def export_fbx(
                         notes.append("auto sub_d_level=1 to approximate smooth mesh")
                     except Exception:
                         pass
-            # 2-arg fallback — avoids passing bare int as 3rd arg
-            _raise_on_error(RLPy.RFileIO.ExportFbxFile(avatar, output_path), "ExportFbxFile")
+            # Live CC5 5.13 has no 2-argument ExportFbxFile(obj, path) (TypeError). Its overloads are
+            # (obj, path, RExportFbxSetting) and (obj, path, EExportFbxOptions, EExportFbxOptions2,
+            # EExportFbxOptions3[, texture size, texture format, motion path]).
+            _raise_on_error(RLPy.RFileIO.ExportFbxFile(avatar, output_path, flags, flags2, flags3), "ExportFbxFile")
+            applied_flags2 = applied_flags3 = True
 
         # Honest reporting: echo flags/options only when actually applied.
         result: dict[str, Any] = {
             "success": True,
             "path": output_path,
-            "flags_applied": used_setting_object,
-            "flags": flags if used_setting_object else 0,
+            "flags_applied": True,  # both export paths pass the option flags
+            "flags": flags,
             "flags2": flags2 if applied_flags2 else 0,
             "flags3": flags3 if applied_flags3 else 0,
             "notes": notes,
@@ -716,10 +741,8 @@ def export_fbx(
             result["motion_range"] = applied_motion_range
         if applied_texture_size is not None:
             result["texture_size"] = applied_texture_size
-        if embed_textures and used_setting_object:
+        if embed_textures:
             result["embed_textures"] = True
-        if convert_image_format and used_setting_object:
-            result["convert_image_format"] = True
         return result
     except Exception as e:
         # Roll back the subdivision change if we made one and the export failed.

@@ -82,11 +82,28 @@ class ExportForUnityTest(unittest.TestCase):
         self.assertFalse(kwargs["embed_textures"])
         self.assertFalse(kwargs["export_motion"])
         self.assertEqual(kwargs["texture_size"], 2048)
-        self.assertTrue(kwargs["convert_image_format"])
+        # Live CC5 5.13 crashes right after an export with Convert Image Format (Task 18), so it is never asked for.
+        self.assertFalse(kwargs.get("convert_image_format", False))
+        self.assertIsNone(kwargs.get("motion_range"))
         self.assertFalse(kwargs["allow_fallback"])
         self.assertEqual(r["files"][0]["bytes"], 3)
         self.assertEqual((r["export_level"], r["texture_size"]), (0, 2048))
         self.assertEqual(r["notes"], ["target_tool=Unity preset applied"])
+
+    def test_a_posed_export_carries_the_pose_in_a_one_frame_animation_take(self):
+        # Live CC5 5.13 (Task 18): a mesh-only export is in the bind pose whatever pose the scene shows, while a
+        # one-frame motion export without the T-pose bit carries the current pose.
+        def fake_export(path, flags, **kw):
+            open(path, "wb").close()
+            return {"success": True, "flags_applied": True, "notes": []}
+
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()),                 mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake_export) as exp:
+            r = self.pipe.export_for_unity(self.assets, "Patient_01", include_current_pose=True)
+        self.assertTrue(r["success"])
+        kwargs = exp.call_args.kwargs
+        self.assertTrue(kwargs["include_current_pose"])
+        self.assertTrue(kwargs["export_motion"])
+        self.assertEqual(kwargs["motion_range"], [0, 0])
 
     def _export_with(self, fake_export):
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()), \

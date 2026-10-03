@@ -51,7 +51,7 @@ The MCP server provides 79 tools across 21 modules for controlling CC5. The tabl
 | `remove_scene_item` | Remove clothing, hair, or accessories by name |
 | `browse_content` | Browse CC5 content folders (clothes, shoes, etc.) |
 | `load_asset` | Load a CC5 asset file (.iAvatar, .ccm, .iClothes, etc.) |
-| `export_fbx` | Export the current avatar as an FBX file. Mirrors the CC5 "Export FBX" dialog: `target_tool` preset, `export_motion` ("Mesh and Motion"), `sub_d_level` (HD subdivision), `embed_textures`, `fps`, `motion_range`, `convert_image_format`, `texture_size`. A bare filename exports into `D:\CC5Export` (override via `CC5_EXPORT_DIR`). |
+| `export_fbx` | Export the current avatar as an FBX file. Mirrors the CC5 "Export FBX" dialog: `target_tool` preset, `export_motion` ("Mesh and Motion"), `sub_d_level` (HD subdivision), `embed_textures`, `fps`, `motion_range`, `texture_size` (`convert_image_format` is refused: CC5 5.13 crashes right after a scripted export with it). A bare filename exports into `D:\CC5Export` (override via `CC5_EXPORT_DIR`). |
 | `create_actor_mixer` | Generate ActorMIXER PRO mixer assets (.ccMixerPreset) from the open avatar. `confirm_create` gates a dry-run (false, CANCELs) vs real creation (true). Requires the ActorMIXER PRO plugin. |
 
 #### Materials & Colors
@@ -114,7 +114,7 @@ Exonicus additions for building Trauma Simulator patients and moving them betwee
 | Tool | Description |
 |------|-------------|
 | `job_status` | Check a long-running operation (export, headshot, batch) started earlier; returns its result when finished |
-| `export_for_unity` | Export the current character as FBX with CC5's Unity preset into `<unity_dir>/<character_name>/` inside a Unity project's `Assets` folder |
+| `export_for_unity` | Export the current character as FBX with CC5's Unity preset into `<unity_dir>/<character_name>/` inside a Unity project's `Assets` folder. With `include_current_pose`, the pose is a one-frame animation clip in the FBX (the model's default pose stays the bind pose) |
 | `check_quest_budget` | Check the current character against the Quest 3 per-character budget (triangles, materials, and, given an export folder, texture size and estimated GPU memory); see [Budget defaults](#budget-defaults) |
 | `apply_pose` | Apply a pose or motion file (`.rlMotion`, `.rlPose`, `.iMotion`, `.iPose`, `.iMotionPlus`, `.ccPose`, `.ccMotion`) to the current character |
 | `save_character` | Save the current character as a `.ccAvatar` file (the clean base for batch generation) |
@@ -125,7 +125,7 @@ Exonicus additions for building Trauma Simulator patients and moving them betwee
 | `replace_mesh_from_obj` | Replace one of the character's meshes with an edited OBJ of the same topology |
 | `load_texture` | Load an image into one texture channel of one material |
 | `load_substance_textures` | Apply a Substance Painter texture export folder to the current character |
-| `export_textures` | Export the character as FBX plus PBR texture images, the starting point for texturing in Substance Painter |
+| `export_textures` | Export the character as FBX plus its texture images (in their source formats), the starting point for texturing in Substance Painter |
 | `apply_skin_overlay` | Blend an image laid out on the CC skin UVs over the skin (bruising, abrasions, dirt, dried blood) |
 | `remove_skin_overlay` | Remove skin overlays added with `apply_skin_overlay` |
 | `set_skin_condition` | Tint the skin toward a clinical appearance: pale, cyanotic, flushed, jaundiced, or back to normal |

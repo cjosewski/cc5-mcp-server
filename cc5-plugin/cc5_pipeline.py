@@ -72,7 +72,12 @@ def export_for_unity(
     texture_size: int | None = None,
     include_current_pose: bool = False,
 ) -> dict[str, Any]:
-    """Export the current avatar with the Unity preset into <unity_dir>/<name>/<name>.fbx."""
+    """Export the current avatar with the Unity preset into <unity_dir>/<name>/<name>.fbx.
+
+    Live CC5 5.13 (Task 18): a mesh-only export is in the bind pose whatever pose the scene shows, so
+    include_current_pose exports one frame of motion, which carries the pose as a one-frame animation take.
+    Convert Image Format is never asked for: CC5 crashes right after an export with it.
+    """
     error = check_path(unity_dir)
     if error:
         return {"success": False, "error": error}
@@ -96,9 +101,9 @@ def export_for_unity(
         sub_d_level=sub_d_level,
         include_current_pose=include_current_pose,
         embed_textures=False,
-        export_motion=False,
+        export_motion=bool(include_current_pose),
+        motion_range=[0, 0] if include_current_pose else None,
         texture_size=texture_size,
-        convert_image_format=True,
         allow_fallback=False,  # without the settings it is not a Unity export (Z-up, full-size textures)
     )
     error = _check_export(result, fbx, started)
@@ -545,7 +550,10 @@ def load_substance_textures(folder: str) -> dict[str, Any]:
 
 
 def export_textures(output_dir: str, character_name: str) -> dict[str, Any]:
-    """Export FBX + PBR textures as image files: the starting set for Substance Painter."""
+    """Export FBX + its textures as image files (in their source formats): the starting set for Substance Painter.
+
+    Convert Image Format is never asked for: live CC5 5.13 crashes right after an export with it (Task 18).
+    """
     error = check_path(output_dir)
     if error:
         return {"success": False, "error": error}
@@ -558,7 +566,7 @@ def export_textures(output_dir: str, character_name: str) -> dict[str, Any]:
     fbx = os.path.join(folder, character_name + ".fbx")
     started = time.time() - 2  # mtime slack; report only files this export wrote
     result = cc5_api.export_fbx(fbx, 0, target_tool="", embed_textures=False, export_motion=False,
-                                convert_image_format=True, allow_fallback=False)
+                                allow_fallback=False)
     error = _check_export(result, fbx, started)
     if error:
         return error

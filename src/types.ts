@@ -245,7 +245,7 @@ export interface ExportFbxOptions {
   fps?: number;
   /** Include Motion frame range [start, end]. Omit for "All". */
   motion_range?: [number, number];
-  /** "Convert Image Format" (TIF -> PNG). */
+  /** "Convert Image Format" (TIF -> PNG). The bridge refuses it: CC5 5.13 crashes right after a scripted export with it. */
   convert_image_format?: boolean;
   /** "Max Texture Size" in pixels (0 = original). */
   texture_size?: number;
