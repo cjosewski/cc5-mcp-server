@@ -113,6 +113,8 @@ All parameters are optional (only `output_path` is required), preserving full ba
 | `fps` | Include Motion: Frame Rate | Maps to `RLPy.RFps.Fps{n}` (e.g. 30). Unsupported values are skipped with a note. |
 | `motion_range` | Include Motion: Range | Passes `[start, end]` to `SetExportMotionRange`. When omitted, the default "All" is used. |
 
+**Live finding (Task 18, CC5 5.13): the first FBX export of a CC5 session crashes CC5 most of the time**, while every later export in that session works. Tested without effect: export settings, output folder and path length, RPyTimer instead of the QTimer drain, keeping the RExportFbxSetting alive, deselecting the avatar, a clean start without the recovery prompt. The README lists it, with the other CC5 5.13 findings, under Known issues.
+
 **Recommended Unreal (UE5 Skeleton) call:** `target_tool="UE5"`, `export_motion=true`, `sub_d_level=0`, `embed_textures=true`, `fps=30` (omit `motion_range` = All). InstaLOD is always OFF.
 
 The return value accurately reports only the values that were actually applied (`export_level`, `export_motion`, `fps`, `motion_range`, `texture_size`, `embed_textures`, etc.). In the fallback (used when `RExportFbxSetting` is unavailable or fails), CC5 exports through the flags overload `ExportFbxFile(obj, path, flags, flags2, flags3)` (CC5 5.13 has no 2-argument form): the option flags still apply, and the `RExportFbxSetting`-only options that could not be applied (motion, frame rate/range, texture size) are recorded as WARNINGs in `notes`.

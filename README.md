@@ -297,6 +297,16 @@ The defaults match the heaviest shipping Trauma Sim patient, `Patient_FemaleWhit
 
 The scene stats count the base mesh. An FBX exported with `sub_d_level` 1 or 2 holds about 4 or 16 times as many triangles when the character has HD data, so pass the same `sub_d_level` to `check_quest_budget`: the triangle line is then reported as NOT CHECKED instead of passing (a base-mesh fail still fails).
 
+## Known issues (CC5 5.13)
+
+Found in live testing on CC5 5.13.2030.1. None of them can be fixed from the bridge:
+
+- **The first FBX export after CC5 starts often crashes CC5.** In testing, CC5 closed on about three in four sessions' first FBX export (`export_fbx`, `export_for_unity`, `export_textures`, a batch), whatever the settings, folder or call route. Once one FBX export had worked, every later export in that session worked (more than 30). Save your scene before the first export. If CC5 crashes, start it again, answer its "Unsaved project data found" question (OK restores your unsaved work), and run the export again.
+- **`headshot_from_photo` crashed CC5** in both Headshot modes with the test photo. Use Headshot from CC5's own menu until this is resolved.
+- **`import_fbx` can wait for CC5's own import dialog** ("Import Settings" for the frame rate, "Create Asset(s)" for a character): answer it in CC5 and the import finishes.
+- **Convert Image Format is refused**: every scripted export with it crashed CC5. Exported textures keep their source formats.
+- **`bake_skin_textures` opens SkinGen's About box.** While it is open, other commands wait and then fail with its title; close it in CC5.
+
 ## Development
 
 ### Build

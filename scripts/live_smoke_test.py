@@ -242,7 +242,6 @@ s, r = call("POST", "/viewport/capture"); cap = res(r)
 ok("capture_viewport", isinstance(cap, dict) and (cap.get("success") or cap.get("base64") or cap.get("path")))
 fbx = os.path.join(tempfile.gettempdir(), "cc5_smoke_export.fbx")
 s, r = call("POST", "/export/fbx", {"output_path": fbx}, timeout=180); ok("export_fbx (responds)", answered(s, r), s)
-s, r = call("POST", "/skin/bake", {}, timeout=120); ok("bake_skin_textures (responds)", answered(s, r), s)
 s, r = call("GET", "/export/head_mh/status"); ok("export_head_mh status", s == 200 and is_resp(r))
 s, r = call("POST", "/undo"); ok("undo", s == 200 and is_resp(r), s)
 s, r = call("POST", "/redo"); ok("redo", s == 200 and is_resp(r), s)
@@ -280,11 +279,21 @@ def file_text(path):
         return f.read()
 
 
-def png_size(path):
-    """(width, height) from a PNG header, or None for other files."""
+def image_size(path):
+    """(width, height) from a PNG or JPEG header, or None for other files."""
     with open(path, "rb") as f:
-        head = f.read(24)
-    return struct.unpack(">II", head[16:24]) if head[:8] == b"\x89PNG\r\n\x1a\n" else None
+        data = f.read(1 << 20)
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return struct.unpack(">II", data[16:24])
+    if data[:2] == b"\xff\xd8":  # JPEG: walk the segments to the first start-of-frame marker
+        i = 2
+        while i + 9 < len(data) and data[i] == 0xFF:
+            marker, length = data[i + 1], struct.unpack(">H", data[i + 2:i + 4])[0]
+            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                height, width = struct.unpack(">HH", data[i + 5:i + 9])
+                return width, height
+            i += 2 + length
+    return None
 
 
 print("== Exonicus extensions ==")
@@ -307,11 +316,14 @@ r = job("export_for_unity", {"unity_dir": scratch, "character_name": "LiveTest",
 r = r if isinstance(r, dict) else {}
 ok("export_for_unity", bool(r.get("success") and os.path.exists(r.get("fbx", ""))), r.get("error") or r.get("fbx"))
 ok("export_for_unity applied every setting (no WARNING notes)", bool(r.get("success")) and not warnings_in(r), warnings_in(r) or r.get("notes"))
-edges = [max(z) for z in (png_size(f["path"]) for f in r.get("files", []) if f["path"].lower().endswith(".png")) if z]
+# The export keeps the textures' source formats (Convert Image Format crashes CC5 5.13), so check PNG and JPEG files.
+edges = [max(z) for z in (image_size(f["path"]) for f in r.get("files", [])
+                          if f["path"].lower().endswith((".png", ".jpg", ".jpeg"))) if z]
 if edges:
-    ok("export_for_unity texture_size 1024 reached the PNGs (SetTextureSize enum)", max(edges) <= 1024, f"largest edge {max(edges)}")
+    ok("export_for_unity texture_size 1024 reached the textures (SetTextureSize enum)", max(edges) <= 1024,
+       f"largest edge {max(edges)}")
 else:
-    skip("export_for_unity texture_size 1024 reached the PNGs (SetTextureSize enum)", "the export wrote no PNG textures")
+    skip("export_for_unity texture_size 1024 reached the textures (SetTextureSize enum)", "no PNG/JPEG textures written")
 ok("/jobs/status answers within 5 s while a job runs", bool(STATUS_TIMES) and max(STATUS_TIMES) < 5, f"slowest {max(STATUS_TIMES or [0]):.2f}s")
 
 obj_out = os.path.join(scratch, "obj", "live.obj")
@@ -319,16 +331,27 @@ s, r = call("POST", "/pipeline/export_obj", {"output_path": obj_out}); eo = res(
 ok("export_obj (preferred call form, no WARNING notes)", eo.get("success") and not warnings_in(eo), eo)
 # LIVE-VERIFY: the OBJ must hold the body mesh (part bits set). Also open live.obj once and confirm it is in bind pose (ResetToBindPose).
 ok("export_obj has CC_Base_Body", os.path.exists(obj_out) and "CC_Base_Body" in file_text(obj_out), obj_out)
-r = job("export_goz", {"output_dir": os.path.join(scratch, "goz"), "pose": "tpose"})
+goz_dir = os.path.join(scratch, "goz")
+r = job("export_goz", {"output_dir": goz_dir, "pose": "tpose"})
 ok("export_goz (pose applied)", bool(r and r.get("success") and r.get("pose_applied")), r)
+# Live CC5 5.13 appends file names straight onto the folder it is given (it once wrote <scratch>\gozCC_Base_Body.GoZ).
+goz_files = [f for f in os.listdir(goz_dir) if f.lower().endswith(".goz")] if os.path.isdir(goz_dir) else []
+ok("export_goz wrote its .GoZ files into the folder", bool(goz_files), goz_files[:3])
 fbx = os.path.join(scratch, "LiveTest", "LiveTest.fbx")
+# CC5 may stop on its own "Import Settings" (frame rate) dialog here: the job then waits until it is answered in CC5.
 r = job("import_fbx", {"file_path": fbx, "kind": "prop"}); ok("import_fbx prop", bool(r and r.get("success") and not warnings_in(r)), r)
 s, r = call("POST", "/pipeline/meshes", {}); meshes = res(r).get("meshes") or []; ok("list_meshes", bool(meshes), meshes[:3])
 r = job("save_character", {"output_path": os.path.join(scratch, "base.ccAvatar")}); ok("save_character", bool(r and r.get("success")), r)
 overlay = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "overlay.png")
 s, r = call("POST", "/skin/overlay", {"image_path": overlay, "region": "head", "strength": 60}); ok("apply_skin_overlay", res(r).get("success"), res(r))
 s, r = call("POST", "/skin/condition", {"condition": "pale", "amount": 0.8}); ok("set_skin_condition", res(r).get("success"), res(r))
-s, r = call("POST", "/skin/wrinkle", {"strength": 0.5}); ok("set_wrinkle_strength", res(r).get("success"), res(r))
+# Live CC5 5.13: the neutral CC3_Base_Plus has no wrinkle data (SetWrinkleDetailStrength reports an error status for it),
+# while a textured template such as CC4 Camila takes the strength (Task 18). So the check skips the neutral base.
+first_avatar = next((a.get("name") for a in (res(call("GET", "/avatars")[1]) or []) if isinstance(a, dict)), None)
+if first_avatar == "CC3_Base_Plus":
+    skip("set_wrinkle_strength", "the neutral CC3_Base_Plus has no wrinkle data; run on a textured template (Task 18: CC4 Camila PASS)")
+else:
+    s, r = call("POST", "/skin/wrinkle", {"strength": 0.5}); ok("set_wrinkle_strength", res(r).get("success"), res(r))
 s, r = call("POST", "/skin/overlay/remove", {"region": "head"}); ok("remove_skin_overlay", res(r).get("success"), res(r))
 r = job("export_textures", {"output_dir": os.path.join(scratch, "sp"), "character_name": "LiveTex"})
 ok("export_textures (no WARNING notes)", bool(r and r.get("success")) and not warnings_in(r), r)
@@ -383,14 +406,11 @@ for ft in ("makeup_full", "makeup_foundation", "makeup_eye", "makeup_lip", "imag
         ok(f"browse {ft}", True, files[:2])
     else:
         skip(f"browse {ft}", "folder resolved but empty (no content installed, or files filtered by extension; see Step 3)")
-# LIVE-VERIFY: image_layer must list overlay images. If CC5 lists only .cc* content here, FAIL and change apply_skin_overlay's
-# description and create_character step 5 to say overlays are PNG/JPG/TGA files the user provides (drop the image_layer pointer).
+# Resolved in Task 18: live CC5 5.13 lists only .iImgLayer stage items under image_layer, so apply_skin_overlay and
+# create_character ask the user for PNG/JPG/TGA overlays instead of pointing at image_layer. Printed for the record.
 layers = [p for p in (res(call("POST", "/content/browse", {"folder_type": "image_layer"})[1]) or []) if isinstance(p, str)]
 images = [p for p in layers if os.path.splitext(p)[1].lower() in (".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff")]
-if layers:
-    ok("browse image_layer returns overlay images", bool(images), layers[:3])
-else:
-    skip("browse image_layer returns overlay images", "no image-layer content installed")
+print(f"  image_layer: {len(layers)} item(s), {len(images)} of them overlay images")
 s, r = call("POST", "/content/browse", {"folder_type": "shoes"})
 shoe_files = [p for p in (res(r) if isinstance(res(r), list) else []) if isinstance(p, str) and os.path.isabs(p)]
 if shoe_files:
@@ -409,11 +429,25 @@ if os.path.isfile(cloth):
     print("  clothing meshes that did not import:", (r or {}).get("failed_meshes"))
 else:
     skip("import_fbx clothing", "set CC5_LIVE_CLOTH_FBX to a clothing FBX")
-if os.path.exists(fbx):  # last: adds a second character to the scene
+# Live CC5 5.13 opens its "Create Asset(s)" dialog for a character import, and the job waits there until someone
+# answers it in CC5, so this check runs only when CC5_LIVE_IMPORT_CHARACTER=1 and someone is at CC5 to press OK.
+if os.environ.get("CC5_LIVE_IMPORT_CHARACTER", "").strip().lower() not in ("1", "true", "yes"):
+    skip("import_fbx character", "CC5 asks 'Create Asset(s)': set CC5_LIVE_IMPORT_CHARACTER=1 and press OK in CC5")
+elif os.path.exists(fbx):  # last: adds a second character to the scene
     r = job("import_fbx", {"file_path": fbx, "kind": "character"}); ok("import_fbx character", bool(r and r.get("success")), r)
 else:
     skip("import_fbx character", "export_for_unity failed")
-skip("headshot_from_photo", "run manually with a real photo if Headshot 3 is licensed")
+photo = os.environ.get("CC5_LIVE_HEADSHOT_PHOTO", "")
+if os.path.isfile(photo):  # needs the Headshot 3 plugin; replaces the head of the current character
+    r = job("headshot_from_photo", {"photo_path": photo}, timeout=300); ok("headshot_from_photo", bool(r and r.get("success")), r)
+else:
+    skip("headshot_from_photo", "set CC5_LIVE_HEADSHOT_PHOTO to a front-facing photo (Headshot 3 required)")
+# Last: on live CC5 5.13 bake_skin_textures triggers SkinGen's "About" action, and its modal About box blocks every
+# later command (the bridge fails them with the dialog's text) until someone closes it in CC5.
+s, r = call("POST", "/skin/bake", {}, timeout=120); ok("bake_skin_textures (responds)", answered(s, r), s)
+time.sleep(1)
+s, r = call("GET", "/avatars")
+ok("bake_skin_textures leaves no modal dialog open", s == 200, "" if s == 200 else (r or {}).get("error"))
 print(f"  slowest /jobs/status answer: {max(STATUS_TIMES or [0]):.2f}s over {len(STATUS_TIMES)} polls")
 if SLOW:
     print("  direct calls over 20 s (the bridge stops waiting at 30 s; make them jobs):", "; ".join(SLOW))
