@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import types
 import unittest
@@ -22,6 +23,13 @@ class GoZTest(unittest.TestCase):
         p = mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar)
         p.start()
         self.addCleanup(p.stop)
+        self.rl.RFileIO.ExportGoZFile.side_effect = self._live_goz_export
+
+    def _live_goz_export(self, objects, folder, option):
+        """Like live CC5 5.13: each file name is appended straight onto the folder string it was given."""
+        with open(folder + "CC_Base_Body.GoZ", "wb") as f:
+            f.write(b"GoZb")
+        return self.rl.RFileIO.ExportGoZFile.return_value
 
     def test_rejects_unknown_pose(self):
         self.assertFalse(self.pipe.export_goz(self.dir, "sitting")["success"])
@@ -71,6 +79,21 @@ class GoZTest(unittest.TestCase):
         self.assertTrue(r["success"])
         self.assertTrue(r["pose_applied"])
         self.assertEqual(r["notes"], [])
+
+    def test_passes_the_folder_with_a_trailing_separator(self):
+        # Live CC5 5.13 wrote "<parent>\gozCC_Base_Body.GoZ" next to a folder passed as "<parent>\goz".
+        self.rl.RExportGoZMeshOption.return_value = _live_option()
+        r = self.pipe.export_goz(self.dir, "tpose")
+        self.assertTrue(r["success"])
+        self.assertTrue(self.rl.RFileIO.ExportGoZFile.call_args.args[1].endswith(os.sep))
+        self.assertEqual([os.path.basename(f["path"]) for f in r["files"]], ["CC_Base_Body.GoZ"])
+
+    def test_fails_when_cc5_writes_no_goz_file_into_the_folder(self):
+        self.rl.RExportGoZMeshOption.return_value = _live_option()
+        self.rl.RFileIO.ExportGoZFile.side_effect = lambda objects, folder, option:             self.rl.RFileIO.ExportGoZFile.return_value
+        r = self.pipe.export_goz(self.dir, "tpose")
+        self.assertFalse(r["success"])
+        self.assertIn("no GoZ file", r["error"])
 
     def test_error_status_fails_without_retrying_a_weaker_form(self):
         self.rl.RFileIO.ExportGoZFile.return_value.IsError.return_value = True

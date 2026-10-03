@@ -100,7 +100,7 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "import_fbx",
-    "Import an FBX made in Blender, Maya or another tool: as a 'prop', a whole 'character', or 'clothing' fitted to the current character.",
+    "Import an FBX made in Blender, Maya or another tool: as a 'prop', a whole 'character', or 'clothing' fitted to the current character. CC5 can stop to ask about the import (its 'Import Settings' frame-rate question for some files, or 'Create Asset(s)' for a character): the import, and every other CC5 command, waits until it is answered in CC5.",
     {
       file_path: z.string().describe("Absolute path to the .fbx"),
       kind: z.enum(["prop", "character", "clothing"]),
@@ -110,7 +110,9 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       if (err) return errorResult(err);
       try {
         const out = await runJob(bridge, "import_fbx", { file_path, kind });
-        if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+        if (!out.done) {
+          return { content: [{ type: "text" as const, text: `${formatPending(out.job_id)} If CC5 shows an import dialog (Import Settings or Create Asset(s)), answer it in CC5: the import waits for it.` }] };
+        }
         const r = out.result as { success: boolean; error?: string; signature?: string; notes?: string[] };
         if (out.failed || !r.success) return errorResult(`Import failed: ${r.error ?? "unknown error"}`);
         const done = `Imported ${path.basename(file_path)} as ${kind}`;

@@ -348,6 +348,9 @@ def export_goz(output_dir: str, pose: str = "tpose") -> dict[str, Any]:
     if not avatar:
         return {"success": False, "error": "No avatar in scene"}
     os.makedirs(output_dir, exist_ok=True)
+    # Live CC5 5.13 appends each file name straight onto the folder string: "<parent>\goz" became
+    # "<parent>\gozCC_Base_Body.GoZ", so the folder goes in with a trailing separator.
+    folder = output_dir.rstrip("/\\") + os.sep
     started = time.time() - 2  # mtime slack; report only files this export wrote
     option = RLPy.RExportGoZMeshOption()
     pose_applied = _set_goz_pose(option, getattr(RLPy, GOZ_POSES[pose], None)) or pose == "current"
@@ -356,25 +359,35 @@ def export_goz(output_dir: str, pose: str = "tpose") -> dict[str, Any]:
         def export_with_object_vector() -> None:
             objects = RLPy.ObjectVector()
             objects.append(avatar)
-            _raise_on_error(RLPy.RFileIO.ExportGoZFile(objects, output_dir, option), "ExportGoZFile")
+            _raise_on_error(RLPy.RFileIO.ExportGoZFile(objects, folder, option), "ExportGoZFile")
         attempts.append(("(ObjectVector[avatar], folder, option)", export_with_object_vector))
     attempts += [
         ("([avatar], folder, option)",
-         lambda: _raise_on_error(RLPy.RFileIO.ExportGoZFile([avatar], output_dir, option), "ExportGoZFile")),
+         lambda: _raise_on_error(RLPy.RFileIO.ExportGoZFile([avatar], folder, option), "ExportGoZFile")),
         ("([avatar], folder, [option])",
-         lambda: _raise_on_error(RLPy.RFileIO.ExportGoZFile([avatar], output_dir, [option]), "ExportGoZFile")),
+         lambda: _raise_on_error(RLPy.RFileIO.ExportGoZFile([avatar], folder, [option]), "ExportGoZFile")),
     ]
     label, err = try_signatures(attempts)
     if not label:
         return {"success": False, "error": f"ExportGoZFile failed: {err}"}
+    files = list_files(output_dir, since=started)
+    if not any(f["path"].lower().endswith(".goz") for f in files):
+        return {"success": False, "signature": label,
+                "error": f"CC5 reported success but wrote no GoZ file in {output_dir}"}
     notes = [] if pose_applied else [
         f"WARNING: pose '{pose}' NOT applied (RExportGoZMeshOption has no ePose attribute or pose setter); "
         "files use the current pose"]
-    return {"success": True, "folder": output_dir, "files": list_files(output_dir, since=started), "signature": label,
+    return {"success": True, "folder": output_dir, "files": files, "signature": label,
             "pose_applied": pose_applied, "notes": notes}
 
 
 FBX_KINDS = {"prop": "EImportFbxOption_Prop", "character": "EImportFbxOption_StandardHumanCharacter", "clothing": None}
+
+
+def _worn_names(avatar: Any) -> list[str]:
+    """Names of the clothes and accessories the avatar wears."""
+    items = list(avatar.GetClothes() or []) + list(avatar.GetAccessories(True) or [])
+    return [str(item.GetName()) for item in items]
 
 
 def import_fbx(file_path: str, kind: str) -> dict[str, Any]:
@@ -393,6 +406,7 @@ def import_fbx(file_path: str, kind: str) -> dict[str, Any]:
     notes: list[str] = []
     failed_meshes: list[str] = []
     attempts: list[tuple[str, Any]] = []
+    worn_before = _worn_names(avatar) if kind == "clothing" else []
     RLPy.RGlobal.BeginAction("Import FBX")
     try:
         if kind == "clothing":
@@ -433,7 +447,17 @@ def import_fbx(file_path: str, kind: str) -> dict[str, Any]:
     cc5_api._invalidate_caches()
     result: dict[str, Any] = {"success": True, "signature": label, "notes": notes}
     if kind == "clothing":
+        # Live CC5 5.13: LoadClotheFromFbx reports success for a garment it cannot fit (an unskinned mesh) and adds
+        # nothing, so success means something new is worn.
+        added = [name for name in _worn_names(avatar) if name not in worn_before]
+        if not added:
+            not_imported = f" Meshes CC5 did not import: {', '.join(failed_meshes)}." if failed_meshes else ""
+            return {"success": False, "signature": label, "failed_meshes": failed_meshes, "notes": notes,
+                    "error": "CC5 reported success but no clothing was added." + not_imported + " The garment must be "
+                             "skinned to the character's skeleton: export the character (export_fbx with target_tool "
+                             "'Blender'), fit and skin the garment to its armature, and export it with the armature."}
         result["failed_meshes"] = failed_meshes
+        result["added"] = added
     return result
 
 

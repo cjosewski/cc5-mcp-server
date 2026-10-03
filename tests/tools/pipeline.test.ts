@@ -132,6 +132,29 @@ describe("export_goz", () => {
 });
 
 describe("import_fbx", () => {
+  // Live CC5 5.13 (Task 18): LoadFbxFile opens CC5's own "Import Settings" (frame rate) dialog for some files and
+  // "Create Asset(s)" for a character, and the job waits inside it until someone answers in CC5.
+  it("says the import can wait for CC5's own import dialog", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "import_fbx")?.[1] as string;
+    expect(description).toContain("Import Settings");
+    expect(description).toContain("Create Asset(s)");
+  });
+
+  it("asks to answer CC5's import dialog when the import is still running", async () => {
+    vi.useFakeTimers();
+    try {
+      bridge.startJob.mockResolvedValue({ job_id: "cmd_7" });
+      bridge.getJob.mockResolvedValue({ job_id: "cmd_7", action: "import_fbx", status: "running" });
+      const pending = server.getRegisteredTool("import_fbx")({ file_path: "C:/a/Patient.fbx", kind: "character" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      const r = await pending;
+      expect(r.content[0].text).toContain("cmd_7");
+      expect(r.content[0].text).toContain("answer it in CC5");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects non-FBX", async () => {
     const r = await server.getRegisteredTool("import_fbx")({ file_path: "C:/a/b.obj", kind: "prop" });
     expect(r.isError).toBe(true);

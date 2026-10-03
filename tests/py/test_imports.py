@@ -15,6 +15,15 @@ class ImportTest(unittest.TestCase):
         self.dir = tempfile.mkdtemp()
         self.avatar = mock.MagicMock()
         self.avatar.GetMeshNames.return_value = ["CC_Base_Body", "CC_Base_Eye"]
+        # Like live CC5 5.13: a clothing import that works puts the garment on the avatar (GetClothes).
+        self.worn: list[str] = []
+        self.avatar.GetClothes.side_effect = lambda: [mock.Mock(**{"GetName.return_value": n}) for n in self.worn]
+        self.avatar.GetAccessories.return_value = []
+        self.rl.RFileIO.LoadClotheFromFbx.side_effect = self._wear
+
+    def _wear(self, avatar, path, failed):
+        self.worn.append("Jacket")
+        return self.rl.RFileIO.LoadClotheFromFbx.return_value
 
     def _file(self, name):
         p = os.path.join(self.dir, name)
@@ -74,6 +83,16 @@ class ImportTest(unittest.TestCase):
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
             r = self.pipe.import_fbx(self._file("jacket.fbx"), "clothing")
         self.assertEqual((r["failed_meshes"], r["notes"]), ([], []))
+        self.assertEqual(r["added"], ["Jacket"])
+
+    def test_import_clothing_fails_when_nothing_new_is_worn(self):
+        # Live CC5 5.13: LoadClotheFromFbx returned success for an unskinned Blender mesh and added nothing.
+        self.rl.RFileIO.LoadClotheFromFbx.side_effect = None
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+            r = self.pipe.import_fbx(self._file("tube.fbx"), "clothing")
+        self.assertFalse(r["success"])
+        self.assertIn("no clothing was added", r["error"])
+        self.assertIn("skinned", r["error"])
 
     def test_replace_mesh_unknown_mesh(self):
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):

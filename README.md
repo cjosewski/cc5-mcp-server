@@ -120,7 +120,7 @@ Exonicus additions for building Trauma Simulator patients and moving them betwee
 | `save_character` | Save the current character as a `.ccAvatar` file (the clean base for batch generation) |
 | `export_obj` | Export the current character as OBJ for sculpting in ZBrush or Blender |
 | `export_goz` | Export the current character as GoZ files for ZBrush |
-| `import_fbx` | Import an FBX from Blender, Maya or another tool as a prop, a whole character, or clothing fitted to the current character |
+| `import_fbx` | Import an FBX from Blender, Maya or another tool as a prop, a whole character, or clothing fitted to the current character (a garment must be skinned to the character's armature). CC5 may stop on its own import dialog (Import Settings, Create Asset(s)); the import waits until it is answered in CC5 |
 | `list_meshes` | List the current character's mesh names (for `replace_mesh_from_obj` and `load_texture`) |
 | `replace_mesh_from_obj` | Replace one of the character's meshes with an edited OBJ of the same topology |
 | `load_texture` | Load an image into one texture channel of one material |
