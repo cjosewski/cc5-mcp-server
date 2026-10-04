@@ -9,15 +9,13 @@
 
 ## Important Notes When Restarting CC5
 
-When restarting CC5, always use this order:
-1. Exit with `taskkill //F //PID <pid>`
+When CC5 needs a restart, always use this order:
+1. **Ask the user before quitting CC5.** The user saves their work and closes CC5. Never kill it with `taskkill //F` (or `Stop-Process`): unsaved work is lost.
 2. Launch with `CharacterCreator.exe &`
 3. Wait for the bridge to start (poll the health check)
-4. **Auto-close the dialogs** — CC5 shows dialogs at launch:
-   - "Unsaved project data found" → press OK with `SendKeys('{ENTER}')`
-   - Welcome screen → close with `SendKeys('{ESCAPE}')`
-   - **If these are not closed, the viewport does not render correctly**
-5. Permanent fix: have the user check "Don't show this again"
+4. **Never send keys or clicks to CC5.** The user answers CC5's startup dialogs themselves (until they do, the viewport does not render correctly):
+   - "Unsaved project data found": OK restores the auto-saved changes, Cancel discards them
+   - Welcome screen: tick "Don't show this again" (it then stays closed), or close it by hand
 
 ## Viewport Capture
 
@@ -58,7 +56,7 @@ After a .ccProject is loaded, RenderImage sometimes does not work, so the fallba
 
 ## Tests
 
-- Unit tests: `npm test` (314 tests)
+- Unit tests: `npm test` (TypeScript) and `npm run test:py` (Python plugin, fake RLPy)
 - Coverage: `npm run test:coverage` (80%+ threshold)
 - Live test: send requests directly to the bridge with `curl`; every request except `/health` needs the same `-H "X-CC5-Token: $(cat $LOCALAPPDATA/CC5_MCP_Bridge/token)"` header
 - API discovery: `curl -H "X-CC5-Token: $(cat $LOCALAPPDATA/CC5_MCP_Bridge/token)" http://127.0.0.1:5101/api` (the full endpoint list needs `CC5_DEV_MODE=1`)
