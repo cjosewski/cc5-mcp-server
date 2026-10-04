@@ -42,7 +42,7 @@ export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "set_skin_condition",
-    "Move the skin toward a clinical appearance: pale (shock/blood loss: lighter and less saturated, through CC5's Digital Human skin shader), cyanotic (hypoxia), flushed or jaundiced (colour tints), or back to normal. amount 0-1. This replaces the colour set by set_skin_color; pass that colour as base_rgb to tint it instead (normal + base_rgb restores it).",
+    "Move the skin toward a clinical appearance: pale (shock/blood loss: lighter and less saturated, through CC5's Digital Human skin shader), cyanotic (hypoxia), flushed or jaundiced (colour tints), or back to normal. amount 0-1. This replaces the colour set by set_skin_color; pass that colour as base_rgb to tint it instead (normal + base_rgb restores it). Every condition sets the Digital Human skin shader's base-colour Brightness and Saturation (pale raises Brightness and lowers Saturation; the other conditions set both back to 0), so a Brightness or Saturation change made by hand in CC5 is replaced.",
     {
       condition: z.enum(SKIN_CONDITIONS),
       amount: z.number().min(0).max(1).default(1),

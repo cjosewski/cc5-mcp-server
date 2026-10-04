@@ -64,6 +64,13 @@ describe("set_skin_condition", () => {
     expect(description).toContain("lighter and less saturated");
   });
 
+  it("says every condition replaces a hand-made skin Brightness or Saturation change", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "set_skin_condition")?.[1] as string;
+    expect(description).toContain("Every condition sets the Digital Human skin shader's base-colour Brightness and "
+      + "Saturation (pale raises Brightness and lowers Saturation; the other conditions set both back to 0), so a "
+      + "Brightness or Saturation change made by hand in CC5 is replaced.");
+  });
+
   it("prints CC5's warnings for skin it could not make pale", async () => {
     bridge.setSkinCondition.mockResolvedValue({ success: true, applied_to: ["Std_Skin_Head", "Std_Skin_Arm"],
       notes: ["WARNING: no pallor offsets on Std_Skin_Arm, so pale did not lighten them"] });

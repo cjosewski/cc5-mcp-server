@@ -140,6 +140,10 @@ def set_skin_condition(condition: str, amount: float = 1.0, region: str = "all",
     colour. Pass that colour as base_rgb to tint it instead of losing it. Pallor
     lightens and desaturates through the skin shader's PALLOR_OFFSETS; every other
     condition sets them back to 0.
+
+    Every condition sets the Digital Human skin shader's base-colour Brightness and
+    Saturation (pale raises Brightness and lowers Saturation; the other conditions set
+    both back to 0), so a Brightness or Saturation change made by hand in CC5 is replaced.
     """
     if condition not in SKIN_CONDITIONS:
         return {"success": False, "error": f"condition must be one of: {', '.join(SKIN_CONDITIONS)}"}

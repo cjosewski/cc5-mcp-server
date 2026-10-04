@@ -50,6 +50,12 @@ class SkinTest(unittest.TestCase):
         self.assertTrue(r["success"])
         self.rl.RRgb.assert_called_with(0.9, 0.93, 0.99)
 
+    def test_condition_docstring_says_it_replaces_hand_made_brightness_and_saturation(self):
+        doc = " ".join(self.skin.set_skin_condition.__doc__.split())
+        self.assertIn("Every condition sets the Digital Human skin shader's base-colour Brightness and Saturation "
+                      "(pale raises Brightness and lowers Saturation; the other conditions set both back to 0), so a "
+                      "Brightness or Saturation change made by hand in CC5 is replaced.", doc)
+
     def test_condition_tints_base_skin_tone(self):
         r = self.skin.set_skin_condition("cyanotic", 0.5, "all", (0.4, 0.3, 0.25))
         self.assertTrue(r["success"])
