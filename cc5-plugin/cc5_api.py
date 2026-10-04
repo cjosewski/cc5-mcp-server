@@ -494,7 +494,8 @@ def export_fbx(
         highest = _highest_subdiv_level(avatar)
         if highest is not None and int(sub_d_level) > highest:
             return {"success": False, "error": f"sub_d_level {int(sub_d_level)} is above this character's highest "
-                                               f"subdivision level ({highest})"}
+                                               f"subdivision level ({highest}). Export with sub_d_level 0, or add "
+                                               "subdivision (HD) levels to the character in Character Creator 5 first."}
 
     # Subdivision is applied via RExportFbxSetting.SetExportLevel inside the
     # setting-object block below (no scene mutation). The set_subdivision_level

@@ -92,7 +92,7 @@ Changes to cc5_api.py and the extension modules take effect on reload, once the 
 `set_subdivision_level` is strictly a tool for "switching between HD subdivision levels that have already been generated".
 **Generating** the HD data itself is only possible through the CC5 UI operation `Modify > Subdivide`; it cannot be triggered from RLPy/the API.
 Therefore an avatar without generated HD data has `max_level = 0` (no HD data), and this is **a normal state, not an error**.
-The same applies to `sub_d_level` in `export_fbx`: on an avatar without HD data, specifying a high level has no effect.
+The same applies to `sub_d_level` in `export_fbx`: a level above the character's highest subdivision level (0 without HD data) is refused.
 
 > **Note for versions earlier than 5.07:** On CC5 builds earlier than 5.07, the SubD cache / plugin modules sometimes need to be rebuilt. Update to 5.07 or later if possible.
 

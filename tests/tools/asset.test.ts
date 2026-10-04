@@ -235,6 +235,12 @@ describe("export_fbx handler – dialog options forwarding", () => {
     });
   });
 
+  it("says a sub_d_level above the character's highest subdivision level is refused", () => {
+    const shape = server.tool.mock.calls.find((c) => c[0] === "export_fbx")?.[2] as Record<string, { description?: string }>;
+    expect(shape.sub_d_level.description).toContain(
+      "It must not exceed the character's highest subdivision level (0 without HD data); higher values are refused.");
+  });
+
   it("tells the agent to save the character before the session's first FBX export", () => {
     const description = server.tool.mock.calls.find((c) => c[0] === "export_fbx")?.[1] as string;
     expect(description).toContain("save_character");

@@ -67,7 +67,7 @@ export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
       target_tool: z.enum(["UE5", "Default", "Maya", "Unity", "Unreal", "Blender"]).optional()
         .describe("Target Tool Preset. 'UE5'/'Unreal' applies Unreal-friendly flags (Y-up, UE bone axis)."),
       sub_d_level: z.number().int().min(0).max(2).optional()
-        .describe("HD Character Subdivision Level (0/1/2). Applied via SetExportLevel (no scene mutation). Higher = smoother mesh."),
+        .describe("HD Character Subdivision Level (0/1/2). Applied via SetExportLevel (no scene mutation). Higher = smoother mesh. It must not exceed the character's highest subdivision level (0 without HD data); higher values are refused."),
       include_current_pose: z.boolean().optional()
         .describe("If true, keep current pose (do NOT force T-pose on motion first frame). A mesh-only export (export_motion false) is always in the bind pose; to export a pose, use export_motion true with a 1-frame motion_range [0, 0]."),
       delete_hidden_faces: z.boolean().optional()

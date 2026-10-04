@@ -106,7 +106,9 @@ class ExportFbxTest(unittest.TestCase):
         self.avatar.GetMaxSubdivMeshLevel.return_value = 0
         r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", sub_d_level=1)
         self.assertFalse(r["success"])
-        self.assertIn("highest subdivision level (0)", r["error"])
+        self.assertEqual(r["error"], "sub_d_level 1 is above this character's highest subdivision level (0). "
+                                     "Export with sub_d_level 0, or add subdivision (HD) levels to the character "
+                                     "in Character Creator 5 first.")
         self.export.assert_not_called()
 
     def test_sub_d_level_within_the_characters_levels_is_set(self):
