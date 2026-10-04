@@ -147,7 +147,7 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
       sub_d_level: z.number().int().min(0).max(2).optional().describe("Subdivision level (0 = base mesh, best for Quest)"),
       texture_size: z.union([z.literal(512), z.literal(1024), z.literal(2048), z.literal(4096)]).optional(),
       include_current_pose: z.boolean().optional()
-        .describe("Export the current pose. The FBX carries it as a one-frame animation clip, and Unity shows the imported model in that pose"),
+        .describe("Export the current pose. The FBX carries it as a one-frame animation clip, and Unity shows the imported model in that pose with a Generic or Humanoid rig. For a Humanoid rig, copy the avatar from an unposed export of the same character (Avatar Definition: Copy From Other Avatar)"),
       wait_seconds: z.number().int().min(0).max(120).default(25),
     },
     async ({ unity_dir, character_name, sub_d_level, texture_size, include_current_pose, wait_seconds }) => {
@@ -170,7 +170,9 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
           ? ` Exported at sub_d_level ${level}: if the character has HD data, the FBX has about ${4 ** level}x the base mesh's triangles, so give check_quest_budget sub_d_level ${level}.`
           : "";
         const posed = include_current_pose
-          ? " The pose is a one-frame animation clip in the FBX, and Unity shows the imported model in that pose."
+          ? " The pose is a one-frame animation clip in the FBX, and Unity shows the imported model in that pose with a Generic or Humanoid rig."
+            + " For a Humanoid rig, copy the avatar from an unposed export of the same character (Avatar Definition: Copy From Other Avatar):"
+            + " an avatar created from the posed FBX comes out slightly different from the unposed one."
           : "";
         const exported = `Exported ${r.fbx} (${formatFiles(r.files ?? [])}).${subdivided}${posed}`;
         if (warnings.length) {

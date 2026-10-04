@@ -114,7 +114,7 @@ Exonicus additions for building Trauma Simulator patients and moving them betwee
 | Tool | Description |
 |------|-------------|
 | `job_status` | Check a long-running operation (export, import, batch) started earlier; returns its result when finished |
-| `export_for_unity` | Export the current character as FBX with CC5's Unity preset into `<unity_dir>/<character_name>/` inside a Unity project's `Assets` folder. With `include_current_pose`, the pose is a one-frame animation clip in the FBX, and Unity shows the imported model in that pose |
+| `export_for_unity` | Export the current character as FBX with CC5's Unity preset into `<unity_dir>/<character_name>/` inside a Unity project's `Assets` folder. With `include_current_pose`, the pose is a one-frame animation clip in the FBX, and Unity shows the imported model in that pose with a Generic or Humanoid rig; for a Humanoid rig, copy the avatar from an unposed export of the same character (Copy From Other Avatar) |
 | `check_quest_budget` | Check the current character against the Quest 3 per-character budget (triangles, materials, and, given an export folder, texture size and estimated GPU memory); see [Budget defaults](#budget-defaults) |
 | `apply_pose` | Apply a pose or motion file (`.rlMotion`, `.rlPose`, `.iMotion`, `.iPose`, `.iMotionPlus`, `.ccPose`, `.ccMotion`) to the current character |
 | `save_character` | Save the current character as a `.ccAvatar` file (the clean base for batch generation) |

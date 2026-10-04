@@ -113,12 +113,17 @@ describe("export_for_unity", () => {
 
   it("says a posed export carries the pose as a one-frame animation clip", async () => {
     // Live CC5 5.13 (Task 18): the pose is in a 1-frame take. Live Unity 6000.2.10f1 (Task 20): the imported model
-    // already shows that pose (head 0.69 m vs 1.61 m), so there is no clip to apply by hand.
+    // already shows that pose (head 0.69 m vs 1.61 m), so there is no clip to apply by hand. Task 20 fix round 1
+    // re-imported both exports as Humanoid (avatar created from the model, as the Trauma Sim patient body is): the
+    // posed model still shows the pose (0.000 m from the Generic import), and the avatar is not built from the sitting pose,
+    // but it differs from the unposed export's avatar by up to 0.14 m (feet), hence the Copy From Other Avatar advice.
     exported({});
     const r = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1", include_current_pose: true });
     expect(r.isError).toBeUndefined();
     expect(r.content[0].text).toContain("one-frame animation clip");
-    expect(r.content[0].text).toContain("Unity shows the imported model in that pose");
+    expect(r.content[0].text).toContain("Unity shows the imported model in that pose with a Generic or Humanoid rig");
+    expect(r.content[0].text).toContain("copy the avatar from an unposed export of the same character");
+    expect(r.content[0].text).toContain("Copy From Other Avatar");
     expect(r.content[0].text).not.toContain("bind pose");
     exported({});
     const plain = await handler()({ unity_dir: "D:/P/Assets/C", character_name: "P1" });
@@ -128,7 +133,8 @@ describe("export_for_unity", () => {
   it("describes include_current_pose without the bind-pose claim Unity disproved", () => {
     const call = server.tool.mock.calls.find((c) => c[0] === "export_for_unity");
     const shape = call?.[2] as Record<string, { description?: string }>;
-    expect(shape.include_current_pose.description).toContain("Unity shows the imported model in that pose");
+    expect(shape.include_current_pose.description).toContain("Unity shows the imported model in that pose with a Generic or Humanoid rig");
+    expect(shape.include_current_pose.description).toContain("Copy From Other Avatar");
     expect(shape.include_current_pose.description).not.toContain("bind pose");
   });
 });

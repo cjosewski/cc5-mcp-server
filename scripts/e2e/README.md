@@ -59,6 +59,9 @@ real project. It copies the three FBX files with their texture folders into `Ass
 materials (and which lack a main texture), rig type, bones, animation clips, and the world positions of the head,
 hand and foot bones, as imported and after sampling the first clip at time 0. It writes
 `<scratch>/e2e-unity-report.json` and exits 1 if a model failed to import or has no renderers.
+The models import with Unity's default rig, Generic. A one-off re-import of both Unity exports as Humanoid
+(avatar created from the model, as the Trauma Sim patient body is set up) gave the same pose result, with one
+"Rig Error ... CC_Base_NeckTwist02" importer warning per model, posed or not.
 
 **Pass criteria.**
 
