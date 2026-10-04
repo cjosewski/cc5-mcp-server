@@ -122,7 +122,7 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
 export function registerBatchTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "batch_generate_patients",
-    "Generate many patient variations from one saved base character: each variant applies a character recipe, exports to <unity_dir>/<name>/ and gets a Quest budget check. Writes patients_manifest.json in unity_dir after every variant. Save the base first with save_character. One batch or recipe runs at a time; cancelling stops the batch before its next CC5 command.",
+    "Generate many patient variations from one saved base character: each variant applies a character recipe, exports to <unity_dir>/<name>/ and gets a Quest budget check. Writes patients_manifest.json in unity_dir after every variant. Save the base first with save_character. One batch or recipe runs at a time; cancelling stops the batch before its next CC5 command. Character Creator 5 5.13 often crashes on the first FBX export after it starts: if CC5 closes during the first variant, restart CC5, answer its recovery prompt and run the batch again (patients_manifest.json records the error of each variant that failed).",
     BatchSchema.shape,
     async (rawInput, extra) => {
       const checked = BatchSchema.safeParse(rawInput);

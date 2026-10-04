@@ -169,6 +169,19 @@ function batchHandler() {
   return server.getRegisteredTool("batch_generate_patients");
 }
 
+describe("batch_generate_patients description", () => {
+  // Live CC5 5.13 (Task 18): the first FBX export of a CC5 session crashed CC5 in about 3 of 4 sessions.
+  it("warns that CC5 often crashes on the first FBX export and says how to recover", () => {
+    const server = createMockServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerBatchTools(server as any, bridge as any);
+    const description = server.tool.mock.calls.find((c) => c[0] === "batch_generate_patients")?.[1] as string;
+    expect(description).toContain("Character Creator 5 5.13 often crashes on the first FBX export after it starts");
+    expect(description).toContain("if CC5 closes during the first variant, restart CC5, answer its recovery prompt and run the batch again");
+    expect(description).toContain("patients_manifest.json records the error of each variant that failed");
+  });
+});
+
 // The handler creates unity_dir and writes patients_manifest.json in TypeScript, before CC5 sees anything,
 // so these guards are the only thing between a bad request and a folder written outside a Unity project.
 describe("batch_generate_patients refuses bad input before writing anything", () => {
