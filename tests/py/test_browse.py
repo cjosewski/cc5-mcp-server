@@ -59,8 +59,27 @@ class BrowseSearchTest(unittest.TestCase):
         # A huge library must not stall CC5's main thread: at most MAX_BROWSE_FOLDERS folders are read.
         self.rl.RApplication.GetContentFoldersInFolder.side_effect = lambda f: [f + "x/"]
         self.rl.RApplication.GetContentFilesInFolder.return_value = []
-        self.assertEqual(self.api.browse_content("cloth_upper"), [])
+        self.assertEqual(self.api.browse_content("cloth_upper"), [self.api.BROWSE_TRUNCATED])
         self.assertEqual(self.rl.RApplication.GetContentFilesInFolder.call_count, self.api.MAX_BROWSE_FOLDERS)
+
+    def test_folder_cap_with_unread_folders_left_ends_with_the_truncation_marker(self):
+        tree = {"$/Upper": ["$/Upper/A/", "$/Upper/B/"], "$/Upper/A/": [], "$/Upper/B/": []}
+        files = {"$/Upper": ["C:/u/Root.ccCloth"], "$/Upper/A/": ["C:/u/A/Jacket.ccCloth"],
+                 "$/Upper/B/": ["C:/u/B/Vest.ccCloth"]}
+        self.rl.RApplication.GetContentFoldersInFolder.side_effect = lambda f: tree[f]
+        self.rl.RApplication.GetContentFilesInFolder.side_effect = lambda f: files[f]
+        with mock.patch.object(self.api, "MAX_BROWSE_FOLDERS", 2):
+            self.assertEqual(self.api.browse_content("cloth_upper"),
+                             ["C:/u/Root.ccCloth", "C:/u/A/Jacket.ccCloth", self.api.BROWSE_TRUNCATED])
+
+    def test_folder_cap_with_only_visited_folders_left_is_not_marked_truncated(self):
+        # $/Upper/A/ lists itself and its parent: both were read already, so nothing was left out.
+        tree = {"$/Upper": ["$/Upper/A/"], "$/Upper/A/": ["$/Upper", "$/Upper/A/"]}
+        files = {"$/Upper": ["C:/u/Root.ccCloth"], "$/Upper/A/": ["C:/u/A/Jacket.ccCloth"]}
+        self.rl.RApplication.GetContentFoldersInFolder.side_effect = lambda f: tree[f]
+        self.rl.RApplication.GetContentFilesInFolder.side_effect = lambda f: files[f]
+        with mock.patch.object(self.api, "MAX_BROWSE_FOLDERS", 2):
+            self.assertEqual(self.api.browse_content("cloth_upper"), ["C:/u/Root.ccCloth", "C:/u/A/Jacket.ccCloth"])
 
     def test_cap_counts_files_across_subfolders(self):
         tree = {"$/Upper": ["$/Upper/A/"], "$/Upper/A/": []}

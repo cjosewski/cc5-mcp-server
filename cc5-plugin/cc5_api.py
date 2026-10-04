@@ -1969,7 +1969,8 @@ def remove_scene_item(item_name: str) -> dict[str, Any]:
 
 
 MAX_BROWSE_RESULTS = 200
-# Last list entry when more than MAX_BROWSE_RESULTS files matched; src/tools/builder.ts and content.ts look for it.
+# Last list entry when more than MAX_BROWSE_RESULTS files matched, or MAX_BROWSE_FOLDERS left folders unread;
+# src/tools/builder.ts and content.ts look for it.
 BROWSE_TRUNCATED = f"(truncated: more than {MAX_BROWSE_RESULTS} files matched; only the first {MAX_BROWSE_RESULTS} are listed)"
 # Most content folders browse_content reads, subfolders included, so a huge library cannot stall CC5's main thread.
 MAX_BROWSE_FOLDERS = 500
@@ -1989,7 +1990,8 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
 
     query: keep only files whose name contains every word (case-insensitive). Filtering here,
     before the MAX_BROWSE_RESULTS cap, lets a keyword search find files past the first 200.
-    When more files match than the cap, the list ends with BROWSE_TRUNCATED.
+    When more files match than the cap, or the folder cap leaves folders unread, the list ends
+    with BROWSE_TRUNCATED.
     """
     words = [w for w in str(query or "")[:200].lower().split() if w]
     # Map advertised folder-type keys to valid CC5.1 EContentRootFolder enum names.
@@ -2088,6 +2090,9 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
                     if len(results) >= MAX_BROWSE_RESULTS:
                         return results + [BROWSE_TRUNCATED]
                     results.append(f)
+        # MAX_BROWSE_FOLDERS stopped the walk with folders still unread, so the list may be incomplete.
+        if any(s not in visited for s in pending):
+            return results + [BROWSE_TRUNCATED]
         return results
     except Exception as e:
         return [f"Error browsing content: {e}"]
