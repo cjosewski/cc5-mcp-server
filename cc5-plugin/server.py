@@ -353,23 +353,17 @@ def _active_modal_dialog() -> tuple[str, str] | None:
         if dialog is None:
             return None
         text = dialog.text() if isinstance(dialog, QMessageBox) else ""
-        return _window_name(dialog), str(text or "")
+        return str(dialog.windowTitle() or ""), str(text or "")
     except Exception:
         return None
 
 
-def _window_name(widget: Any) -> str:
-    """Its window title, else its Qt class (CC5's untitled "What's New" page is CRLWhatsNewWebEngineWidget)."""
-    title = str(widget.windowTitle() or "")
-    if title:
-        return title
-    try:
-        return str(widget.metaObject().className())
-    except Exception:
-        return type(widget).__name__
-
-
 def _modal_dialog_error(title: str, text: str) -> str:
+    if not title and not text:
+        # Live CC5 5.13 can start with its full-screen Welcome / What's New page, an untitled modal window
+        # (Qt class CRLWhatsNewWebEngineWidget, a name that means nothing to the user).
+        return ("CC5's Welcome / What's New page (or another untitled CC5 window) is open - close it in "
+                "Character Creator 5 (tick \"Don't show this again\" so it stays closed), then try again.")
     question = " ".join((text or title or "a dialog").split())
     if len(question) > 300:
         question = question[:297] + "..."

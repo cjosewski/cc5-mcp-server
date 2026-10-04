@@ -52,6 +52,17 @@ class ModalGuardTest(BridgeTestCase):
         self.assertEqual(status, 400)
         self.assertEqual(body["error"], 'CC5 is waiting for an answer to "CCSkinGen" - answer or close it in CC5, then try again.')
 
+    def test_an_untitled_window_is_named_as_the_welcome_page(self):
+        # Live CC5 5.13 can start with its full-screen Welcome / What's New page: untitled, with no text.
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        self.dialog = ("", "")
+        status, body = self.srv._execute_sync("mark", {}, timeout=5)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], "CC5's Welcome / What's New page (or another untitled CC5 window) is open - "
+                                        "close it in Character Creator 5 (tick \"Don't show this again\" so it stays "
+                                        "closed), then try again.")
+        self.assertEqual(self.ran, [])
+
     def test_does_not_wait_longer_than_needed(self):
         self.srv.MODAL_WAIT_SECONDS = 0.3
         started = time.monotonic()
@@ -176,12 +187,13 @@ class ActiveModalDialogTest(unittest.TestCase):
         self.app.modal = _Dialog("Export FBX")
         self.assertEqual(self.srv._active_modal_dialog(), ("Export FBX", ""))
 
-    def test_untitled_modal_widget_is_named_by_its_qt_class(self):
+    def test_untitled_modal_widget_is_not_named_by_its_qt_class(self):
         # Live CC5 5.13 can start with its full-screen "What's New" page: an untitled application-modal QWidget.
+        # Its Qt class name means nothing to the user, so it stays untitled and the error describes the page.
         page = _Widget("")
         page.metaObject = lambda: types.SimpleNamespace(className=lambda: "CRLWhatsNewWebEngineWidget")
         self.app.modal = page
-        self.assertEqual(self.srv._active_modal_dialog(), ("CRLWhatsNewWebEngineWidget", ""))
+        self.assertEqual(self.srv._active_modal_dialog(), ("", ""))
 
     def test_visible_modal_message_box_among_top_level_widgets(self):
         self.app.tops = [_Widget("Character Creator 5", modal=False), _MessageBox(*RECOVERY)]
