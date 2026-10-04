@@ -55,8 +55,8 @@ for ($i = 0; $i -lt 60; $i++) {
 
 if ($up) {
     Write-Host "[launch] bridge UP at http://127.0.0.1:5101"
-    # Close startup dialogs (unsaved/welcome) so the viewport renders correctly.
-    & "$PSScriptRoot\cc5-restart.ps1" 2>$null | Select-Object -Last 2
+    # CC5's startup questions are the user's to answer: this script sends no keys or clicks to CC5.
+    Write-Host '[launch] If CC5 shows "Unsaved project data found", answer it yourself: OK restores the auto-saved changes, Cancel discards them.'
     exit 0
 } else {
     Write-Host "[launch] bridge DOWN after 120s - CC5 may be stuck on the '3D Creator / AI Studio' chooser."

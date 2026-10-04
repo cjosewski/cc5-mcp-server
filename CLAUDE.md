@@ -80,7 +80,7 @@ Changes to cc5_api.py and the extension modules take effect on reload, once the 
 | Undo does not work | Not wrapped in `BeginAction/EndAction` | Always wrap modifying operations in BeginAction/EndAction |
 | Capture is a blank image | No avatar in the scene | Create avatar → apply morphs → capture |
 | RenderImage fails | Can happen after loading a .ccProject | Automatically falls back to a Windows screenshot |
-| Welcome dialog gets in the way | Shown when CC5 starts | Auto-close it with `scripts/cc5-restart.ps1`, or check "Don't show this again" |
+| Welcome dialog gets in the way | Shown when CC5 starts | Tick "Don't show this again", or close it by hand |
 | FBX export fails with a license error | The character contains iContent-licensed assets | Try Help→Activate Purchased Items. With the Content Store assets removed, default content can be exported. Upgrading costs 20% of the list price |
 | Camera focal length does not change | The Preview Camera cannot be changed via the API | Create a new camera in CC5 and use that. The API returns an explicit error rather than reporting false success |
 | Color range | Input is 0.0-1.0; RLPy returns 0-255 | Normalized on the API side (unified to 0.0-1.0) |
@@ -121,16 +121,14 @@ All parameters are optional (only `output_path` is required), preserving full ba
 
 The return value accurately reports only the values that were actually applied (`export_level`, `export_motion`, `fps`, `motion_range`, `texture_size`, `embed_textures`, etc.). In the fallback (used when `RExportFbxSetting` is unavailable or fails), CC5 exports through the flags overload `ExportFbxFile(obj, path, flags, flags2, flags3)` (CC5 5.13 has no 2-argument form): the option flags still apply, and the `RExportFbxSetting`-only options that could not be applied (motion, frame rate/range, texture size) are recorded as WARNINGs in `notes`. Live CC5 5.13 (Task 18 fix round) ran this overload, forced through `exec_python`, 3 of 3 times without a crash (default, Unity and Blender presets in a session whose first export had survived).
 
-### Full CC5 restart procedure (run automatically by Claude)
+### Full CC5 restart procedure
+
+Claude asks the user before restarting CC5. Killing CC5 (`taskkill //F`, `Stop-Process`) loses unsaved work,
+so the user saves and closes CC5 themselves. Nothing sends keys or clicks to CC5.
 
 ```bash
-# 1. Quit CC5 gracefully (do not use //F → avoids the unsaved-data dialog)
-pid=$(tasklist 2>/dev/null | grep "CharacterCreator" | awk '{print $2}')
-taskkill //PID $pid
-sleep 15  # A graceful exit takes a while. Wait 15 seconds
-# If it is still alive, force-quit it
-tasklist 2>/dev/null | grep -q "CharacterCreator" && taskkill //F //PID $pid
-sleep 5
+# 1. The user saves their work and closes CC5. Check that it has gone:
+tasklist 2>/dev/null | grep -q "CharacterCreator" && echo "CC5 is still running"
 
 # 2. Launch CC5 (the plugin starts the bridge automatically)
 "/c/Program Files/Reallusion/Character Creator 5/Bin64/CharacterCreator.exe" &
@@ -141,13 +139,14 @@ for i in $(seq 1 60); do
   sleep 2
 done
 
-# 4. Auto-close the startup dialogs (important!)
-#   a) "Unsaved project data found" → press Enter for OK (does not appear after a graceful exit)
-#   b) Welcome screen → close with Escape (does not appear if "Don't show this again" is already checked)
-#   If these are not closed, the viewport does not render correctly
-sleep 5
-powershell -ExecutionPolicy Bypass -File scripts/cc5-restart.ps1
+# 4. The user answers CC5's startup dialogs in CC5 (until they do, the viewport does not render correctly):
+#   a) "Unsaved project data found": OK restores the auto-saved changes, Cancel discards them
+#      (README.md, Known issues)
+#   b) Welcome screen: tick "Don't show this again", or close it by hand
 ```
+
+`scripts/cc5-restart.ps1` runs steps 2-3 and prints the step 4 guidance. It stops if CC5 is still running;
+`-Force` kills CC5 instead, and unsaved work is lost.
 
 ### Permanent fix for the dialogs
 If you check "Don't show this again" on the CC5 welcome screen and click Close,
