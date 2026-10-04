@@ -1,7 +1,11 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
 import {
-  registerUnityTools, isInUnityAssets, isLocalAbsolute, evaluateBudget, estimateTextureGpuMb, QUEST_DEFAULTS,
+  registerUnityTools, isInUnityAssets, isLocalAbsolute, evaluateBudget, estimateTextureGpuMb, scanTextures, QUEST_DEFAULTS,
 } from "../../src/tools/unity.js";
+import { tiff, bmp } from "../helpers/images.js";
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -179,6 +183,25 @@ describe("evaluateBudget", () => {
     const r = evaluateBudget(stats, [{ path: "Body_Diffuse.tif", bytes: 1, width: 0, height: 0 }], QUEST_DEFAULTS);
     expect(r.pass).toBe(false);
     expect(r.lines.join("\n")).toContain("Body_Diffuse.tif");
+  });
+
+  it("reads a TIFF or BMP texture's size from the export folder and counts it toward GPU memory", () => {
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), "budget-tif-"));
+    fs.writeFileSync(path.join(folder, "Body_Diffuse.tif"), tiff(true, [[256, 3, 2048], [257, 3, 2048]], 1000));
+    fs.writeFileSync(path.join(folder, "Body_Normal.bmp"), bmp(1024, -1024));
+    const textures = scanTextures(folder);
+    fs.rmSync(folder, { recursive: true, force: true });
+    expect(textures.map((t) => [path.basename(t.path), t.width, t.height]).sort())
+      .toEqual([["Body_Diffuse.tif", 2048, 2048], ["Body_Normal.bmp", 1024, 1024]]);
+    const r = evaluateBudget(stats, textures, QUEST_DEFAULTS);
+    const text = r.lines.join("\n");
+    expect(text).toContain("OK   Textures with unreadable size: 0");
+    expect(text).not.toContain("size unreadable");
+    const expected = estimateTextureGpuMb([{ path: "a", bytes: 1, width: 2048, height: 2048 },
+      { path: "b", bytes: 1, width: 1024, height: 1024 }], 2048);
+    expect(expected).toBeGreaterThan(0);
+    expect(text).toContain(`Texture GPU memory (est., ASTC 6x6 + mips): ${expected.toFixed(1)} MiB`);
+    expect(r.pass).toBe(true);
   });
 
   it("fails when estimated texture GPU memory is over budget, and reports file size as information", () => {

@@ -279,10 +279,45 @@ def file_text(path):
         return f.read()
 
 
+def _tiff_size(f, data):
+    """TIFF (same reader as src/image-info.ts): "II"/"MM", version 42, then the first IFD's offset. The IFD is a
+    2-byte entry count and 12-byte entries (tag, type, count, value); tag 256 = width, 257 = height, as SHORT
+    (type 3, first 2 bytes of the value field) or LONG (type 4). The IFD often follows the image data, so it is read
+    at its offset. BigTIFF (version 43), truncated or malformed files give None."""
+    if len(data) < 8:
+        return None
+    order = "<" if data[:2] == b"II" else ">"
+    version, ifd = struct.unpack(order + "HI", data[2:8])
+    if version != 42 or ifd < 8:
+        return None
+    f.seek(ifd)
+    head = f.read(2)
+    if len(head) < 2:
+        return None
+    count = struct.unpack(order + "H", head)[0]
+    entries = f.read(count * 12)
+    if len(entries) < count * 12:
+        return None
+    size = {256: 0, 257: 0}
+    for i in range(count):
+        tag, kind = struct.unpack(order + "HH", entries[i * 12:i * 12 + 4])
+        if tag not in size:
+            continue
+        if kind == 3:
+            size[tag] = struct.unpack(order + "H", entries[i * 12 + 8:i * 12 + 10])[0]
+        elif kind == 4:
+            size[tag] = struct.unpack(order + "I", entries[i * 12 + 8:i * 12 + 12])[0]
+        else:
+            return None
+    return (size[256], size[257]) if size[256] > 0 and size[257] > 0 else None
+
+
 def image_size(path):
-    """(width, height) from a PNG or JPEG header, or None for other files."""
+    """(width, height) from a PNG, JPEG, TIFF or BMP header, or None for other files."""
     with open(path, "rb") as f:
         data = f.read(1 << 20)
+        if data[:2] in (b"II", b"MM"):
+            return _tiff_size(f, data)
     if data[:8] == b"\x89PNG\r\n\x1a\n":
         return struct.unpack(">II", data[16:24])
     if data[:2] == b"\xff\xd8":  # JPEG: walk the segments to the first start-of-frame marker
@@ -293,6 +328,11 @@ def image_size(path):
                 height, width = struct.unpack(">HH", data[i + 5:i + 9])
                 return width, height
             i += 2 + length
+    if data[:2] == b"BM":  # BMP: int32 width at 18, height at 22 (negative for a top-down bitmap)
+        if len(data) < 26:
+            return None
+        width, height = struct.unpack("<ii", data[18:26])
+        return (width, abs(height)) if width > 0 and height != 0 else None
     return None
 
 
@@ -316,14 +356,15 @@ r = job("export_for_unity", {"unity_dir": scratch, "character_name": "LiveTest",
 r = r if isinstance(r, dict) else {}
 ok("export_for_unity", bool(r.get("success") and os.path.exists(r.get("fbx", ""))), r.get("error") or r.get("fbx"))
 ok("export_for_unity applied every setting (no WARNING notes)", bool(r.get("success")) and not warnings_in(r), warnings_in(r) or r.get("notes"))
-# The export keeps the textures' source formats (Convert Image Format crashes CC5 5.13), so check PNG and JPEG files.
+# The export keeps the textures' source formats (Convert Image Format crashes CC5 5.13), so check every format read.
 edges = [max(z) for z in (image_size(f["path"]) for f in r.get("files", [])
-                          if f["path"].lower().endswith((".png", ".jpg", ".jpeg"))) if z]
+                          if f["path"].lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"))) if z]
 if edges:
     ok("export_for_unity texture_size 1024 reached the textures (SetTextureSize enum)", max(edges) <= 1024,
        f"largest edge {max(edges)}")
 else:
-    skip("export_for_unity texture_size 1024 reached the textures (SetTextureSize enum)", "no PNG/JPEG textures written")
+    skip("export_for_unity texture_size 1024 reached the textures (SetTextureSize enum)",
+         "no PNG, JPEG, TIFF or BMP textures written")
 ok("/jobs/status answers within 5 s while a job runs", bool(STATUS_TIMES) and max(STATUS_TIMES) < 5, f"slowest {max(STATUS_TIMES or [0]):.2f}s")
 
 obj_out = os.path.join(scratch, "obj", "live.obj")
