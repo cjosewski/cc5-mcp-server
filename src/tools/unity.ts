@@ -144,7 +144,7 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
     {
       unity_dir: z.string().describe("Absolute folder inside a Unity project's Assets folder"),
       character_name: CHARACTER_NAME,
-      sub_d_level: z.number().int().min(0).max(2).optional().describe("Subdivision level (0 = base mesh, best for Quest)"),
+      sub_d_level: z.number().int().min(0).max(2).optional().describe("Subdivision level (0 = base mesh, best for Quest). It must not exceed the character's highest subdivision level (0 without HD data); higher values are refused."),
       texture_size: z.union([z.literal(512), z.literal(1024), z.literal(2048), z.literal(4096)]).optional(),
       include_current_pose: z.boolean().optional()
         .describe("Export the current pose. The FBX carries it as a one-frame animation clip, and Unity shows the imported model in that pose with a Generic or Humanoid rig. For a Humanoid rig, copy the avatar from an unposed export of the same character (Avatar Definition: Copy From Other Avatar)"),

@@ -21,9 +21,8 @@
   RECOVERY if the bridge never comes up (stuck on chooser):
     - The chooser is a borderless Qt window titled "Character Creator\5.0"
       (~825x466). Click the LEFT option ("3D Creator").
-    - From an agent: screenshot the CC5 window, save as PNG, view it, then click
-      the "3D Creator" button via the windows MCP mouse_control (window-relative
-      coords) — see memory note "cc5-test-launch-procedure".
+    - From an agent: never click or send keys to CC5 yourself. Ask the user to
+      click "3D Creator", then wait for the bridge.
 #>
 
 $ErrorActionPreference = "SilentlyContinue"
