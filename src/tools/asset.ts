@@ -16,6 +16,15 @@ const ALLOWED_ASSET_EXTENSIONS = new Set([
   ".rlhair",
 ]);
 
+/** The tool to use instead, for files load_asset refuses that another tool takes (F-21; same as cc5_api). */
+const IMAGE_HINT = "an image goes in with load_texture (a material map) or apply_skin_overlay (a skin overlay)";
+const LOAD_ASSET_HINTS: Record<string, string> = {
+  ".png": IMAGE_HINT, ".jpg": IMAGE_HINT, ".jpeg": IMAGE_HINT, ".tga": IMAGE_HINT, ".bmp": IMAGE_HINT,
+  ".tif": IMAGE_HINT, ".tiff": IMAGE_HINT,
+  ".fbx": "a prop or clothing FBX goes in with import_fbx",
+  ".obj": "an OBJ replaces a mesh with replace_mesh_from_obj",
+};
+
 function validateAssetPath(filePath: string): string | null {
   if (filePath.includes("..")) {
     return "Path traversal ('..') is not allowed";
@@ -25,7 +34,8 @@ function validateAssetPath(filePath: string): string | null {
   // Accept the explicit allowlist OR any CC5.1 / iClone content family (.cc*/.i*) —
   // browse_content returns .cc* content files (e.g. .ccShoes) that load_asset accepts.
   if (!ALLOWED_ASSET_EXTENSIONS.has(ext) && !ext.startsWith(".cc") && !ext.startsWith(".i")) {
-    return `Disallowed file extension: ${ext}`;
+    const hint = LOAD_ASSET_HINTS[ext];
+    return `Disallowed file extension: ${ext}${hint ? ` (${hint})` : ""}`;
   }
   return null;
 }

@@ -11,6 +11,7 @@ import os
 import sys
 import base64
 import tempfile
+import time as _time
 import urllib.parse
 from typing import Any
 
@@ -239,7 +240,7 @@ def set_morph_value(morph_id: str, value: float) -> dict[str, Any]:
     # Validate morph ID exists
     known_ids = _get_all_morph_ids()
     if known_ids and morph_id not in known_ids:
-        return {"success": False, "error": f"Unknown morph ID: {morph_id}"}
+        return {"success": False, "error": f"Morph not found: {morph_id} (find morph IDs with search_morphs)"}
 
     value = max(-1.0, min(1.0, value))
     try:
@@ -283,7 +284,7 @@ def set_multiple_morphs(morphs: list[dict[str, Any]]) -> dict[str, Any]:
     if known_ids:
         unknown = [mid for mid, _ in normalized if mid not in known_ids]
         if unknown:
-            return {"success": False, "error": f"Unknown morph ID(s): {', '.join(unknown)}"}
+            return {"success": False, "error": f"Morph(s) not found: {', '.join(unknown)} (find morph IDs with search_morphs)"}
 
     try:
         RLPy.RGlobal.BeginAction("Set Multiple Morphs")
@@ -356,9 +357,12 @@ def delete_avatar(name: str = "") -> dict[str, Any]:
     or to start the scene over. Uses RScene.RemoveObject.
     """
     avatars = RLPy.RScene.GetAvatars()
-    if not avatars:
-        return {"success": False, "error": "No avatars in scene"}
     target = (name or "").strip()
+    if not avatars:
+        # Nothing to delete is not a failure (F-15); a named character that is not there is "not found".
+        if target:
+            return {"success": False, "error": f"Avatar not found: {target} (the scene has no characters)"}
+        return {"success": True, "removed": [], "note": "The scene has no characters: nothing to delete."}
     removed: list[str] = []
     try:
         RLPy.RGlobal.BeginAction("Delete Avatar")
@@ -383,6 +387,20 @@ _CHARACTER_CONTENT_EXTENSIONS = {
     # Every hairstyle CC5 5.13 ships is .rlHair (Reallusion Templates/Hair); live, .rlHair was refused outright.
     ".rlhair",
 }
+
+
+# The tool to use instead, for files load_asset refuses that another tool takes (F-21).
+_LOAD_ASSET_HINTS = {
+    **{e: "an image goes in with load_texture (a material map) or apply_skin_overlay (a skin overlay)"
+       for e in (".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff")},
+    ".fbx": "a prop or clothing FBX goes in with import_fbx",
+    ".obj": "an OBJ replaces a mesh with replace_mesh_from_obj",
+}
+
+
+def _load_asset_hint(ext: str) -> str:
+    hint = _LOAD_ASSET_HINTS.get(ext)
+    return f" ({hint})" if hint else ""
 
 
 def _pick_target_avatar(target: str | None, ext: str) -> tuple[Any, str | None]:
@@ -426,7 +444,7 @@ def load_asset(file_path: str, target: str | None = None) -> dict[str, Any]:
     ext = os.path.splitext(os.path.realpath(file_path))[1].lower()
     if (ext not in _ALLOWED_LOAD_EXTENSIONS and ext not in _CHARACTER_CONTENT_EXTENSIONS
             and not (ext.startswith(".cc") or ext.startswith(".i"))):
-        return {"success": False, "error": f"Disallowed file extension: {ext}"}
+        return {"success": False, "error": f"Disallowed file extension: {ext}{_load_asset_hint(ext)}"}
 
     if not os.path.exists(file_path):
         return {"success": False, "error": f"File not found: {file_path}"}
@@ -954,6 +972,31 @@ def _drop_capture_undo_steps(steps: int) -> None:
             return
 
 
+# Captures without a path go to their own file here (F-22: one fixed temp file was overwritten by every capture);
+# only the newest MAX_KEPT_CAPTURES are kept.
+CAPTURE_DIR_NAME = "cc5_captures"
+MAX_KEPT_CAPTURES = 50
+
+
+def _new_capture_path() -> str:
+    folder = os.path.join(tempfile.gettempdir(), CAPTURE_DIR_NAME)
+    os.makedirs(folder, exist_ok=True)
+    try:
+        old = sorted((f for f in os.listdir(folder) if f.startswith("cc5_viewport_") and f.endswith(".png")))
+        for name in old[:max(0, len(old) - (MAX_KEPT_CAPTURES - 1))]:
+            os.remove(os.path.join(folder, name))
+    except OSError as e:
+        print(f"[CC5 MCP Bridge] capture: pruning old captures failed: {e}")
+    # Epoch milliseconds from one clock reading: names sort in capture order (no DST or second-boundary jumps).
+    stamp = f"{int(_time.time() * 1000):013d}"
+    path = os.path.join(folder, f"cc5_viewport_{stamp}.png")
+    n = 1
+    while os.path.exists(path):
+        n += 1
+        path = os.path.join(folder, f"cc5_viewport_{stamp}_{n}.png")
+    return path
+
+
 def capture_viewport(output_path: str = "", width: int = 1280, height: int = 720) -> dict[str, Any]:
     """Capture the CC5 viewport as a PNG image at width x height (default 1280x720).
 
@@ -964,7 +1007,7 @@ def capture_viewport(output_path: str = "", width: int = 1280, height: int = 720
     """
     try:
         if not output_path:
-            output_path = os.path.join(tempfile.gettempdir(), "cc5_viewport.png")
+            output_path = _new_capture_path()
 
         # Path validation via shared helper (UR-03): decodes %2e%2e and enforces .png
         _path_error = _validate_path(output_path, {".png"})
@@ -1065,8 +1108,9 @@ def set_subdivision_level(level: int) -> dict[str, Any]:
                     "success": False,
                     "error": (
                         f"Requested level {level} exceeds the mesh's max subdivision "
-                        f"level {max_level}. This character/mesh does not support that "
-                        f"level of HD subdivision."
+                        f"level {max_level}. HD subdivision data is made in CC5 itself: run "
+                        f"Modify > Subdivide on the character once, then set the level again "
+                        f"(scripts cannot generate it)."
                     ),
                     "max_level": max_level,
                 }
@@ -2027,7 +2071,12 @@ def set_shader_parameter(
     except Exception as e:
         return {"success": False, "error": f"Failed to read shader parameters: {e}"}
     if parameter_name not in valid_names:
-        return {"success": False, "error": f"Unknown shader parameter: {parameter_name}"}
+        import difflib
+        close = difflib.get_close_matches(parameter_name, valid_names, n=3, cutoff=0.6)
+        hint = f" Close matches: {', '.join(close)}." if close else ""
+        return {"success": False,
+                "error": f"Shader parameter not found: {parameter_name} on {mesh_name} / {material_name}.{hint} "
+                         "get_shader_parameters lists them all."}
 
     # Length must match the existing parameter (passing the wrong arity can crash SWIG)
     try:
@@ -2150,7 +2199,15 @@ def remove_scene_item(item_name: str) -> dict[str, Any]:
                     return {"success": True, "removed": item_name}
         except Exception as e:
             print(f"[CC5 MCP Bridge] remove_scene_item getter failed: {e}")
-    return {"success": False, "error": f"Item not found: {item_name}"}
+    # Say what can be removed (F-21: the bare "Item not found" left the caller guessing).
+    worn: list[str] = []
+    for getter in getters:
+        try:
+            worn += [str(item.GetName()) for item in getter()]
+        except Exception:
+            pass
+    hint = f" Worn now: {', '.join(worn)}." if worn else " The character wears nothing that can be removed."
+    return {"success": False, "error": f"Item not found: {item_name}.{hint}"}
 
 
 MAX_BROWSE_RESULTS = 200

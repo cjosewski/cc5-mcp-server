@@ -291,10 +291,10 @@ describe("set_light_shadow handler", () => {
   });
 
   it("returns failure message on bridge-side validation error", async () => {
-    bridge.setLightShadow.mockResolvedValue({ success: false, error: "Provide cast_shadow and/or darken_strength" });
+    bridge.setLightShadow.mockResolvedValue({ success: false, error: "Light not found: KeyLight" });
     const handler = server.getRegisteredTool("set_light_shadow");
-    const result = await handler({ light_name: "KeyLight" });
-    expect(result.content[0].text).toBe("Failed: Provide cast_shadow and/or darken_strength");
+    const result = await handler({ light_name: "KeyLight", cast_shadow: true });
+    expect(result.content[0].text).toBe("Failed: Light not found: KeyLight");
   });
 
   it("returns bridge error text when bridge throws (does not propagate)", async () => {
@@ -402,5 +402,14 @@ describe("get_visual_settings IBL image (F-24)", () => {
     const r = await server.getRegisteredTool("get_visual_settings")({});
     expect(r.content[0].text).toBe("IBL: on\nIBL image last loaded by set_ibl: C:/hdri/studio.hdr " +
       "(CC5 cannot report the current image; it may since have been undone or replaced in CC5)");
+  });
+});
+
+describe("set_light_shadow with nothing to change (F-27)", () => {
+  it("is refused without calling CC5", async () => {
+    const r = await server.getRegisteredTool("set_light_shadow")({ light_name: "Key" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("Give cast_shadow, darken_strength or both: there is nothing to change.");
+    expect(bridge.setLightShadow).not.toHaveBeenCalled();
   });
 });

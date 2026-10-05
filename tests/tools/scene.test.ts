@@ -216,6 +216,7 @@ describe("get_avatar_info handler", () => {
 describe("check_cc5_connection handler", () => {
   it("returns connected message when bridge is healthy", async () => {
     bridge.healthCheck.mockResolvedValue(true);
+    bridge.getDialog.mockResolvedValue({ success: true, dialog: null, waiting_job: null });
     const handler = server.getRegisteredTool("check_cc5_connection");
     const result = await handler({});
     expect(result.content[0].text).toContain("connected and ready");
@@ -484,5 +485,33 @@ describe("scene failures carry isError", () => {
   it("capture_viewport: success is not an error", async () => {
     bridge.captureViewport.mockResolvedValue(CAPTURE_SUCCESS);
     expect((await server.getRegisteredTool("capture_viewport")({ output_path: "C:/temp/capture.png" })).isError).toBeUndefined();
+  });
+});
+
+describe("check_cc5_connection reports an open dialog (F-23)", () => {
+  it("says connected and ready when no dialog is open", async () => {
+    bridge.healthCheck.mockResolvedValue(true);
+    bridge.getDialog.mockResolvedValue({ success: true, dialog: null, waiting_job: null });
+    const r = await server.getRegisteredTool("check_cc5_connection")({});
+    expect(r.content[0].text).toBe("CC5 bridge is connected and ready.");
+  });
+
+  it("says commands wait while a CC5 dialog is open", async () => {
+    bridge.healthCheck.mockResolvedValue(true);
+    bridge.getDialog.mockResolvedValue({ success: true, waiting_job: null,
+      dialog: { title: "Character Creator 5", text: "Unsaved project data found.", buttons: ["OK", "Cancel"] } });
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(text).toContain("CC5 bridge is connected.\nBut CC5 has a dialog open");
+    expect(text).toContain("Unsaved project data found.");
+  });
+});
+
+describe("check_cc5_connection does not wait on a busy CC5 (review of F-23)", () => {
+  it("asks for the dialog with a short timeout", async () => {
+    bridge.healthCheck.mockResolvedValue(true);
+    bridge.getDialog.mockRejectedValue(new Error("No reply from CC5 within 3s"));
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(bridge.getDialog).toHaveBeenCalledWith(3000);
+    expect(text).toContain("Could not check for an open CC5 dialog within 3 s");
   });
 });

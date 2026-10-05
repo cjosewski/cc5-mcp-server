@@ -420,3 +420,25 @@ describe("describe_character handler", () => {
     expect(result.content[0].text).toContain("Character: KungFuKid");
   });
 });
+
+describe("describe_character build and worn items (F-17)", () => {
+  it("reads heavy at 50% as slightly heavy, and an unmorphed template as the template's own build", async () => {
+    const { describeBuild } = await import("../../src/tools/character.js");
+    // apply_body_preset heavy at 50%: Body Fat A 0.35, Muscular 0.1, Thin 0.
+    expect(describeBuild({ "essential body morphs/pack_full_body1": 0.35, "cc embed morphs/embed_full_body6": 0.1 }))
+      .toBe("slightly heavy build");
+    expect(describeBuild({})).toBe("average build (no body-shape slider set: the template's own build)");
+    expect(describeBuild({ "essential body morphs/pack_full_body1": 0.3, "cc embed morphs/embed_full_body6": 0.3,
+      "cc embed morphs/embed_full_body5": 0.3 })).toBe("average build");
+  });
+
+  it("lists what the character wears, and leaves out a list CC5 could not give", async () => {
+    bridge.getAvatarInfo.mockResolvedValue({ id: "1", name: "Kevin", active_morphs: {} });
+    bridge.listClothes.mockResolvedValue([{ name: "Boxers", id: 1, type: 1 }]);
+    bridge.listHair.mockResolvedValue([]);
+    bridge.listAccessories.mockRejectedValue(new Error("down"));
+    const text = (await server.getRegisteredTool("describe_character")({})).content[0].text as string;
+    expect(text).toContain("Wearing: Boxers\nHair: none\n");
+    expect(text).not.toContain("Accessories:");
+  });
+});

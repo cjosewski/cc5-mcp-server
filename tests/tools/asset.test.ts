@@ -355,3 +355,15 @@ describe("export_fbx Blender target", () => {
     expect(shape.target_tool.safeParse("Blender").success).toBe(true);
   });
 });
+
+describe("load_asset points to the right tool for files it refuses (F-21)", () => {
+  it("names the tool for images, FBX and OBJ", async () => {
+    const handler = server.getRegisteredTool("load_asset");
+    const text = async (file_path: string) => (await handler({ file_path })).content[0].text as string;
+    expect(await text("C:/a/overlay.png")).toBe(
+      "Disallowed file extension: .png (an image goes in with load_texture (a material map) or apply_skin_overlay (a skin overlay))");
+    expect(await text("C:/a/box.fbx")).toContain("import_fbx");
+    expect(await text("C:/a/head.obj")).toContain("replace_mesh_from_obj");
+    expect(bridge.loadAsset).not.toHaveBeenCalled();
+  });
+});

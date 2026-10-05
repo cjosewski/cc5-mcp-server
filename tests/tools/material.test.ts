@@ -375,7 +375,7 @@ describe("set_shader_parameter handler", () => {
   });
 
   it("returns failure on unknown parameter / arity mismatch", async () => {
-    bridge.setShaderParameter.mockResolvedValue({ success: false, error: "Unknown shader parameter: Bogus" });
+    bridge.setShaderParameter.mockResolvedValue({ success: false, error: "Shader parameter not found: Bogus" });
     const handler = server.getRegisteredTool("set_shader_parameter");
     const result = await handler({
       mesh_name: "CC_Base_Body",
@@ -383,7 +383,7 @@ describe("set_shader_parameter handler", () => {
       parameter_name: "Bogus",
       values: [1],
     });
-    expect(result.content[0].text).toBe("Failed: Unknown shader parameter: Bogus");
+    expect(result.content[0].text).toBe("Failed: Shader parameter not found: Bogus");
   });
 
   it("calls bridge.setShaderParameter with correct arguments", async () => {

@@ -69,24 +69,18 @@ export function registerCharacterTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "describe_character",
-    "Get a natural language description of the current character's appearance based on active morph values. Useful for understanding what the character looks like before making changes.",
+    "Describe the current character: build from the body-shape morph sliders (a template's own shape is not a slider, so an unmorphed template reads 'average build'), head size, and the clothing, hair and accessories it wears. Skin, eye colour and face shape are not described: look with frame_camera('face') + capture_viewport.",
     {},
     async () => bridgeCall(
-      () => bridge.getAvatarInfo(),
-      (info) => {
+      async () => {
+        const info = await bridge.getAvatarInfo();
+        return { info, worn: info ? await describeWorn(bridge) : "" };
+      },
+      ({ info, worn }) => {
         if (!info) return "No avatar in the scene.";
 
         const morphs = info.active_morphs;
-        const descriptions: string[] = [];
-
-        const fat = morphs["essential body morphs/pack_full_body1"] ?? morphs["cc embed morphs/embed_full_body3"] ?? 0;
-        const thin = morphs["cc embed morphs/embed_full_body5"] ?? 0;
-        const muscular = morphs["cc embed morphs/embed_full_body6"] ?? morphs["essential body morphs/pack_full_body4"] ?? 0;
-
-        if (muscular > 0.5) descriptions.push("muscular build");
-        else if (fat > 0.5) descriptions.push("heavy build");
-        else if (thin > 0.5) descriptions.push("slim build");
-        else descriptions.push("average build");
+        const descriptions: string[] = [describeBuild(morphs)];
 
         const headScale = morphs["cc embed morphs/embed_full_head9"] ?? 0;
         if (headScale > 0.5) descriptions.push("larger head");
@@ -95,6 +89,7 @@ export function registerCharacterTools(server: McpServer, bridge: CC5Bridge) {
         const morphCount = Object.keys(morphs).length;
         let text = `Character: ${info.name}\n`;
         text += `Description: ${descriptions.join(", ")}\n`;
+        text += worn;
         text += `Total active morphs: ${morphCount}\n\nDetailed morph values:\n`;
         for (const [id, value] of Object.entries(morphs)) {
           text += `  ${id}: ${(value * 100).toFixed(0)}%\n`;
@@ -103,4 +98,33 @@ export function registerCharacterTools(server: McpServer, bridge: CC5Bridge) {
       },
     )
   );
+}
+
+/**
+ * The build from the three body-shape sliders. Live (F-17): heavy at 50% (Body Fat A 0.35) read "average build",
+ * and so did an unmorphed template; now a slider that leads the others reads "slightly ...".
+ */
+export function describeBuild(morphs: Record<string, number>): string {
+  const shapes: Array<[string, number]> = [
+    ["muscular", morphs["cc embed morphs/embed_full_body6"] ?? morphs["essential body morphs/pack_full_body4"] ?? 0],
+    ["heavy", morphs["essential body morphs/pack_full_body1"] ?? morphs["cc embed morphs/embed_full_body3"] ?? 0],
+    ["slim", morphs["cc embed morphs/embed_full_body5"] ?? 0],
+  ];
+  const [[name, top], [, second]] = [...shapes].sort((a, b) => b[1] - a[1]);
+  if (top < 0.15) return "average build (no body-shape slider set: the template's own build)";
+  if (top - second < 0.1) return "average build";
+  return top > 0.5 ? `${name} build` : `slightly ${name} build`;
+}
+
+/** "Wearing / Hair / Accessories" lines; a list CC5 could not give is left out rather than failing the description. */
+async function describeWorn(bridge: CC5Bridge): Promise<string> {
+  const names = async (load: () => Promise<Array<{ name: string }>>) => {
+    try { return (await load()).map((i) => i.name); } catch { return null; }
+  };
+  const [clothes, hair, accessories] = await Promise.all([
+    names(() => bridge.listClothes()), names(() => bridge.listHair()), names(() => bridge.listAccessories()),
+  ]);
+  const line = (label: string, items: string[] | null) =>
+    items === null ? "" : `${label}: ${items.length ? items.join(", ") : "none"}\n`;
+  return line("Wearing", clothes) + line("Hair", hair) + line("Accessories", accessories);
 }

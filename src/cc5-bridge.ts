@@ -142,10 +142,11 @@ export class CC5Bridge {
   private async request<T>(
     path: string,
     method: "GET" | "POST" = "GET",
-    body?: unknown
+    body?: unknown,
+    timeoutMs: number = REQUEST_TIMEOUT_MS,
   ): Promise<T> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -163,7 +164,7 @@ export class CC5Bridge {
       } catch (err) {
         if ((err as { name?: string } | null)?.name === "AbortError") {
           throw new BridgeUnreachableError(
-            `No reply from CC5 within ${REQUEST_TIMEOUT_MS / 1000}s. CC5 may still be running this command; ` +
+            `No reply from CC5 within ${timeoutMs / 1000}s. CC5 may still be running this command; ` +
             "check the scene (list_avatars / capture_viewport) before retrying.");
         }
         throw new BridgeUnreachableError(describeFetchFailure(err), { cause: err });
@@ -734,8 +735,9 @@ export class CC5Bridge {
 
   // --- CC5 dialogs (served even while a command waits inside one) ---
 
-  async getDialog(): Promise<DialogResult> {
-    return this.request<DialogResult>("/dialog", "POST", {});
+  /** timeoutMs: a quick check (check_cc5_connection) must not wait out the full request timeout on a busy CC5. */
+  async getDialog(timeoutMs?: number): Promise<DialogResult> {
+    return this.request<DialogResult>("/dialog", "POST", {}, timeoutMs);
   }
 
   async answerDialog(button: string, expect?: string): Promise<DialogResult> {

@@ -25,22 +25,22 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-09 | bug | fixed by F-53 (live, Batch B) | Undoing a diffuse color change is unreliable |
 | F-10 | bug | fixed, live (Batch A) | `set_eye_color` has no visible effect and reports materials that do not exist |
 | F-11 | bug | open | `reset_morphs` also zeroes a template's identity morphs |
-| F-12 | doc | open | `adjust_morph` description points to a `get_morph_catalog` tool that does not exist |
-| F-13 | minor | fixed, Batch B (live check pending) | Morph and expression values come back as raw float32 (0.800000011920929) |
-| F-14 | minor | fixed, Batch B (live check pending) | Colors set from 0-1 are truncated to 0-255 steps (0.3 → 0.298), not rounded |
-| F-15 | minor | open | `delete_avatar` on an empty scene is an error; a named delete then says "No avatars in scene" |
-| F-16 | doc | open | `set_subdivision_level` refusal does not say to run Modify > Subdivide |
-| F-17 | minor | open | `describe_character` says "average build" for templates and for heavy at 50% |
-| F-18 | minor | fixed, Batch B (live check pending) | `reset_expression` reports every slider (172), not the ones it changed |
+| F-12 | doc | fixed, Batch C (live check pending) | `adjust_morph` description points to a `get_morph_catalog` tool that does not exist |
+| F-13 | minor | fixed, live (Batch B) | Morph and expression values come back as raw float32 (0.800000011920929) |
+| F-14 | minor | fixed, live (Batch B) | Colors set from 0-1 are truncated to 0-255 steps (0.3 → 0.298), not rounded |
+| F-15 | minor | fixed, Batch C (live check pending) | `delete_avatar` on an empty scene is an error; a named delete then says "No avatars in scene" |
+| F-16 | doc | fixed, Batch C (live check pending) | `set_subdivision_level` refusal does not say to run Modify > Subdivide |
+| F-17 | minor | partly fixed, Batch C: graded build + worn items; skin/eyes/face still need a capture (live check pending) | `describe_character` says "average build" for templates and for heavy at 50% |
+| F-18 | minor | fixed, live (Batch B) | `reset_expression` reports every slider (172), not the ones it changed |
 | F-19 | gap | fixed (live P4-82) | `search_content` did not cover eye presets |
 | F-20 | doc | runbook | `search_morphs` matches IDs too; several display names repeat with different IDs |
-| F-21 | minor | open | Error wording differs across tools for the same situation |
-| F-22 | minor | open | `capture_viewport` without a path always overwrites the same temp file |
-| F-23 | doc | open | `check_cc5_connection` passes while a CC5 dialog blocks every command |
-| F-24 | gap | partly fixed, Batch B: visibility read-back where CC5 has IsVisible, IBL image the bridge loaded (live check pending); camera framing still capture-only | Some changes cannot be read back: IBL image, item visibility, camera framing |
+| F-21 | minor | fixed, Batch C (live check pending) | Error wording differs across tools for the same situation |
+| F-22 | minor | fixed, Batch C (live check pending) | `capture_viewport` without a path always overwrites the same temp file |
+| F-23 | doc | fixed, Batch C (live check pending) | `check_cc5_connection` passes while a CC5 dialog blocks every command |
+| F-24 | gap | partly fixed, live (Batch B): visibility read-back for props/lights/characters, IBL image the bridge loaded; worn items and camera framing still capture-only | Some changes cannot be read back: IBL image, item visibility, camera framing |
 | F-25 | bug | retest | `get_camera_info` placed the camera at the side right after the home view |
 | F-26 | minor | retest | The home view cropped Kevin's feet |
-| F-27 | minor | open | `set_light_shadow` with no settings is only refused inside CC5 |
+| F-27 | minor | fixed, Batch C (live check pending) | `set_light_shadow` with no settings is only refused inside CC5 |
 | F-28 | gap | open | Every second character preset stops on "Replace / Material Only"; batch runs need a preset answer |
 | F-29 | doc | runbook | Runbook placeholders ("‹first jaw ID›") are ambiguous; give real IDs |
 | F-30 | doc | runbook | Value checks need a tolerance (float32 and 0-255 storage) |
@@ -518,6 +518,19 @@ Each change was followed by a `capture_viewport` before the `undo`, the step tha
   So texture loads are undoable; the P4 failure was the capture's undo step.
 - Undo reporting what it reversed: not possible, RGlobal has only Undo / Redo / BeginAction / EndAction (no
   history read). With F-53 fixed, undo reverses the last change.
+
+### Batch B live check (2026-10-05, 25d8319 installed, CC5 relaunched with CC5_RECOVERY_ANSWER=cancel)
+
+- F-14: `set_ambient` 0.32 stored as 0.322 (82/255, nearest; truncation gave 0.318). 0.3 / 0.1 / 0.9 are exact
+  half-steps (76.5, 25.5, 229.5), so they land on 0.302 / 0.102 / 0.902 now. Two undos restored the ambient.
+- F-13: `set_expression` Brow_Raise_Inner_L 0.8 read back as 0.8.
+- F-18: `reset_expression` -> "Reset 1 expression slider(s) to neutral: Brow_Raise_Inner_L."; again -> "The face was
+  already neutral".
+- F-24: Boxers hidden / shown -> "CC5 cannot report this item's visibility" (no IsVisible on worn items).
+  Box_001 hidden -> "(CC5 confirms)", and the capture showed it gone; shown -> "(CC5 confirms)". So `IsVisible`
+  follows `RScene.Hide/Show` on props (the review's open question). `set_ibl` Birchwood.hdr ->
+  `get_visual_settings` "IBL image last loaded by set_ibl: ...Birchwood.hdr (CC5 cannot report the current image;
+  it may since have been undone or replaced in CC5)"; one undo reverted the load.
 
 ## Ideas (not findings)
 

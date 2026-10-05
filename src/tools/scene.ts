@@ -10,6 +10,9 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, errorResult } from "../util.js";
+import { formatDialog } from "./dialog.js";
+
+const DIALOG_CHECK_TIMEOUT_MS = 3000;
 
 function validateCapturePath(filePath: string): string | null {
   if (filePath.includes("..")) {
@@ -55,18 +58,28 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "check_cc5_connection",
-    "Check if CC5 is running and the bridge plugin is active.",
+    "Check if CC5 is running and the bridge plugin is active, and whether a CC5 dialog is open (an open dialog holds every command until it is answered).",
     {},
     async () => {
       const down = "CC5 bridge is NOT responding. Make sure Character Creator 5 is running with the MCP Bridge plugin loaded.";
       try {
         const connected = await bridge.healthCheck();
-        return connected
-          ? { content: [{ type: "text" as const, text: "CC5 bridge is connected and ready." }] }
-          : errorResult(down);
+        if (!connected) return errorResult(down);
       } catch {
         return errorResult(down);
       }
+      // /health bypasses the command queue, so it says "connected" while a dialog blocks every command (F-23).
+      let dialogLine = "";
+      try {
+        // Short timeout: the dialog lane runs on CC5's main thread, which a long command (an export) can hold.
+        const d = await bridge.getDialog(DIALOG_CHECK_TIMEOUT_MS);
+        if (d.success && d.dialog) {
+          dialogLine = `\nBut CC5 has a dialog open, and commands wait until it is answered:\n${formatDialog(d.dialog, d.waiting_job)}`;
+        }
+      } catch {
+        dialogLine = "\n(Could not check for an open CC5 dialog within 3 s; CC5 may be busy. Use get_cc5_dialog if commands stall.)";
+      }
+      return { content: [{ type: "text" as const, text: `CC5 bridge is connected${dialogLine ? "." : " and ready."}${dialogLine}` }] };
     }
   );
 
@@ -90,9 +103,10 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
     },
     async ({ name }) => bridgeCall(
       () => bridge.deleteAvatar(name ?? ""),
-      (result) => result.success
-        ? `Deleted avatar(s): ${(result.removed ?? []).join(", ")}`
-        : `Failed: ${result.error}`,
+      (result) => !result.success ? `Failed: ${result.error}`
+        : (result.removed ?? []).length
+          ? `Deleted avatar(s): ${(result.removed ?? []).join(", ")}`
+          : "The scene has no characters: nothing to delete.",
     )
   );
 
@@ -100,7 +114,7 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
     "capture_viewport",
     "Capture a screenshot of the CC5 3D viewport. Returns the image file path. Use this to see the current character appearance.",
     {
-      output_path: z.string().optional().describe("Output PNG file path. Defaults to a temp file if omitted."),
+      output_path: z.string().optional().describe("Output PNG file path. Omitted: a new file in the temp folder's cc5_captures only the newest 50 are kept, so older capture paths stop existing."),
       width: z.number().int().min(16).max(7680).optional().describe("Image width in px (default 1280)."),
       height: z.number().int().min(16).max(4320).optional().describe("Image height in px (default 720)."),
     },
@@ -123,7 +137,7 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
 
         // Fallback: if RenderImage succeeded but returned no image data, use Windows screenshot
         if (!base64Data) {
-          const fallbackPath = output_path ?? path.join(os.tmpdir(), "cc5_viewport.png");
+          const fallbackPath = output_path ?? result.path ?? path.join(os.tmpdir(), `cc5_viewport_${Date.now()}.png`);
           try {
             // Write to a FIXED temp path passed via an env var — never interpolate the
             // caller-controlled path into the PowerShell command (command-injection guard).

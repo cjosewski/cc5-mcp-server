@@ -253,10 +253,10 @@ describe("get_morph_value handler", () => {
   });
 
   it("returns not-found message when getMorphValue fails", async () => {
-    bridge.getMorphValue.mockResolvedValue({ success: false, error: "Unknown morph ID" });
+    bridge.getMorphValue.mockResolvedValue({ success: false, error: "Morph not found: NonExistent" });
     const handler = server.getRegisteredTool("get_morph_value");
     const result = await handler({ morph_id: "NonExistent" });
-    expect(result.content[0].text).toBe("Could not get morph value for 'NonExistent': Unknown morph ID");
+    expect(result.content[0].text).toBe("Could not get morph value for 'NonExistent': Morph not found: NonExistent");
   });
 
   it("returns the morph value when it is 0 (not null)", async () => {

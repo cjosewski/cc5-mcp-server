@@ -5,7 +5,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall } from "../util.js";
+import { bridgeCall, errorResult } from "../util.js";
 
 export function registerLightTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
@@ -111,7 +111,10 @@ export function registerLightTools(server: McpServer, bridge: CC5Bridge) {
       cast_shadow: z.boolean().optional().describe("Enable/disable shadow casting"),
       darken_strength: z.number().min(0).max(1).optional().describe("Shadow darkness 0.0-1.0 (lower = softer)"),
     },
-    async ({ light_name, cast_shadow, darken_strength }) => bridgeCall(
+    async ({ light_name, cast_shadow, darken_strength }) => cast_shadow === undefined && darken_strength === undefined
+      // Refused here, without a round trip to CC5 (F-27: only the plugin refused it).
+      ? errorResult("Give cast_shadow, darken_strength or both: there is nothing to change.")
+      : bridgeCall(
       () => bridge.setLightShadow(
         light_name,
         cast_shadow === undefined ? null : cast_shadow,

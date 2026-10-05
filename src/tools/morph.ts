@@ -26,7 +26,7 @@ export function registerMorphTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "adjust_morph",
-    "Adjust a single morph slider on the current character. Use get_morph_catalog first to discover available morph IDs.",
+    "Adjust a single morph slider on the current character. Use search_morphs first to find morph IDs (e.g. search_morphs('jaw')).",
     {
       morph_id: z.string().describe("The morph slider ID (e.g., 'Fat', 'Head_Narrow', 'Nose_Size')"),
       value: z.number().min(-1).max(1).describe("Morph value between -1.0 and 1.0. Negative values shrink features."),
