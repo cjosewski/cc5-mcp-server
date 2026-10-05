@@ -59,7 +59,23 @@ def _fake_qt(singleshot_calls):
     widgets.QLabel, widgets.QPushButton = _Label, _Button
     widgets.QMessageBox = type("QMessageBox", (), {})
     core = types.ModuleType("PySide2.QtCore")
-    core.QTimer = types.SimpleNamespace(singleShot=lambda ms, fn: singleshot_calls.append(fn) or fn())
+    class QTimer:
+        """Fires on start(). Live, QTimer.singleShot(0, callable) never fired in CC5, so it must not be used."""
+        singleShot = None
+
+        def __init__(self):
+            self._fns = []
+            self.timeout = types.SimpleNamespace(connect=self._fns.append)
+
+        def setSingleShot(self, flag):
+            self.single = flag
+
+        def start(self, ms):
+            singleshot_calls.append(self)
+            for fn in self._fns:
+                fn()
+
+    core.QTimer = QTimer
     pkg = types.ModuleType("PySide2")
     pkg.QtWidgets, pkg.QtCore = widgets, core
     return {"PySide2": pkg, "PySide2.QtWidgets": widgets, "PySide2.QtCore": core}
@@ -96,7 +112,9 @@ class DialogTest(BridgeTestCase):
             self.dialog = self.layer_dialog
             end = time.monotonic() + 10
             while self.dialog is not None and time.monotonic() < end:
-                self.srv.process_command_queue()  # the nested loop's timer ticks
+                # Inside the dialog's nested loop only the dialog timer fires: Qt never re-fires the command
+                # timer whose callback is running this very command.
+                self.srv.process_dialog_lane()
                 time.sleep(0.01)
             return {"success": True, "answer": self.answer[-1] if self.answer else None}
 
@@ -132,7 +150,9 @@ class DialogTest(BridgeTestCase):
         status, clicked = self.srv._execute_sync("answer_dialog", {"button": "material only"}, timeout=5)
         self.assertEqual(status, 200)
         self.assertEqual(clicked["result"]["clicked"], "Material Only")
-        self.assertEqual(len(self.clicks), 1)  # clicked through QTimer.singleShot
+        # Clicked directly, in the same call: live, deferred clicks never reached CC5's QMessageBox.
+        self.assertEqual(self.clicks, [])  # no QTimer was used
+        self.assertEqual(self.answer, ["Material Only"])
 
         end = time.monotonic() + 5
         job: dict = {}
@@ -149,7 +169,7 @@ class DialogTest(BridgeTestCase):
         r = self.srv.answer_dialog("OK")
         self.assertFalse(r["success"])
         self.assertEqual(r["error"], 'No single button "OK" in the dialog. Buttons: Replace, Material Only, Cancel')
-        self.assertEqual(self.clicks, [])
+        self.assertEqual([b.clicked for b in self.layer_dialog._buttons], [0, 0, 0, 0])
 
     def test_hidden_and_disabled_buttons_cannot_be_clicked(self):
         self.dialog = self.layer_dialog
@@ -165,7 +185,7 @@ class DialogTest(BridgeTestCase):
         r = self.srv.answer_dialog("OK")
         self.assertFalse(r["success"])
         self.assertIn("user's decision", r["error"])
-        self.assertEqual(self.clicks, [])
+        self.assertEqual([b.clicked for b in self.dialog._buttons], [0, 0])
 
     def test_the_recovery_prompt_is_refused_wherever_its_words_sit(self):
         self.dialog = _CC5Dialog("Character Creator 5",
@@ -175,7 +195,7 @@ class DialogTest(BridgeTestCase):
         self.assertIn("user's decision", self.srv.answer_dialog("OK")["error"])
         self.dialog = _CC5Dialog("Unsaved Project Data Found", [], [_Button("OK")])
         self.assertFalse(self.srv.answer_dialog("OK")["success"])
-        self.assertEqual(self.clicks, [])
+        self.assertEqual(self.dialog._buttons[0].clicked, 0)
 
     def test_refuses_a_dialog_whose_text_cannot_be_read(self):
         class Unreadable(_CC5Dialog):
@@ -187,7 +207,7 @@ class DialogTest(BridgeTestCase):
         r = self.srv.answer_dialog("OK")
         self.assertFalse(r["success"])
         self.assertIn("could not be read", r["error"])
-        self.assertEqual(self.clicks, [])
+        self.assertEqual(self.dialog._buttons[0].clicked, 0)
 
     def test_expect_guards_against_answering_the_wrong_dialog(self):
         self.dialog = self.layer_dialog
@@ -215,7 +235,7 @@ class DialogTest(BridgeTestCase):
             self.dialog = progress
             end = time.monotonic() + 0.8
             while time.monotonic() < end:
-                self.srv.process_command_queue()
+                self.srv.process_dialog_lane()
                 time.sleep(0.01)
             self.dialog = None
             return {"success": True}
@@ -278,7 +298,7 @@ class DialogTest(BridgeTestCase):
 
     def _busy(self, gate):
         while not gate.is_set():
-            self.srv.process_command_queue()
+            self.srv.process_dialog_lane()
             time.sleep(0.01)
         return {"success": True}
 
@@ -290,6 +310,44 @@ class DialogTest(BridgeTestCase):
         self.assertEqual(self.srv.POST_ROUTES["/dialog"], "get_dialog")
         self.assertEqual(self.srv.POST_ROUTES["/dialog/answer"], "answer_dialog")
         self.assertEqual(self.srv.REQUIRED_PARAMS["answer_dialog"], ["button"])
+
+
+class MainTimersTest(unittest.TestCase):
+    """main.py must run the dialog lane on its own timer: Qt does not re-fire the command timer while its
+    callback (a command waiting in a CC5 dialog) is still running."""
+
+    def test_initialize_starts_a_separate_dialog_timer(self):
+        started = []
+
+        class QTimer:
+            def __init__(self):
+                self.timeout = types.SimpleNamespace(connect=lambda fn: setattr(self, "fn", fn))
+
+            def start(self, ms):
+                started.append((self.fn.__name__, ms))
+
+            def stop(self):
+                pass
+
+        core = types.ModuleType("PySide2.QtCore")
+        core.QTimer = QTimer
+        pkg = types.ModuleType("PySide2")
+        pkg.QtCore = core
+        with mock.patch.dict(sys.modules, {"PySide2": pkg, "PySide2.QtCore": core}):
+            sys.modules.pop("main", None)
+            main = _support.fresh_import("main")
+            with mock.patch.object(main.bridge_server, "start_server", return_value=mock.Mock()):
+                main.initialize_plugin()
+            names = dict(started)
+            self.assertEqual(names["_on_timer"], 16)
+            self.assertEqual(names["_on_dialog_timer"], 50)
+            with mock.patch.object(main.bridge_server, "process_dialog_lane") as lane:
+                main._on_dialog_timer()
+            lane.assert_called_once()
+            with mock.patch.object(main.bridge_server, "stop_server"):
+                main.uninitialize_plugin()
+            self.assertIsNone(main._dialog_timer)
+        sys.modules.pop("main", None)
 
 
 if __name__ == "__main__":

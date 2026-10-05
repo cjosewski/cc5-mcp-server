@@ -31,11 +31,13 @@ rl_plugin_info = {
 # the plugin is alive.
 _timer = None          # 16 ms  — command-queue drain (~60 Hz)
 _health_timer = None   # 5000 ms — watchdog health check (1/5 s)
+_dialog_timer = None   # 50 ms  — dialog lane (see server.process_dialog_lane)
 _server_thread = None
 
 BRIDGE_PORT = 5101
 HEALTH_CHECK_INTERVAL_MS = 5000   # watchdog cadence
 COMMAND_QUEUE_INTERVAL_MS = 16    # command-dispatch cadence (~60 fps)
+DIALOG_LANE_INTERVAL_MS = 50      # dialog lane cadence: must be its own timer (server.process_dialog_lane)
 
 
 def _check_server_health() -> None:
@@ -55,6 +57,11 @@ def _on_timer() -> None:
     bridge_server.process_command_queue()
 
 
+def _on_dialog_timer() -> None:
+    """50 ms QTimer callback: read/answer CC5 dialogs, even while a command waits inside one."""
+    bridge_server.process_dialog_lane()
+
+
 def _on_health_timer() -> None:
     """5000 ms QTimer callback: watchdog health check only."""
     _check_server_health()
@@ -62,7 +69,7 @@ def _on_health_timer() -> None:
 
 def initialize_plugin() -> int:
     """Entry point called by CC5 when the plugin is loaded."""
-    global _timer, _health_timer, _server_thread
+    global _timer, _health_timer, _dialog_timer, _server_thread
 
     print("[CC5 MCP Bridge] Initializing plugin...")
 
@@ -73,6 +80,12 @@ def initialize_plugin() -> int:
         _timer = QTimer()
         _timer.timeout.connect(_on_timer)
         _timer.start(COMMAND_QUEUE_INTERVAL_MS)
+
+        # Dialog-lane timer: a separate timer, because Qt does not re-fire _timer while a command it started
+        # waits inside a CC5 dialog.
+        _dialog_timer = QTimer()
+        _dialog_timer.timeout.connect(_on_dialog_timer)
+        _dialog_timer.start(DIALOG_LANE_INTERVAL_MS)
 
         # Health-check timer — low frequency watchdog.
         _health_timer = QTimer()
@@ -91,11 +104,15 @@ def initialize_plugin() -> int:
 
 def uninitialize_plugin() -> None:
     """Called by CC5 when the plugin is unloaded."""
-    global _timer, _health_timer, _server_thread
+    global _timer, _health_timer, _dialog_timer, _server_thread
 
     if _timer is not None:
         _timer.stop()
         _timer = None
+
+    if _dialog_timer is not None:
+        _dialog_timer.stop()
+        _dialog_timer = None
 
     if _health_timer is not None:
         _health_timer.stop()

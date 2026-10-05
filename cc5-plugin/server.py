@@ -560,15 +560,15 @@ def get_dialog(params: dict | None = None) -> dict[str, Any]:
 _PLUGIN_DRIVEN_TITLES = ("create mixer assets",)
 
 
-def _click_later(button: Any) -> None:
-    """Click from the event loop, not from inside this call: a click can start more work or open another dialog.
-    Skipped if the button is gone by then (the user answered first and CC5 deleted the dialog)."""
-    from PySide2.QtCore import QTimer  # type: ignore
-    try:
-        from shiboken2 import isValid  # type: ignore
-    except Exception:
-        isValid = lambda obj: True  # noqa: E731 - outside CC5 (unit tests)
-    QTimer.singleShot(0, lambda: button.click() if isValid(button) else None)
+def _click_now(button: Any) -> None:
+    """Click the button found a moment ago in this same call, on the main thread.
+
+    Live (CC5 5.13, PySide2 5.15.0a1), two deferred clicks (QTimer.singleShot(0, callable), then a kept-alive
+    single-shot QTimer, both behind shiboken2.isValid) were reported as made but never reached CC5's QMessageBox;
+    a direct click() from a timer callback answered it at once. If a click opens another dialog, this call (and
+    the dialog lane) waits in that dialog until it is answered in CC5; its caller is then told "still running".
+    """
+    button.click()
 
 
 def answer_dialog(button: Any, expect: Any = None) -> dict[str, Any]:
@@ -606,9 +606,21 @@ def answer_dialog(button: Any, expect: Any = None) -> dict[str, Any]:
     if len(matches) != 1:
         found = ", ".join(described["buttons"]) or "none"
         return {"success": False, "error": f'No single button "{button}" in the dialog. Buttons: {found}'}
-    _click_later(matches[0])
+    _click_now(matches[0])
     view = {k: described[k] for k in ("title", "text", "buttons")}
     return {"success": True, "clicked": _plain(matches[0].text()).replace("&", ""), "dialog": view}
+
+
+def process_dialog_lane() -> None:
+    """Serve the dialog lane and watch the running command for a dialog. Called by its own QTimer.
+
+    It cannot ride on the command timer: Qt never fires a timer again while that timer's own callback is still
+    running, and a command waiting in a dialog it opened is exactly that callback. Live (CC5 5.13), with one
+    timer, a second .ccEye load sat in "Replace / Material Only" and neither the report nor get_cc5_dialog ran.
+    """
+    _drain_dialog_queue()
+    if _processing:
+        _note_command_dialog()
 
 
 def process_command_queue() -> None:
