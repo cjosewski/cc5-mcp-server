@@ -51,7 +51,7 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(self.rl.mock_calls, [])
 
     def test_import_clothing_uses_load_clothe(self):
-        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+        with mock.patch.object(self.pipe.cc5_api, "_pick_target_avatar", return_value=(self.avatar, None)):
             r = self.pipe.import_fbx(self._file("jacket.fbx"), "clothing")
         self.assertTrue(r["success"])
         self.assertTrue(self.rl.RFileIO.LoadClotheFromFbx.called)
@@ -82,14 +82,14 @@ class ImportTest(unittest.TestCase):
 
     def test_import_clothing_error_status_does_not_load_twice(self):
         self.rl.RFileIO.LoadClotheFromFbx.return_value.IsError.return_value = True
-        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+        with mock.patch.object(self.pipe.cc5_api, "_pick_target_avatar", return_value=(self.avatar, None)):
             r = self.pipe.import_fbx(self._file("jacket.fbx"), "clothing")
         self.assertFalse(r["success"])
         self.assertEqual(self.rl.RFileIO.LoadClotheFromFbx.call_count, 1)
 
     def test_import_clothing_reports_meshes_that_failed(self):
         self.rl.WStringVector.return_value = ["Jacket_Hood", "Jacket_Zip"]
-        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+        with mock.patch.object(self.pipe.cc5_api, "_pick_target_avatar", return_value=(self.avatar, None)):
             r = self.pipe.import_fbx(self._file("jacket.fbx"), "clothing")
         self.assertTrue(r["success"])
         self.assertEqual(r["failed_meshes"], ["Jacket_Hood", "Jacket_Zip"])
@@ -97,7 +97,7 @@ class ImportTest(unittest.TestCase):
         self.assertIs(self.rl.RFileIO.LoadClotheFromFbx.call_args.args[2], self.rl.WStringVector.return_value)
 
     def test_import_clothing_clean_import_has_no_warning(self):
-        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+        with mock.patch.object(self.pipe.cc5_api, "_pick_target_avatar", return_value=(self.avatar, None)):
             r = self.pipe.import_fbx(self._file("jacket.fbx"), "clothing")
         self.assertEqual((r["failed_meshes"], r["notes"]), ([], []))
         self.assertEqual(r["added"], ["Jacket"])
@@ -105,7 +105,7 @@ class ImportTest(unittest.TestCase):
     def test_import_clothing_fails_when_nothing_new_is_worn(self):
         # Live CC5 5.13: LoadClotheFromFbx returned success for an unskinned Blender mesh and added nothing.
         self.rl.RFileIO.LoadClotheFromFbx.side_effect = None
-        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+        with mock.patch.object(self.pipe.cc5_api, "_pick_target_avatar", return_value=(self.avatar, None)):
             r = self.pipe.import_fbx(self._file("tube.fbx"), "clothing")
         self.assertFalse(r["success"])
         self.assertIn("no clothing was added", r["error"])
@@ -122,6 +122,70 @@ class ImportTest(unittest.TestCase):
             r = self.pipe.replace_mesh_from_obj("CC_Base_Body", self._file("a.obj"))
         self.assertTrue(r["success"])
         self.avatar.ReplaceMesh.assert_called_once()
+
+
+
+class ImportTargetTest(unittest.TestCase):
+    """A clothing import dresses the named, else the selected, else the first character (F-50)."""
+
+    def setUp(self):
+        self.rl = _support.install_fake_rlpy()
+        self.pipe = _support.fresh_import("cc5_pipeline")
+        self.dir = tempfile.mkdtemp()
+        self.fbx = os.path.join(self.dir, "top.fbx")
+        open(self.fbx, "wb").close()
+        self.dressed = []
+
+        def avatar(name, oid):
+            a = mock.MagicMock(name=name)
+            a.GetName.return_value = name
+            a.GetID.return_value = oid
+            worn = []
+            a.GetClothes.side_effect = lambda: [mock.Mock(**{"GetName.return_value": n}) for n in worn]
+            a.GetAccessories.return_value = []
+            a._worn = worn
+            return a
+
+        self.kevin, self.camila = avatar("Kevin", 1), avatar("Camila", 2)
+        self.rl.RScene.GetAvatars.return_value = [self.kevin, self.camila]
+        self.rl.RScene.GetSelectedObjects.return_value = []
+
+        def wear(av, path, failed):
+            av._worn.append("Top")
+            self.dressed.append(av.GetName())
+            return self.rl.RFileIO.LoadClotheFromFbx.return_value
+
+        self.rl.RFileIO.LoadClotheFromFbx.side_effect = wear
+
+    def test_target_names_the_character(self):
+        r = self.pipe.import_fbx(self.fbx, "clothing", "Camila")
+        self.assertTrue(r["success"], r)
+        self.assertEqual(self.dressed, ["Camila"])
+
+    def test_selected_character_is_dressed(self):
+        self.rl.RScene.GetSelectedObjects.return_value = [self.camila]
+        self.assertTrue(self.pipe.import_fbx(self.fbx, "clothing")["success"])
+        self.assertEqual(self.dressed, ["Camila"])
+
+    def test_first_character_without_target_or_selection(self):
+        self.assertTrue(self.pipe.import_fbx(self.fbx, "clothing")["success"])
+        self.assertEqual(self.dressed, ["Kevin"])
+
+    def test_unknown_target_imports_nothing(self):
+        r = self.pipe.import_fbx(self.fbx, "clothing", "Nobody")
+        self.assertFalse(r["success"])
+        self.assertIn("Avatar not found: Nobody", r["error"])
+        self.rl.RFileIO.LoadClotheFromFbx.assert_not_called()
+
+    def test_target_is_refused_for_a_prop(self):
+        r = self.pipe.import_fbx(self.fbx, "prop", "Kevin")
+        self.assertFalse(r["success"])
+        self.rl.RFileIO.LoadFbxFile.assert_not_called()
+
+    def test_empty_scene_says_there_is_nobody_to_dress(self):
+        self.rl.RScene.GetAvatars.return_value = []
+        r = self.pipe.import_fbx(self.fbx, "clothing")
+        self.assertEqual(r["error"], "No avatar in scene to dress")
 
 
 if __name__ == "__main__":

@@ -220,15 +220,19 @@ ACTIONS: dict[str, Any] = {
     "remove_skin_overlay": lambda p: remove_skin_overlay(p.get("region", "all")),
     "set_skin_condition": lambda p: set_skin_condition(p["condition"], float(p.get("amount", 1.0)), p.get("region", "all"), p.get("base_rgb")),
     "set_wrinkle_strength": lambda p: set_wrinkle_strength(float(p["strength"])),
+    # Lives in cc5_api beside set_skin_color; registered here (extension modules carry new actions).
+    "set_skin_shader": lambda p: cc5_api.set_skin_shader(p["parameter_name"], p["values"]),
 }
 POST_ROUTES: dict[str, str] = {
     "/skin/overlay": "apply_skin_overlay",
     "/skin/overlay/remove": "remove_skin_overlay",
     "/skin/condition": "set_skin_condition",
     "/skin/wrinkle": "set_wrinkle_strength",
+    "/skin/shader": "set_skin_shader",
 }
 REQUIRED_PARAMS: dict[str, list[str]] = {
     "apply_skin_overlay": ["image_path"],
     "set_skin_condition": ["condition"],
     "set_wrinkle_strength": ["strength"],
+    "set_skin_shader": ["parameter_name", "values"],
 }

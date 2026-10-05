@@ -108,19 +108,21 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "import_fbx",
-    "Import an FBX made in Blender, Maya or another tool: as a 'prop', or as 'clothing' fitted to the current character. Kind 'character' is switched off (it crashed Character Creator 5) and fails at once: ask the user to import a whole character by hand with File > Import in Character Creator 5. CC5 can stop to ask about the import (its 'Import Settings' frame-rate question for some files): the import, and every other CC5 command, waits until it is answered in CC5.",
+    "Import an FBX made in Blender, Maya or another tool: as a 'prop' (placed at the origin; move it with set_object_transform, remove it with delete_object), or as 'clothing' fitted to a character (target, else the selected character, else the first). Kind 'character' is switched off (it crashed Character Creator 5) and fails at once: ask the user to import a whole character by hand with File > Import in Character Creator 5. CC5 can stop to ask about the import (its 'Import Settings' frame-rate question, Convert All / Cancel): read it with get_cc5_dialog and answer it with answer_cc5_dialog (Convert All is the plain go-ahead), then job_status. Live CC5 5.13 once crashed on the first FBX import of a fresh session: make sure the user's work is saved first.",
     {
       file_path: z.string().describe("Absolute path to the .fbx"),
       kind: z.enum(["prop", "character", "clothing"]).describe("'prop' or 'clothing'; 'character' is switched off"),
+      target: z.string().min(1).max(256).optional().describe("Character to dress (a list_avatars name); clothing only"),
     },
-    async ({ file_path, kind }) => {
+    async ({ file_path, kind, target }) => {
       if (kind === "character") return errorResult(IMPORT_CHARACTER_DISABLED);  // Chad's ruling: never calls CC5
+      if (target !== undefined && kind !== "clothing") return errorResult("target is only for kind 'clothing'");
       const err = checkFile(file_path, [".fbx"]);
       if (err) return errorResult(err);
       try {
-        const out = await runJob(bridge, "import_fbx", { file_path, kind });
+        const out = await runJob(bridge, "import_fbx", target === undefined ? { file_path, kind } : { file_path, kind, target });
         if (!out.done) {
-          return { content: [{ type: "text" as const, text: `${formatPending(out.job_id)} If CC5 shows its Import Settings dialog, answer it in CC5: the import waits for it.` }] };
+          return { content: [{ type: "text" as const, text: `${formatPending(out.job_id)} If CC5 shows its Import Settings dialog, read it with get_cc5_dialog and answer it with answer_cc5_dialog: the import waits for it.` }] };
         }
         const r = out.result as { success: boolean; error?: string; signature?: string; notes?: string[] };
         if (out.failed || !r.success) return errorResult(`Import failed: ${r.error ?? "unknown error"}`);

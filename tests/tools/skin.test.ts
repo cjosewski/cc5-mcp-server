@@ -110,3 +110,20 @@ describe("set_wrinkle_strength", () => {
     expect(r.content[0].text).toContain("EWrinkleFacePart");
   });
 });
+
+describe("set_skin_shader (F-38)", () => {
+  it("sends the parameter and lists the skin materials that took it", async () => {
+    bridge.setSkinShader.mockResolvedValue({ success: true, parameter: "Original Roughness Strength", values: [0.4],
+      materials: ["Std_Skin_Head", "Std_Skin_Body", "Std_Skin_Arm", "Std_Skin_Leg"] });
+    const r = await server.getRegisteredTool("set_skin_shader")({ parameter_name: "Original Roughness Strength", values: [0.4] });
+    expect(bridge.setSkinShader).toHaveBeenCalledWith("Original Roughness Strength", [0.4]);
+    expect(r.content[0].text).toBe(
+      "Original Roughness Strength set to [0.4] on: Std_Skin_Head, Std_Skin_Body, Std_Skin_Arm, Std_Skin_Leg");
+  });
+
+  it("explains that skin shine is roughness, not glossiness", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "set_skin_shader")?.[1] as string;
+    expect(description).toContain("lower = shinier");
+    expect(description).toContain("seam");
+  });
+});

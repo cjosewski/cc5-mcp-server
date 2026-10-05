@@ -172,3 +172,17 @@ describe("set_camera_focal_length handler", () => {
     expect(result.content[0].text).toBe("Camera focal length set to 35mm");
   });
 });
+
+describe("frame_camera frames a character (F-45)", () => {
+  it("passes the target and names the framed character", async () => {
+    bridge.frameCamera.mockResolvedValue({ success: true, view: "home", framed: "Kevin" });
+    const result = await server.getRegisteredTool("frame_camera")({ view: "home", target: "Kevin" });
+    expect(bridge.frameCamera).toHaveBeenCalledWith("home", "Kevin");
+    expect(result.content[0].text).toBe("Camera framed to 'home' view of Kevin.");
+  });
+
+  it("says that CC5 frames the selection, so the character is selected for the move", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "frame_camera")?.[1] as string;
+    expect(description).toContain("CC5 frames the selected object");
+  });
+});

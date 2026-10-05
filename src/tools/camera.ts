@@ -38,15 +38,16 @@ export function registerCameraTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "frame_camera",
-    "Move the viewport camera to a preset view. Use 'face' to frame the head close-up (so eye/lip/skin color and facial morphs are actually visible in capture_viewport — a full-body shot is too small), 'home'/'all' to reset to the whole character, or front/back/left/right/top/bottom/focus.",
+    "Move the viewport camera to a preset view of a character. Use 'face' to frame the head close-up (so eye/lip/skin color and facial morphs are actually visible in capture_viewport — a full-body shot is too small), 'home' for the whole character, 'all' for the whole scene, or front/back/left/right/top/bottom/focus (several views together check that clothing and hair fit). CC5 frames the selected object, so the character (target, else the selected character, else the first) is selected for the move and the previous selection is put back.",
     {
       view: z.enum(["face", "front", "back", "left", "right", "top", "bottom", "home", "all", "focus"])
-        .default("face").describe("Preset view. 'face' = head close-up, 'home'/'all' = whole body."),
+        .default("face").describe("Preset view. 'face' = head close-up, 'home' = whole character, 'all' = whole scene."),
+      target: z.string().min(1).max(256).optional().describe("Character to frame (a list_avatars name)"),
     },
-    async ({ view }) => bridgeCall(
-      () => bridge.frameCamera(view),
+    async ({ view, target }) => bridgeCall(
+      () => bridge.frameCamera(view, target),
       (result) => result.success
-        ? `Camera framed to '${result.view ?? view}' view.`
+        ? `Camera framed to '${result.view ?? view}' view${result.framed ? ` of ${result.framed}` : ""}.`
         : `Failed: ${result.error}`,
     )
   );

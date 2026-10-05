@@ -166,7 +166,7 @@ describe("import_fbx", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       const r = await pending;
       expect(r.content[0].text).toContain("cmd_7");
-      expect(r.content[0].text).toContain("answer it in CC5");
+      expect(r.content[0].text).toContain("answer_cc5_dialog");
       expect(r.content[0].text).not.toContain("Create Asset(s)");
     } finally {
       vi.useRealTimers();
@@ -268,5 +268,26 @@ describe("export_textures", () => {
     const r = await server.getRegisteredTool("export_textures")({ output_dir: "//fileserver/share/SP", character_name: "P1" });
     expect(r.isError).toBe(true);
     expect(bridge.startJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("import_fbx target (F-50)", () => {
+  it("sends the character to dress for a clothing import", async () => {
+    const started = mockJobs(bridge, { import_fbx: { success: true, signature: "LoadClotheFromFbx", notes: [] } });
+    await server.getRegisteredTool("import_fbx")({ file_path: "C:/a/Top.fbx", kind: "clothing", target: "Camila" });
+    expect(started[0].params).toEqual({ file_path: "C:/a/Top.fbx", kind: "clothing", target: "Camila" });
+  });
+
+  it("refuses a target for a prop and sends CC5 nothing", async () => {
+    const r = await server.getRegisteredTool("import_fbx")({ file_path: "C:/a/Box.fbx", kind: "prop", target: "Kevin" });
+    expect(r.isError).toBe(true);
+    expect(bridge.startJob).not.toHaveBeenCalled();
+  });
+
+  it("points to the dialog tools and the prop tools in its description", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "import_fbx")?.[1] as string;
+    expect(description).toContain("answer_cc5_dialog");
+    expect(description).toContain("set_object_transform");
+    expect(description).toContain("delete_object");
   });
 });

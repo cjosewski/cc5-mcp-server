@@ -232,6 +232,33 @@ export interface SelectionResult extends OperationResult {
   selected?: SceneObject[];
 }
 
+export interface SetSkinShaderResult extends OperationResult {
+  parameter?: string;
+  /** The skin materials that took the value. */
+  materials?: string[];
+  /** The value read back from CC5. */
+  values?: number[];
+  /** Materials without the parameter (or with another value count), left unchanged. */
+  skipped?: string[];
+}
+
+export interface DeleteObjectResult extends OperationResult {
+  /** The items CC5 removed (checked by reading the scene back). */
+  deleted?: SceneObject[];
+}
+
+export interface ObjectTransformValues {
+  /** Position in centimetres (x, y, z). */
+  position: [number, number, number];
+  scale: [number, number, number];
+}
+
+export interface ObjectTransformResult extends OperationResult, Partial<ObjectTransformValues> {
+  name?: string;
+  before?: ObjectTransformValues;
+  after?: ObjectTransformValues;
+}
+
 export interface CC5Dialog {
   title: string;
   /** The dialog's question: a message box's text, or the visible labels of CC5's own dialogs. */
@@ -247,6 +274,10 @@ export interface DialogResult extends OperationResult {
   waiting_job?: string | null;
   /** answer_cc5_dialog: the button that was clicked. */
   clicked?: string;
+  /** How this CC5 answers "Unsaved project data found" (CC5_RECOVERY_ANSWER): "cancel", "ok" or "ask". */
+  recovery_policy?: string;
+  /** Recovery prompts the plugin answered by itself, oldest first. */
+  recovery_answered?: Array<{ time: string; button: string; text: string }>;
 }
 
 export interface LoadAssetResult extends OperationResult {

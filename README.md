@@ -80,7 +80,7 @@ The MCP server provides 84 tools across 23 modules for controlling CC5. The tabl
 | Tool | Description |
 |------|-------------|
 | `get_cc5_dialog` | Show the dialog CC5 has open (title, question, buttons) and the job waiting on it |
-| `answer_cc5_dialog` | Click a dialog button by its label; never the "Unsaved project data found" prompt |
+| `answer_cc5_dialog` | Click a dialog button by its label; the "Unsaved project data found" prompt only with the button `CC5_RECOVERY_ANSWER` names |
 
 When a command opens a CC5 dialog (a confirmation, or a choice such as "Replace / Material Only / Cancel"), the call fails within about a second with the question, the buttons and a job id. The command keeps running: answer the dialog with `answer_cc5_dialog`, then read the command's result with `job_status`.
 
@@ -316,7 +316,7 @@ The scene stats count the base mesh. An FBX exported with `sub_d_level` 1 or 2 h
 
 Found in live testing on CC5 5.13.2030.1. None of them can be fixed from the bridge:
 
-- **The first FBX export after CC5 starts often crashes CC5.** In testing, CC5 closed on about three in four sessions' first FBX export (`export_fbx`, `export_for_unity`, `export_textures`, a batch), whatever the settings, folder or call route. Once one FBX export had worked, every later FBX export in that session worked (22 of 22). Save your scene before the first export: the export tools and the `create_character` prompt tell the agent to call `save_character` first. If CC5 crashes, start it again, answer its "Unsaved project data found" question (OK restores your unsaved work), and run the export again.
+- **The first FBX export after CC5 starts often crashes CC5.** In testing, CC5 closed on about three in four sessions' first FBX export (`export_fbx`, `export_for_unity`, `export_textures`, a batch), whatever the settings, folder or call route. Once one FBX export had worked, every later FBX export in that session worked (22 of 22). Save your scene before the first export: the export tools and the `create_character` prompt tell the agent to call `save_character` first. If CC5 crashes, start it again, answer its "Unsaved project data found" question (OK restores your unsaved work), and run the export again. Started through `scripts/cc5-restart.ps1`, CC5 gets `CC5_RECOVERY_ANSWER=cancel` and the plugin answers that question Cancel by itself (pass `-RecoveryAnswer ok` to restore instead, or `ask` to answer it yourself).
 - **`headshot_from_photo` is switched off.** It crashed CC5 in both Headshot modes with the test photo. The tool, and a recipe's `headshot_photo` step, now fail at once with a message and never call CC5. Make the head by hand with the Headshot plugin inside Character Creator 5.
 - **`import_fbx` with kind `character` is switched off.** A whole-character import stopped in CC5's "Create Asset(s)" dialog and crashed CC5. It now fails at once with a message and never calls CC5. Import a whole character by hand with File > Import in Character Creator 5. Kinds `prop` and `clothing` still work.
 - **`import_fbx` can wait for CC5's own import dialog** ("Import Settings" for the frame rate): answer it in CC5 and the import finishes.

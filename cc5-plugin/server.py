@@ -166,7 +166,7 @@ ACTION_MAP: dict[str, Any] = {
     "redo":                  lambda p: cc5_api.redo(),
     "get_camera_info":       lambda p: cc5_api.get_camera_info(),
     "set_camera_focal_length": lambda p: cc5_api.set_camera_focal_length(float(p["focal_length"])),
-    "frame_camera":          lambda p: cc5_api.frame_camera(p.get("view", "face")),
+    "frame_camera":          lambda p: cc5_api.frame_camera(p.get("view", "face"), p.get("target")),
     "get_lights":            lambda p: cc5_api.get_lights(),
     "set_light_color":       lambda p: cc5_api.set_light_color(p["light_name"], float(p["r"]), float(p["g"]), float(p["b"])),
     "get_light_info":        lambda p: cc5_api.get_light_info(p["light_name"]),
@@ -338,6 +338,25 @@ MODAL_WAIT_SECONDS = 5.0
 MODAL_SAFE_ACTIONS = {"silent_configure_and_click", "silent_finalize", "get_export_status",
                       "get_mixer_status", "exec_python"}
 _RECOVERY_PROMPT = "Unsaved project data found"
+
+# Who answers the crash-recovery prompt (Chad, 2026-10-05, flight 01 F-52: "Having Claude run this autonomously is
+# part of the problem"). CC5_RECOVERY_ANSWER=cancel|ok makes the dialog lane answer it as soon as it appears; the
+# launcher Claude uses (scripts/cc5-restart.ps1) sets cancel. Unset or anything else = "ask": the user answers it in
+# CC5, as before (a CC5 started by hand).
+_RECOVERY_BUTTONS = {"cancel": "Cancel", "ok": "OK"}
+
+
+def _recovery_policy() -> str:
+    value = os.environ.get("CC5_RECOVERY_ANSWER", "").strip().lower()
+    return value if value in _RECOVERY_BUTTONS else "ask"
+
+
+RECOVERY_ANSWER = _recovery_policy()
+# The prompt only appears while CC5 starts: stop looking for it after this long.
+RECOVERY_WATCH_SECONDS = 600.0
+_recovery_watch_started = time.monotonic()
+# What the lane answered: [{time, button, text}] (newest last, at most 10).
+_recovery_answers: list[dict[str, Any]] = []
 
 
 def _modal_widget() -> Any:
@@ -539,7 +558,9 @@ def _waiting_dialog_error(dialog: dict[str, Any], job_id: str) -> str:
     where = f' (the "{dialog["title"]}" window)' if dialog.get("title") and dialog.get("text") else ""
     buttons = ", ".join(dialog.get("buttons") or []) or "none found"
     if _is_recovery_prompt(dialog):
-        how = "the user must answer it in CC5"
+        allowed = _RECOVERY_BUTTONS.get(RECOVERY_ANSWER)
+        how = (f'answer it with answer_cc5_dialog("{allowed}") (CC5_RECOVERY_ANSWER={RECOVERY_ANSWER})' if allowed
+               else "the user must answer it in CC5")
     else:
         how = "answer it with answer_cc5_dialog (ask the user when it is a real choice)"
     return (f'CC5 is waiting for an answer to "{question}"{where}. Buttons: {buttons}. '
@@ -552,7 +573,12 @@ def get_dialog(params: dict | None = None) -> dict[str, Any]:
     with _store_lock:
         waiting = _running_id if _running_id in _command_dialogs else None
     view = {k: described[k] for k in ("title", "text", "buttons")} if described else None
-    return {"success": True, "dialog": view, "waiting_job": waiting}
+    result: dict[str, Any] = {"success": True, "dialog": view, "waiting_job": waiting}
+    with _store_lock:
+        if _recovery_answers:
+            result["recovery_answered"] = list(_recovery_answers)
+    result["recovery_policy"] = RECOVERY_ANSWER
+    return result
 
 
 # Dialogs the plugin's own tools drive (create_actor_mixer's dry run keeps "Create Mixer Assets" open on purpose):
@@ -586,12 +612,17 @@ def answer_dialog(button: Any, expect: Any = None) -> dict[str, Any]:
     if dialog is None or described is None:
         return {"success": False, "error": "No CC5 dialog is open"}
     # Fail closed: a dialog whose words could not be read might be the crash-recovery prompt.
-    if _is_recovery_prompt(described) or not described.get("text_read"):
-        return {"success": False, "error": (
-            '"Unsaved project data found" is the user\'s decision: answer it in CC5 '
-            "(OK restores the last unsaved work, Cancel discards it)." if described.get("text_read") else
-            "The dialog's text could not be read, so it may be CC5's crash-recovery prompt: "
-            "ask the user to answer it in CC5.")}
+    if not described.get("text_read"):
+        return {"success": False, "error": "The dialog's text could not be read, so it may be CC5's crash-recovery "
+                                           "prompt: ask the user to answer it in CC5."}
+    if _is_recovery_prompt(described):
+        allowed = _RECOVERY_BUTTONS.get(RECOVERY_ANSWER)
+        if allowed is None or button.replace("&", "").strip().lower() != allowed.lower():
+            return {"success": False, "error": (
+                '"Unsaved project data found" is the user\'s decision: answer it in CC5 '
+                "(OK restores the last unsaved work, Cancel discards it)." if allowed is None else
+                f'This CC5 was started with CC5_RECOVERY_ANSWER={RECOVERY_ANSWER}: the recovery prompt may only be '
+                f'answered "{allowed}".')}
     if any(t in described["title"].lower() for t in _PLUGIN_DRIVEN_TITLES):
         return {"success": False, "error": f'"{described["title"]}" is driven by its own tool; use that tool, '
                                            "or ask the user to answer it in CC5."}
@@ -611,6 +642,42 @@ def answer_dialog(button: Any, expect: Any = None) -> dict[str, Any]:
     return {"success": True, "clicked": _plain(matches[0].text()).replace("&", ""), "dialog": view}
 
 
+def _auto_answer_recovery() -> None:
+    """Answer CC5's crash-recovery prompt with the CC5_RECOVERY_ANSWER button, and record it. Main thread only.
+
+    Only a prompt whose text was read and names "Unsaved project data found" is answered, only with the one
+    configured button, and only while CC5 starts (RECOVERY_WATCH_SECONDS).
+    """
+    if RECOVERY_ANSWER not in _RECOVERY_BUTTONS:
+        return
+    if time.monotonic() - _recovery_watch_started > RECOVERY_WATCH_SECONDS:
+        return
+    dialog = _modal_widget()
+    if dialog is None:
+        return
+    described = _describe_modal()
+    if not described or not described.get("text_read") or not _is_recovery_prompt(described):
+        return
+    label = _RECOVERY_BUTTONS[RECOVERY_ANSWER].lower()
+    try:
+        matches = [b for b in _dialog_buttons(dialog) if _plain(b.text()).replace("&", "").strip().lower() == label]
+    except Exception:
+        return
+    if len(matches) != 1:
+        return
+    try:
+        _click_now(matches[0])
+    except Exception as e:  # e.g. the button was deleted mid-tick: never stop the rest of the dialog lane
+        print(f"[CC5 MCP Bridge] Answering the recovery prompt failed: {e}")
+        return
+    record = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "button": _RECOVERY_BUTTONS[RECOVERY_ANSWER],
+              "text": described.get("text", "")}
+    with _store_lock:
+        _recovery_answers.append(record)
+        del _recovery_answers[:-10]
+    print(f'[CC5 MCP Bridge] Answered "{_RECOVERY_PROMPT}" with {record["button"]} (CC5_RECOVERY_ANSWER)')
+
+
 def process_dialog_lane() -> None:
     """Serve the dialog lane and watch the running command for a dialog. Called by its own QTimer.
 
@@ -618,6 +685,7 @@ def process_dialog_lane() -> None:
     running, and a command waiting in a dialog it opened is exactly that callback. Live (CC5 5.13), with one
     timer, a second .ccEye load sat in "Replace / Material Only" and neither the report nor get_cc5_dialog ran.
     """
+    _auto_answer_recovery()
     _drain_dialog_queue()
     if _processing:
         _note_command_dialog()

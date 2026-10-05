@@ -1,18 +1,30 @@
 # CC5 restart script: start Character Creator 5 and wait for the MCP bridge.
-# Usage: powershell -ExecutionPolicy Bypass -File scripts/cc5-restart.ps1 [-Force]
+# Usage: powershell -ExecutionPolicy Bypass -File scripts/cc5-restart.ps1 [-Force] [-RecoveryAnswer cancel|ok|ask]
 #        powershell -ExecutionPolicy Bypass -File scripts/cc5-restart.ps1 -DialogsOnly
 #
-# This script never sends keys or clicks to CC5: CC5's startup questions are for the user to answer.
+# This script never sends keys or clicks to CC5.
+# -RecoveryAnswer (default cancel; Chad, 2026-10-05, flight 01 F-52): CC5 is started with CC5_RECOVERY_ANSWER set,
+# and the MCP plugin answers CC5's "Unsaved project data found" prompt with that button (cancel discards the
+# auto-saved changes, ok restores them) and records it. "ask" leaves the prompt for the user, as before.
 # If CC5 is running, the script stops and asks the user to save and close CC5 themselves.
 # -Force kills CC5 instead, and unsaved work is lost.
 # -DialogsOnly only prints how to answer CC5's "Unsaved project data found" question.
 
 param(
     [switch]$Force,
-    [switch]$DialogsOnly
+    [switch]$DialogsOnly,
+    [ValidateSet("cancel", "ok", "ask")]
+    [string]$RecoveryAnswer = "cancel"
 )
 
 $RecoveryGuidance = 'If CC5 shows "Unsaved project data found", answer it yourself: OK restores the auto-saved changes, Cancel discards them.'
+$AutoGuidance = "The MCP plugin answers CC5's `"Unsaved project data found`" prompt with $RecoveryAnswer (CC5_RECOVERY_ANSWER); get_cc5_dialog shows when it did."
+
+# -Force kills CC5, so the recovery prompt is the only way back to that work: leave it to the user
+# unless -RecoveryAnswer was given on purpose.
+if ($Force -and -not $PSBoundParameters.ContainsKey("RecoveryAnswer")) {
+    $RecoveryAnswer = "ask"
+}
 
 if ($DialogsOnly) {
     Write-Host "[CC5] $RecoveryGuidance"
@@ -39,7 +51,9 @@ if ($proc) {
 
 # 2. Launch CC5
 $cc5Path = "C:\Program Files\Reallusion\Character Creator 5\Bin64\CharacterCreator.exe"
-Write-Host "[CC5] Launching CC5..."
+Write-Host "[CC5] Launching CC5 (CC5_RECOVERY_ANSWER=$RecoveryAnswer)..."
+# Start-Process passes this process's environment to CC5, where the plugin reads it.
+$env:CC5_RECOVERY_ANSWER = $RecoveryAnswer
 Start-Process $cc5Path
 
 # 3. Wait for the bridge
@@ -60,6 +74,10 @@ if (-not $up) {
     Write-Host "[CC5] The bridge did not answer within 120 s. Check the CC5 window."
 }
 
-# 4. CC5's startup questions are the user's to answer
-Write-Host "[CC5] $RecoveryGuidance"
+# 4. CC5's startup questions
+if ($RecoveryAnswer -eq "ask") {
+    Write-Host "[CC5] $RecoveryGuidance"
+} else {
+    Write-Host "[CC5] $AutoGuidance"
+}
 Write-Host "[CC5] === Restart Complete ==="

@@ -197,6 +197,78 @@ class DialogTest(BridgeTestCase):
         self.assertFalse(self.srv.answer_dialog("OK")["success"])
         self.assertEqual(self.dialog._buttons[0].clicked, 0)
 
+    def _recovery_prompt(self):
+        self.dialog = _CC5Dialog("Character Creator 5", [_Label("Unsaved project data found. Would you like to "
+                                                                "update your project with the unsaved changes?")],
+                                 [_Button("OK"), _Button("Cancel")])
+        return self.dialog
+
+    def test_recovery_policy_defaults_to_ask(self):
+        with mock.patch.dict("os.environ", {"CC5_RECOVERY_ANSWER": ""}):
+            self.assertEqual(self.srv._recovery_policy(), "ask")
+        with mock.patch.dict("os.environ", {"CC5_RECOVERY_ANSWER": "yes please"}):
+            self.assertEqual(self.srv._recovery_policy(), "ask")
+        with mock.patch.dict("os.environ", {"CC5_RECOVERY_ANSWER": " Cancel "}):
+            self.assertEqual(self.srv._recovery_policy(), "cancel")
+
+    def test_the_lane_answers_the_recovery_prompt_with_the_configured_button(self):
+        # Chad, 2026-10-05 (F-52): when Claude launched CC5, the prompt is answered Cancel automatically.
+        prompt = self._recovery_prompt()
+        with mock.patch.object(self.srv, "RECOVERY_ANSWER", "cancel"):
+            self.srv.process_dialog_lane()
+            self.assertEqual([b.clicked for b in prompt._buttons], [0, 1])
+            r = self.srv.get_dialog()
+        self.assertEqual(r["recovery_policy"], "cancel")
+        self.assertEqual(r["recovery_answered"][-1]["button"], "Cancel")
+        self.assertIn("Unsaved project data found", r["recovery_answered"][-1]["text"])
+
+    def test_the_lane_leaves_the_recovery_prompt_alone_by_default(self):
+        prompt = self._recovery_prompt()
+        with mock.patch.object(self.srv, "RECOVERY_ANSWER", "ask"):
+            self.srv.process_dialog_lane()
+        self.assertEqual([b.clicked for b in prompt._buttons], [0, 0])
+
+    def test_the_lane_never_answers_another_dialog(self):
+        self.dialog = self.layer_dialog
+        with mock.patch.object(self.srv, "RECOVERY_ANSWER", "cancel"):
+            self.srv.process_dialog_lane()
+        self.assertEqual([b.clicked for b in self.layer_dialog._buttons], [0, 0, 0, 0])
+
+    def test_the_lane_stops_watching_after_startup(self):
+        prompt = self._recovery_prompt()
+        with mock.patch.object(self.srv, "RECOVERY_ANSWER", "cancel"), \
+                mock.patch.object(self.srv, "_recovery_watch_started", self.srv.time.monotonic() - 10_000):
+            self.srv.process_dialog_lane()
+        self.assertEqual([b.clicked for b in prompt._buttons], [0, 0])
+
+    def test_a_failed_automatic_click_does_not_stop_the_lane(self):
+        prompt = self._recovery_prompt()
+        prompt._buttons[1].click = mock.Mock(side_effect=RuntimeError("wrapped C/C++ object has been deleted"))
+        with mock.patch.object(self.srv, "RECOVERY_ANSWER", "cancel"),                 mock.patch.object(self.srv, "_drain_dialog_queue") as drain:
+            self.srv.process_dialog_lane()
+        drain.assert_called_once()
+        self.assertNotIn("recovery_answered", self.srv.get_dialog())
+
+    def test_an_unreadable_prompt_is_never_answered_automatically(self):
+        class Unreadable(_CC5Dialog):
+            def findChildren(self, cls):
+                if cls is _Label:
+                    raise RuntimeError("deleted")
+                return super().findChildren(cls)
+        self.dialog = Unreadable("Unsaved project data found", [], [_Button("OK"), _Button("Cancel")])
+        with mock.patch.object(self.srv, "RECOVERY_ANSWER", "cancel"):
+            self.srv.process_dialog_lane()
+        self.assertEqual([b.clicked for b in self.dialog._buttons], [0, 0])
+
+    def test_answer_dialog_may_give_only_the_configured_recovery_answer(self):
+        prompt = self._recovery_prompt()
+        with mock.patch.object(self.srv, "RECOVERY_ANSWER", "cancel"):
+            refused = self.srv.answer_dialog("OK")
+            self.assertFalse(refused["success"])
+            self.assertIn('may only be answered "Cancel"', refused["error"])
+            self.assertTrue(self.srv.answer_dialog("Cancel")["success"])
+        self.assertEqual([b.clicked for b in prompt._buttons], [0, 1])
+
     def test_refuses_a_dialog_whose_text_cannot_be_read(self):
         class Unreadable(_CC5Dialog):
             def findChildren(self, cls):
@@ -275,7 +347,8 @@ class DialogTest(BridgeTestCase):
         self.assertEqual(self.srv._cancelled, set())
 
     def test_get_dialog_when_none_is_open(self):
-        self.assertEqual(self.srv.get_dialog(), {"success": True, "dialog": None, "waiting_job": None})
+        self.assertEqual(self.srv.get_dialog(), {"success": True, "dialog": None, "waiting_job": None,
+                                                  "recovery_policy": "ask"})
 
     def test_bad_button_argument(self):
         for bad in (None, "", "   ", 5, "x" * 101):

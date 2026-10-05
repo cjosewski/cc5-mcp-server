@@ -10,48 +10,49 @@ import { bridgeCall } from "../util.js";
 export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "list_clothes",
-    "List all clothing items currently worn by the avatar. Returns name, ID, and type for each item.",
+    "List the clothing (including shoes and socks) the avatar wears, by name and ID, or say that no clothes are applied.",
     {},
     async () => bridgeCall(
       () => bridge.listClothes(),
       (clothes) => {
         if (clothes.length === 0) {
-          return "No clothing items on the avatar.";
+          return "No clothes are applied.";
         }
-        const lines = clothes.map(c => `- ${c.name} (ID: ${c.id}, Type: ${c.type})`);
-        return `Found ${clothes.length} clothing item(s):\n${lines.join("\n")}`;
+        // CC5's numeric type is not a garment kind (live: Boxers and Slim Jeans 1, T-shirt and socks 4): left out.
+        const lines = clothes.map(c => `- ${c.name} (ID: ${c.id})`);
+        return `Clothes applied (${clothes.length}):\n${lines.join("\n")}`;
       },
     )
   );
 
   server.tool(
     "list_hair",
-    "List all hair items on the current avatar. Returns name, ID, and type for each item.",
+    "List the hair the avatar wears, by name and ID, or say that no hair is applied.",
     {},
     async () => bridgeCall(
       () => bridge.listHair(),
       (hairs) => {
         if (hairs.length === 0) {
-          return "No hair items on the avatar.";
+          return "No hair is applied.";
         }
-        const lines = hairs.map(h => `- ${h.name} (ID: ${h.id}, Type: ${h.type})`);
-        return `Found ${hairs.length} hair item(s):\n${lines.join("\n")}`;
+        const lines = hairs.map(h => `- ${h.name} (ID: ${h.id})`);
+        return `Hair applied (${hairs.length}):\n${lines.join("\n")}`;
       },
     )
   );
 
   server.tool(
     "list_accessories",
-    "List all accessories on the current avatar. Returns name and ID for each item.",
+    "List the accessories the avatar wears, by name and ID, or say that no accessories are applied.",
     {},
     async () => bridgeCall(
       () => bridge.listAccessories(),
       (accessories) => {
         if (accessories.length === 0) {
-          return "No accessories on the avatar.";
+          return "No accessories are applied.";
         }
         const lines = accessories.map(a => `- ${a.name} (ID: ${a.id})`);
-        return `Found ${accessories.length} accessory(ies):\n${lines.join("\n")}`;
+        return `Accessories applied (${accessories.length}):\n${lines.join("\n")}`;
       },
     )
   );
@@ -72,15 +73,16 @@ export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "browse_content",
-    "Browse available CC5 content files by category. Returns file paths that can be loaded with load_asset. Wearables: cloth_upper, cloth_lower, cloth, shoes, accessory_head, accessory_body, hair (.rlHair hairstyles), eye (.ccEye eye presets). Scene/animation: pose, motion, expression, props, light, camera, character (pose/motion may be empty on a base install without content packs).",
+    "Browse available CC5 content files by category. Returns file paths that can be loaded with load_asset. Wearables: cloth_upper (shirts, coats), cloth_lower (pants, skirts), cloth (full-body outfits), underwear, gloves, cloth_other (socks, outfit sets), shoes, accessory_head (hats, glasses), accessory_body (torso, arm and leg accessories), accessory_other (handheld and outfit pieces), hair (.rlHair hairstyles), eye (.ccEye eye presets). Scene/animation: pose, motion, expression, props, light, camera, character (pose/motion may be empty on a base install without content packs).",
     {
       folder_type: z.enum([
-        "cloth_upper", "cloth_lower", "cloth", "shoes", "accessory_head", "accessory_body",
+        "cloth_upper", "cloth_lower", "cloth", "underwear", "gloves", "cloth_other", "shoes",
+        "accessory_head", "accessory_body", "accessory_other",
         "pose", "motion", "expression", "props", "light", "camera", "character",
         "makeup_full", "makeup_foundation", "makeup_eye", "makeup_lip",
         "image_layer", "skingen", "wrinkle_mask", "texture", "hair", "eye",
       ]).default("cloth_upper")
-        .describe("Content category. Wearables: cloth_upper/cloth_lower/cloth/shoes/accessory_head/accessory_body/hair/eye. Scene & animation: pose/motion/expression/props/light/camera/character. Skin & makeup: makeup_full/makeup_foundation/makeup_eye/makeup_lip/skingen. Image libraries texture/wrinkle_mask also list image files (for apply_skin_overlay and load_texture); image_layer holds CC5 .iImgLayer stage items, not overlay images. Load a returned content path with load_asset."),
+        .describe("Content category. Wearables: cloth_upper/cloth_lower/cloth/underwear/gloves/cloth_other/shoes/accessory_head/accessory_body/accessory_other/hair/eye. Scene & animation: pose/motion/expression/props/light/camera/character. Skin & makeup: makeup_full/makeup_foundation/makeup_eye/makeup_lip/skingen. Image libraries texture/wrinkle_mask also list image files (for apply_skin_overlay and load_texture); image_layer holds CC5 .iImgLayer stage items, not overlay images. Load a returned content path with load_asset."),
     },
     async ({ folder_type }) => bridgeCall(
       () => bridge.browseContent(folder_type),

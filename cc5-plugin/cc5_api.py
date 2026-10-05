@@ -902,14 +902,21 @@ def _set_render_resolution(width: int, height: int) -> None:
     """Set RenderImage output size. The default RenderImage output is uselessly
     small (~100x32), making captures unusable for visual verification. Setting
     RExportImageParameter.kCommon.nOutputSizeWidth/Height fixes it (verified live).
+
+    CC5 records SetRenderExportParameter as an undo step (live, F-53): setting it on every capture made `undo`
+    after a capture reverse the capture instead of the user's change. So it is only set when the size differs;
+    the first capture of a session, and a capture at a new size, still record that one step.
     """
     try:
         g = RLPy.RGlobal
         if hasattr(g, "GetRenderExportImageParameter") and hasattr(g, "SetRenderExportParameter"):
             p = g.GetRenderExportImageParameter()
             if hasattr(p, "kCommon"):
-                p.kCommon.nOutputSizeWidth = max(16, int(width))
-                p.kCommon.nOutputSizeHeight = max(16, int(height))
+                w, h = max(16, int(width)), max(16, int(height))
+                if p.kCommon.nOutputSizeWidth == w and p.kCommon.nOutputSizeHeight == h:
+                    return
+                p.kCommon.nOutputSizeWidth = w
+                p.kCommon.nOutputSizeHeight = h
                 g.SetRenderExportParameter(p)
     except Exception as e:
         print(f"[CC5 MCP Bridge] _set_render_resolution failed: {e}")
@@ -1171,10 +1178,15 @@ _CAMERA_VIEWS = {
 }
 
 
-def frame_camera(view: str = "face") -> dict[str, Any]:
+def frame_camera(view: str = "face", target: str | None = None) -> dict[str, Any]:
     """Move the current camera to a preset view (face/front/home/all/back/left/right/top/
     bottom/focus). Enables face-level visual verification (eye/lip/skin color, facial
     morphs) that a full-body shot is too small to show. Found needed via tutorial runs.
+
+    CC5's views frame the SELECTED object (live, F-45): right after load_asset selected a hairstyle, "home" framed
+    the head, and after a pair of boxers, "left" framed the hips. So the character (`target`, else the one selected
+    character, else the first) is selected for the move and the previous selection is put back afterwards.
+    "all" frames the whole scene and leaves the selection alone.
     """
     cam = RLPy.RScene.GetCurrentCamera()
     if not cam:
@@ -1186,13 +1198,42 @@ def frame_camera(view: str = "face") -> dict[str, Any]:
     loc = getattr(RLPy, enum_name, None)
     if loc is None:
         return {"success": False, "error": f"Camera view '{view}' not available in this CC5 version"}
+    avatar = None
+    if target is not None:
+        avatar, error = _pick_target_avatar(target, "camera")
+        if error:
+            return {"success": False, "error": error}
+    elif key != "all":
+        avatars = list(RLPy.RScene.GetAvatars())
+        if avatars:
+            selected_ids = {o.GetID() for o in (RLPy.RScene.GetSelectedObjects() or [])}
+            selected = [a for a in avatars if a.GetID() in selected_ids]
+            # Several selected characters: frame the first, rather than refuse a camera move.
+            avatar = selected[0] if len(selected) == 1 else avatars[0]
+    previous = list(RLPy.RScene.GetSelectedObjects() or []) if avatar is not None else []
     try:
+        if avatar is not None:
+            RLPy.RScene.ClearSelectObjects()
+            RLPy.RScene.SelectObject(avatar)
         cam.SetCameraLocation(loc)
         if hasattr(RLPy.RGlobal, "ForceViewportUpdate"):
             RLPy.RGlobal.ForceViewportUpdate()
-        return {"success": True, "view": key, "camera": cam.GetName()}
+        result: dict[str, Any] = {"success": True, "view": key, "camera": cam.GetName()}
+        if avatar is not None:
+            result["framed"] = avatar.GetName()
+        return result
     except Exception as e:
         return {"success": False, "error": str(e)}
+    finally:
+        if avatar is not None:
+            try:
+                RLPy.RScene.ClearSelectObjects()
+                if len(previous) == 1:
+                    RLPy.RScene.SelectObject(previous[0])
+                elif previous:
+                    RLPy.RScene.SelectObjects(previous)
+            except Exception as e:
+                print(f"[CC5 MCP Bridge] frame_camera: restoring the selection failed: {e}")
 
 
 # --- Light Control ---
@@ -2054,6 +2095,22 @@ BROWSE_TRUNCATED = f"(truncated: more than {MAX_BROWSE_RESULTS} files matched; o
 MAX_BROWSE_FOLDERS = 500
 
 
+# Live CC5 5.13: _WrinkleMasks resolves to "$/Others/Skin Textures/Wrinkle References/Wrinkle Mask", a folder the
+# install does not have; the wrinkle images (Set 1-1_Brow_Raise.png ...) sit in its parent (F-43).
+_BROWSE_PARENT_FALLBACK = {"wrinkle_mask"}
+
+
+def _existing_or_parent(folder: str) -> str:
+    """The folder if it holds files or subfolders, else its parent ('$/a/b' -> '$/a')."""
+    try:
+        if RLPy.RApplication.GetContentFilesInFolder(folder) or RLPy.RApplication.GetContentFoldersInFolder(folder):
+            return folder
+    except Exception:
+        pass
+    parent = folder.rstrip("/").rsplit("/", 1)[0]
+    return parent if parent and parent != "$" else folder
+
+
 def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[str]:
     """Browse available content files by category. Returns file paths.
 
@@ -2074,15 +2131,22 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
     words = [w for w in str(query or "")[:200].lower().split() if w]
     # Map advertised folder-type keys to valid CC5.1 EContentRootFolder enum names.
     # Only enums that actually exist in this build are kept (hasattr-guarded below).
-    enum_candidates = {
-        "cloth_upper": "EContentRootFolder_Upper",
-        "cloth_lower": "EContentRootFolder_Lower",
+    # A category may read several folders (live CC5 5.13 GetDefaultContentFolder, F-41/F-42):
+    # _Upper / _Lower are $/Actor/Upper and $/Actor/Lower (body folders, empty), not clothing; the clothing folders
+    # are $/Cloth/Shirts, Coats, Pants, Skirts, Underwear, Gloves, Others and Full-Body. _Head / _Torso / _Arm / _Leg
+    # are $/Accessory/Head, Torso, Arm and Leg; _AccessoryOthers is $/Accessory/Others (props such as a gun or bow).
+    enum_candidates: dict[str, Any] = {
+        "cloth_upper": ("EContentRootFolder_Shirts", "EContentRootFolder_Coats"),
+        "cloth_lower": ("EContentRootFolder_Pants", "EContentRootFolder_Skirts"),
+        "underwear": "EContentRootFolder_Underwear",
+        "gloves": "EContentRootFolder_Gloves",
+        # Socks and outfit sets (Aaron, Mila, Light Armor ...).
+        "cloth_other": "EContentRootFolder_ClothOthers",
         "shoes": "EContentRootFolder_Shoes",
-        # No _AccessoryHead / _AccessoryBody enum exists — both map to the only
-        # accessory folder enum CC5.1 exposes.
-        "accessory_head": "EContentRootFolder_AccessoryOthers",
-        "accessory_body": "EContentRootFolder_AccessoryOthers",
-        # 'cloth' is an alias for the full-body clothing folder.
+        "accessory_head": "EContentRootFolder_Head",
+        "accessory_body": ("EContentRootFolder_Torso", "EContentRootFolder_Arm", "EContentRootFolder_Leg"),
+        "accessory_other": "EContentRootFolder_AccessoryOthers",
+        # 'cloth' is the full-body clothing folder.
         "cloth": "EContentRootFolder_FullBody",
         # Animation / scene content — all loadable via load_asset (.cc*/.i*).
         # pose/motion may be empty on a base install (no pose packs) but resolve
@@ -2108,10 +2172,12 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
         # Eye presets (.ccEye), e.g. "_Green CH1 Eyes".
         "eye": "EContentRootFolder_Eye",
     }
-    folder_map: dict[str, Any] = {}
-    for key, attr_name in enum_candidates.items():
-        if hasattr(RLPy, attr_name):
-            folder_map[key] = getattr(RLPy, attr_name)
+    folder_map: dict[str, list[Any]] = {}
+    for key, attr_names in enum_candidates.items():
+        names = (attr_names,) if isinstance(attr_names, str) else attr_names
+        enums = [getattr(RLPy, n) for n in names if hasattr(RLPy, n)]
+        if enums:
+            folder_map[key] = enums
 
     if folder_type not in folder_map:
         available = list(folder_map.keys()) if folder_map else list(enum_candidates.keys())
@@ -2121,19 +2187,20 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
         return [f"Content browsing not available for '{folder_type}' in this CC5 version"]
 
     try:
-        root_folder = folder_map[folder_type]
-
-        # Collect candidate '$/...' folder STRINGS: bundled templates + user custom.
+        # Collect candidate '$/...' folder STRINGS: bundled templates + user custom, for each enum.
         # (Never pass the enum to GetContentFilesInFolder — it expects the string.)
         folder_strs: list[str] = []
-        for getter in ("GetDefaultContentFolder", "GetCustomContentFolder"):
-            if hasattr(RLPy.RApplication, getter):
-                try:
-                    fs = getattr(RLPy.RApplication, getter)(root_folder)
-                    if fs:
-                        folder_strs.append(fs)
-                except Exception:
-                    pass
+        for root_folder in folder_map[folder_type]:
+            for getter in ("GetDefaultContentFolder", "GetCustomContentFolder"):
+                if hasattr(RLPy.RApplication, getter):
+                    try:
+                        fs = getattr(RLPy.RApplication, getter)(root_folder)
+                        if fs and fs not in folder_strs:
+                            folder_strs.append(fs)
+                    except Exception:
+                        pass
+        if folder_type in _BROWSE_PARENT_FALLBACK:
+            folder_strs = [_existing_or_parent(fs) for fs in folder_strs]
 
         if not folder_strs:
             return [f"No content folder resolved for '{folder_type}'"]
@@ -2184,14 +2251,6 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
 
 # --- Convenience Color Shortcuts ---
 
-# Known mesh/material names for CC5 standard avatars
-_EYE_TARGETS = [
-    ("CC_Base_Eye", "Std_Eye_R"),
-    ("CC_Base_Eye", "Std_Eye_L"),
-    ("CC_Base_Eye", "Eye_R"),
-    ("CC_Base_Eye", "Eye_L"),
-]
-
 _HAIR_MESH_PREFIXES = ["CC_Base_Hair", "Hair", "hair"]
 
 # Lip color must target a DEDICATED lip/mouth material only. The CC3+ base shares the
@@ -2240,32 +2299,134 @@ def _apply_diffuse_color_to_targets(
             print(f"[CC5 MCP Bridge] AddDiffuseKey failed for {mesh_name}/{material_name}: {e}")
     return applied
 
+# The iris colour CC5 shows comes from the Digital Human Eye shader on the corneas (live CC5 5.13, CC4 Kevin):
+# Std_Cornea_R/L carry "Iris Color" and "Iris Inner Color" (0-1 RGB). Std_Eye_R/L are plain PBR, and a diffuse
+# colour there had no visible effect (F-10).
+_IRIS_TARGETS = [("CC_Base_Eye", "Std_Cornea_R"), ("CC_Base_Eye", "Std_Cornea_L")]
+_IRIS_PARAMETERS = ("Iris Color", "Iris Inner Color")
+
+
+def _set_shader_values(avatar: Any, mat_comp: Any, targets: list[tuple[str, str]], parameters: dict[str, list[float]],
+                       action: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Set shader parameters on several materials as ONE undo step.
+
+    Only (material, parameter) pairs that exist with the same value count are written (a wrong arity can crash
+    SWIG). Returns (applied, skipped): applied = [{mesh, material, parameter, values}] read back from CC5.
+    """
+    plan: list[tuple[str, str, str, list[float]]] = []
+    skipped: list[str] = []
+    for mesh, material in targets:
+        try:
+            names = set(mat_comp.GetShaderParameterNames(mesh, material) or [])
+        except Exception:
+            names = set()
+        for parameter, values in parameters.items():
+            if parameter not in names:
+                skipped.append(f"{mesh}/{material}: no '{parameter}'")
+                continue
+            try:
+                current = list(mat_comp.GetShaderParameter(mesh, material, parameter))
+            except Exception as e:
+                skipped.append(f"{mesh}/{material}: '{parameter}' unreadable ({e})")
+                continue
+            if len(current) != len(values):
+                skipped.append(f"{mesh}/{material}: '{parameter}' expects {len(current)} value(s)")
+                continue
+            plan.append((mesh, material, parameter, values))
+    applied: list[dict[str, Any]] = []
+    if not plan:
+        return applied, skipped
+    RLPy.RGlobal.BeginAction(action)
+    try:
+        for mesh, material, parameter, values in plan:
+            mat_comp.SetShaderParameter(mesh, material, parameter, values)
+        RLPy.RGlobal.ObjectModified(avatar, _EOMTYPE_MATERIAL)
+    finally:
+        RLPy.RGlobal.EndAction()
+    for mesh, material, parameter, values in plan:
+        try:
+            read = [round(float(v), 4) for v in mat_comp.GetShaderParameter(mesh, material, parameter)]
+        except Exception:
+            read = values
+        applied.append({"mesh": mesh, "material": material, "parameter": parameter, "values": read})
+    return applied, skipped
+
+
 def set_eye_color(r: float, g: float, b: float) -> dict[str, Any]:
-    """Set eye color (convenience shortcut). RGB 0.0-1.0."""
+    """Set the iris colour of both eyes (convenience shortcut). RGB 0.0-1.0, one undo step.
+
+    Writes "Iris Color" and "Iris Inner Color" on the cornea materials (_IRIS_TARGETS). A character without
+    those shader parameters is refused rather than given a colour that does not show.
+    """
     avatar = get_first_avatar()
     if not avatar:
         return {"success": False, "error": "No avatar in scene"}
     mat_comp = avatar.GetMaterialComponent()
     if not mat_comp:
         return {"success": False, "error": "No material component"}
-    r = max(0.0, min(1.0, r))
-    g = max(0.0, min(1.0, g))
-    b = max(0.0, min(1.0, b))
-    color = RLPy.RRgb(r, g, b)
-    time = RLPy.RGlobal.GetTime()
-    key = RLPy.RKey()
-    key.SetTime(time)
-    applied: list[str] = []
+    rgb = [max(0.0, min(1.0, float(v))) for v in (r, g, b)]
+    applied, skipped = _set_shader_values(avatar, mat_comp, _IRIS_TARGETS,
+                                          {p: rgb for p in _IRIS_PARAMETERS}, "Set Eye Color")
+    if not applied:
+        return {"success": False,
+                "error": "This character's eyes have no 'Iris Color' shader parameter (Digital Human Eye shader on "
+                         "Std_Cornea_R/L), so a colour would not show. Load an eye preset instead: "
+                         "browse_content('eye') or search_content, then load_asset.",
+                "skipped": skipped}
+    result: dict[str, Any] = {"success": True,
+                              "applied_to": sorted({f"{a['mesh']}/{a['material']}" for a in applied}),
+                              "values": applied}
+    if skipped:
+        result["skipped"] = skipped
+    return result
+
+
+# Skin is split over these materials on CC_Base_Body; a shader change on one leaves a seam (live: roughness on the
+# head alone showed a line at the shoulders, brightness at the neck; F-38).
+_SKIN_MESH = "CC_Base_Body"
+_SKIN_MATERIAL_PREFIX = "Std_Skin_"
+
+
+def set_skin_shader(parameter_name: str, values: list[float]) -> dict[str, Any]:
+    """Set one Digital Human skin shader parameter on every skin material (Std_Skin_Head/Body/Arm/Leg) at once.
+
+    E.g. 'Original Roughness Strength' (lower = shinier: CC5 skin shine is PBR roughness, not the legacy
+    glossiness/specular weights) or '_BaseColorMap Brightness'. One undo step.
+    """
+    if not parameter_name or not isinstance(parameter_name, str) or len(parameter_name) > 200:
+        return {"success": False, "error": "parameter_name is required"}
+    if not isinstance(values, list) or not values or len(values) > 16:
+        return {"success": False, "error": "values must be a non-empty list of numbers"}
     try:
-        RLPy.RGlobal.BeginAction("Set Eye Color")
-        applied = _apply_diffuse_color_to_targets(mat_comp, _EYE_TARGETS, key, color)
-        if applied:
-            RLPy.RGlobal.ObjectModified(avatar, _EOMTYPE_MATERIAL)
-    finally:
-        RLPy.RGlobal.EndAction()
-    if applied:
-        return {"success": True, "applied_to": applied}
-    return {"success": False, "error": "Could not find eye materials. Use get_material_info to discover mesh/material names."}
+        values = [float(v) for v in values]
+    except (TypeError, ValueError):
+        return {"success": False, "error": "values must all be numbers"}
+    if any(v != v or abs(v) == float("inf") for v in values):
+        return {"success": False, "error": "values must be finite numbers"}
+    avatar = get_first_avatar()
+    if not avatar:
+        return {"success": False, "error": "No avatar in scene"}
+    mat_comp = avatar.GetMaterialComponent()
+    if not mat_comp:
+        return {"success": False, "error": "No material component"}
+    try:
+        materials = [m for m in (mat_comp.GetMaterialNames(_SKIN_MESH) or []) if m.startswith(_SKIN_MATERIAL_PREFIX)]
+    except Exception as e:
+        return {"success": False, "error": f"Could not read the skin materials: {e}"}
+    if not materials:
+        return {"success": False, "error": f"No {_SKIN_MATERIAL_PREFIX}* materials on {_SKIN_MESH}"}
+    applied, skipped = _set_shader_values(avatar, mat_comp, [(_SKIN_MESH, m) for m in materials],
+                                          {parameter_name: values}, "Set Skin Shader")
+    if not applied:
+        return {"success": False,
+                "error": f"No skin material has '{parameter_name}' with {len(values)} value(s). Use "
+                         "get_shader_parameters on CC_Base_Body / Std_Skin_Head to see the names.",
+                "skipped": skipped}
+    result: dict[str, Any] = {"success": True, "parameter": parameter_name,
+                              "materials": [a["material"] for a in applied], "values": applied[0]["values"]}
+    if skipped:
+        result["skipped"] = skipped
+    return result
 
 
 def set_skin_color(r: float, g: float, b: float) -> dict[str, Any]:
@@ -4138,7 +4299,7 @@ def _auto_patch_server() -> None:
         "redo":                  lambda p: _self.redo(),
         "get_camera_info":       lambda p: _self.get_camera_info(),
         "set_camera_focal_length": lambda p: _self.set_camera_focal_length(float(p["focal_length"])),
-        "frame_camera":          lambda p: _self.frame_camera(p.get("view", "face")),
+        "frame_camera":          lambda p: _self.frame_camera(p.get("view", "face"), p.get("target")),
         "get_lights":            lambda p: _self.get_lights(),
         "set_light_color":       lambda p: _self.set_light_color(p["light_name"], float(p["r"]), float(p["g"]), float(p["b"])),
         "get_light_info":        lambda p: _self.get_light_info(p["light_name"]),

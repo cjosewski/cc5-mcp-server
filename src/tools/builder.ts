@@ -13,7 +13,8 @@ import { applyRecipe, formatReport, RecipeSchema, HEADSHOT_DISABLED } from "../r
 import { claimScene } from "../scene-lock.js";
 
 export const SEARCH_FOLDERS = [
-  "cloth", "cloth_upper", "cloth_lower", "shoes", "accessory_head", "character",
+  "cloth", "cloth_upper", "cloth_lower", "underwear", "gloves", "cloth_other", "shoes",
+  "accessory_head", "accessory_body", "accessory_other", "character",
   "pose", "expression", "makeup_full", "makeup_foundation", "makeup_eye", "makeup_lip",
   "image_layer", "skingen", "texture", "hair", "eye",
 ];

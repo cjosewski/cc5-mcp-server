@@ -8,8 +8,15 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import type { CC5Dialog } from "../types.js";
+import type { CC5Dialog, DialogResult } from "../types.js";
 import { bridgeCall } from "../util.js";
+
+/** One line per crash-recovery prompt the plugin answered by itself (CC5_RECOVERY_ANSWER), so it is never silent. */
+export function formatRecoveryAnswers(r: Pick<DialogResult, "recovery_answered">): string {
+  const answers = r.recovery_answered ?? [];
+  return answers.map((a) => `CC5's "Unsaved project data found" prompt was answered ${a.button} at ${a.time}` +
+    (a.button.toLowerCase() === "cancel" ? " (the auto-saved changes were discarded)." : " (the auto-saved changes were restored).")).join("\n");
+}
 
 export function formatDialog(dialog: CC5Dialog | null | undefined, waitingJob?: string | null): string {
   if (!dialog) return "No CC5 dialog is open.";
@@ -27,13 +34,15 @@ export function registerDialogTools(server: McpServer, bridge: CC5Bridge) {
     {},
     async () => bridgeCall(
       () => bridge.getDialog(),
-      (r) => r.success ? formatDialog(r.dialog, r.waiting_job) : `Failed: ${r.error}`,
+      (r) => r.success
+        ? [formatDialog(r.dialog, r.waiting_job), formatRecoveryAnswers(r)].filter(Boolean).join("\n")
+        : `Failed: ${r.error}`,
     )
   );
 
   server.tool(
     "answer_cc5_dialog",
-    "Click a button in the dialog CC5 has open, by its label (case ignored). Rules: answer a plain confirmation of exactly what the user asked for yourself (e.g. 'Delete Kevin?' after the user said delete Kevin) and tell them. For a real choice (e.g. Replace vs Material Only, overwrite vs keep) first show the user the question and buttons with your recommendation and let them pick. Never answer CC5's \"Unsaved project data found\" prompt: it is refused; the user answers it in CC5. After answering, read the waiting command's result with job_status.",
+    "Click a button in the dialog CC5 has open, by its label (case ignored). Rules: answer a plain confirmation of exactly what the user asked for yourself (e.g. 'Delete Kevin?' after the user said delete Kevin) and tell them. For a real choice (e.g. Replace vs Material Only, overwrite vs keep) first show the user the question and buttons with your recommendation and let them pick. CC5's \"Unsaved project data found\" crash-recovery prompt: a CC5 started by Claude's launcher (CC5_RECOVERY_ANSWER=cancel) answers it by itself and get_cc5_dialog reports it; only that configured button is accepted here. A CC5 the user started by hand: it is refused, and the user answers it in CC5. After answering, read the waiting command's result with job_status.",
     {
       button: z.string().min(1).max(100).describe("The button's label exactly as get_cc5_dialog lists it, e.g. 'Material Only'"),
       expect: z.string().min(1).max(500).optional()

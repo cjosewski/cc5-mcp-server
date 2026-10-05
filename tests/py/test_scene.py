@@ -250,5 +250,180 @@ class LoadAssetTargetTest(unittest.TestCase):
             self.assertIn("LoadFile reported an error status", r["error"])
 
 
+
+class FakeVec:
+    def __init__(self, x, y, z):
+        self.x, self.y, self.z = x, y, z
+
+
+class FakeTransform:
+    """RLPy.RTransform(scale, rotation, position), read back with T() / S() / R()."""
+
+    def __init__(self, scale=None, rot="rot", pos=None):
+        self._s = scale or FakeVec(1.0, 1.0, 1.0)
+        self._r = rot
+        self._t = pos or FakeVec(0.0, 0.0, 0.0)
+
+    def T(self):
+        return self._t
+
+    def S(self):
+        return self._s
+
+    def R(self):
+        return self._r
+
+
+class FakeTransformControl:
+    def __init__(self, applies=True):
+        self.value = FakeTransform()
+        self.applies = applies
+        self.set_calls = []
+
+    def GetValue(self, time, out):
+        out._t, out._s, out._r = self.value._t, self.value._s, self.value._r
+
+    def SetValue(self, time, tr):
+        self.set_calls.append(tr)
+        if self.applies:
+            self.value = tr
+
+
+class DeleteAndPlaceTest(unittest.TestCase):
+    """delete_object and set_object_transform (flight 01, F-48 / F-49)."""
+
+    def setUp(self):
+        self.rl = _support.install_fake_rlpy()
+        self.s = _support.fresh_import("cc5_scene")
+        self.rl.EObjectType_Cloth = "cloth"
+        self.rl.RTransform.side_effect = lambda *a: FakeTransform(*a)
+        self.rl.RVector3.side_effect = lambda x, y, z: FakeVec(x, y, z)
+        self.boxers = _obj("Boxers", 11, "cloth")
+        self.kevin = _avatar("Kevin", 1, clothes=[self.boxers])
+        self.key = _obj("Key", 21, "spot")
+        self.box = _obj("Box_001", 31, "prop")
+        self.camera = _obj("Preview Camera", 41, "camera")
+        self.scene = FakeScene(self.rl, avatars=[self.kevin], props=[self.box], lights=[self.key],
+                               cameras=[self.camera])
+        self.control = FakeTransformControl()
+        self.box.GetControl.return_value = self.control
+
+        def remove(obj):
+            for objs in self.scene.by_type.values():
+                if obj in objs:
+                    objs.remove(obj)
+            for avatar in self.scene.avatars:
+                clothes = avatar.GetClothes.return_value
+                if obj in clothes:
+                    clothes.remove(obj)
+
+        self.rl.RScene.RemoveObject.side_effect = remove
+
+    def test_deletes_a_prop_as_one_undo_step(self):
+        r = self.s.delete_object(["Box_001"])
+        self.assertTrue(r["success"], r)
+        self.assertEqual([d["name"] for d in r["deleted"]], ["Box_001"])
+        self.rl.RScene.RemoveObject.assert_called_once_with(self.box)
+        self.rl.RGlobal.BeginAction.assert_called_once_with("Delete Object")
+        self.rl.RGlobal.EndAction.assert_called_once()
+
+    def test_deletes_lights_and_worn_items_together(self):
+        r = self.s.delete_object(["Key", "Boxers"])
+        self.assertTrue(r["success"], r)
+        self.assertEqual(self.rl.RScene.RemoveObject.call_count, 2)
+
+    def test_unknown_or_ambiguous_names_delete_nothing(self):
+        r = self.s.delete_object(["Box_001", "nope"])
+        self.assertFalse(r["success"])
+        self.assertIn("Object not found: nope", r["error"])
+        self.scene.by_type["prop"].append(_obj("Key", 22, "prop"))
+        r = self.s.delete_object(["Key"])
+        self.assertIn("more than one", r["error"])
+        self.rl.RScene.RemoveObject.assert_not_called()
+
+    def test_characters_and_the_camera_are_refused(self):
+        r = self.s.delete_object(["Kevin"])
+        self.assertIn("delete_avatar", r["error"])
+        r = self.s.delete_object(["Preview Camera"])
+        self.assertIn("camera", r["error"])
+        self.rl.RScene.RemoveObject.assert_not_called()
+
+    def test_a_character_is_refused_even_when_its_type_cannot_be_read(self):
+        # Review: refusing by GetType() failed open (an unreadable type is "Unknown", not "Avatar").
+        self.kevin.GetType.side_effect = RuntimeError("SWIG")
+        r = self.s.delete_object(["Kevin"])
+        self.assertIn("delete_avatar", r["error"])
+        r = self.s.set_object_transform("Boxers", position=[0, 0, 0])
+        self.assertIn("worn by a character", r["error"])
+        self.rl.RScene.RemoveObject.assert_not_called()
+
+    def test_a_child_already_removed_with_its_parent_is_not_removed_again(self):
+        # A parent's removal can take its children with it; RemoveObject must never get a handle that is gone.
+        child = _obj("Lid", 32, "prop")
+        self.scene.by_type["prop"].append(child)
+
+        def remove(obj):
+            for o in (obj, child) if obj is self.box else (obj,):
+                if o in self.scene.by_type["prop"]:
+                    self.scene.by_type["prop"].remove(o)
+
+        self.rl.RScene.RemoveObject.side_effect = remove
+        r = self.s.delete_object(["Box_001", "Lid"])
+        self.assertTrue(r["success"], r)
+        self.rl.RScene.RemoveObject.assert_called_once_with(self.box)
+
+    def test_an_item_cc5_kept_is_reported(self):
+        self.rl.RScene.RemoveObject.side_effect = None
+        r = self.s.delete_object(["Box_001"])
+        self.assertFalse(r["success"])
+        self.assertIn("CC5 did not delete: Box_001", r["error"])
+
+    def test_bad_names_argument_is_refused(self):
+        for names in ([], "Box_001", None, [""]):
+            with self.subTest(names=names):
+                self.assertFalse(self.s.delete_object(names)["success"])
+
+    def test_moves_and_scales_a_prop_keeping_its_rotation(self):
+        # Live: Box_001 moved from 0 to x 150 cm and scaled 1.5; one undo put it back.
+        r = self.s.set_object_transform("Box_001", position=[150, 0, 0], scale=1.5)
+        self.assertTrue(r["success"], r)
+        self.assertEqual(r["before"], {"position": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]})
+        self.assertEqual(r["after"], {"position": [150.0, 0.0, 0.0], "scale": [1.5, 1.5, 1.5]})
+        self.assertEqual(self.control.set_calls[0].R(), "rot")
+        self.rl.RGlobal.BeginAction.assert_called_once_with("Set Object Transform")
+
+    def test_position_only_keeps_the_scale(self):
+        self.control.value = FakeTransform(FakeVec(2.0, 2.0, 2.0))
+        r = self.s.set_object_transform("Box_001", position=[10, 20, 30])
+        self.assertTrue(r["success"], r)
+        self.assertEqual(r["after"]["scale"], [2.0, 2.0, 2.0])
+
+    def test_a_transform_cc5_ignored_is_reported(self):
+        self.control.applies = False
+        r = self.s.set_object_transform("Box_001", position=[150, 0, 0])
+        self.assertFalse(r["success"])
+        self.assertIn("did not apply the position", r["error"])
+
+    def test_bad_values_are_refused_before_cc5(self):
+        cases = ({}, {"position": [1, 2]}, {"position": ["a", 0, 0]}, {"position": [1e9, 0, 0]},
+                 {"scale": 0}, {"scale": [1, 1, True]}, {"position": [float("nan"), 0, 0]})
+        for kwargs in cases:
+            with self.subTest(kwargs=kwargs):
+                self.assertFalse(self.s.set_object_transform("Box_001", **kwargs)["success"])
+        self.assertEqual(self.control.set_calls, [])
+
+    def test_worn_items_and_the_camera_cannot_be_placed(self):
+        r = self.s.set_object_transform("Boxers", position=[0, 0, 0])
+        self.assertIn("moves with it", r["error"])
+        r = self.s.set_object_transform("Preview Camera", position=[0, 0, 0])
+        self.assertIn("frame_camera", r["error"])
+
+    def test_reads_a_transform(self):
+        self.control.value = FakeTransform(FakeVec(1.0, 1.0, 1.0), "rot", FakeVec(12.345, 0.0, -3.0))
+        r = self.s.get_object_transform("Box_001")
+        self.assertEqual(r, {"success": True, "name": "Box_001", "position": [12.35, 0.0, -3.0],
+                             "scale": [1.0, 1.0, 1.0]})
+
+
 if __name__ == "__main__":
     unittest.main()

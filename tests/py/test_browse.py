@@ -108,5 +108,80 @@ class BrowseSearchTest(unittest.TestCase):
         self.assertEqual(browse.call_args_list, [mock.call("shoes", "combat boots"), mock.call("shoes", "")])
 
 
+
+class BrowseFolderMapTest(unittest.TestCase):
+    """Each category reads the CC5 clothing / accessory folders it names (live CC5 5.13 enums, F-41 to F-43)."""
+
+    # Live GetDefaultContentFolder results; the fake RLPy gives each enum a distinct object.
+    LIVE = {"Shirts": "$/Cloth/Shirts", "Coats": "$/Cloth/Coats", "Pants": "$/Cloth/Pants",
+            "Skirts": "$/Cloth/Skirts", "Underwear": "$/Cloth/Underwear", "Gloves": "$/Cloth/Gloves",
+            "ClothOthers": "$/Cloth/Others", "FullBody": "$/Cloth/Full-Body", "Head": "$/Accessory/Head",
+            "Torso": "$/Accessory/Torso", "Arm": "$/Accessory/Arm", "Leg": "$/Accessory/Leg",
+            "AccessoryOthers": "$/Accessory/Others", "Upper": "$/Actor/Upper", "Lower": "$/Actor/Lower",
+            "WrinkleMasks": "$/Others/Skin Textures/Wrinkle References/Wrinkle Mask"}
+
+    def setUp(self):
+        self.rl = _support.install_fake_rlpy()
+        self.api = _support.fresh_import("cc5_api")
+        by_enum = {}
+        for name, folder in self.LIVE.items():
+            enum = object()
+            setattr(self.rl, f"EContentRootFolder_{name}", enum)
+            by_enum[id(enum)] = folder
+        self.rl.RApplication.GetDefaultContentFolder.side_effect = lambda e: by_enum.get(id(e), "")
+        self.rl.RApplication.GetCustomContentFolder.return_value = ""
+        self.read = []
+        self.files = {}
+        self.subfolders = {}
+
+        def files_in(folder):
+            self.read.append(folder)
+            return self.files.get(folder, [])
+
+        self.rl.RApplication.GetContentFilesInFolder.side_effect = files_in
+        self.rl.RApplication.GetContentFoldersInFolder.side_effect = lambda f: self.subfolders.get(f, [])
+
+    def _folders(self, category):
+        self.read.clear()
+        self.api.browse_content(category)
+        return list(dict.fromkeys(self.read))
+
+    def test_upper_and_lower_clothing_read_the_clothing_folders(self):
+        # Live: cloth_upper read $/Actor/Upper and listed nothing, although Shirts and Coats hold 41 files.
+        self.assertEqual(self._folders("cloth_upper"), ["$/Cloth/Shirts", "$/Cloth/Coats"])
+        self.assertEqual(self._folders("cloth_lower"), ["$/Cloth/Pants", "$/Cloth/Skirts"])
+
+    def test_accessories_read_the_body_part_folders(self):
+        # Live: accessory_head listed a gun, a bow and an axe from Accessory/Others, never the hats.
+        self.assertEqual(self._folders("accessory_head"), ["$/Accessory/Head"])
+        self.assertEqual(self._folders("accessory_body"), ["$/Accessory/Torso", "$/Accessory/Arm", "$/Accessory/Leg"])
+        self.assertEqual(self._folders("accessory_other"), ["$/Accessory/Others"])
+
+    def test_new_clothing_categories(self):
+        self.assertEqual(self._folders("underwear"), ["$/Cloth/Underwear"])
+        self.assertEqual(self._folders("gloves"), ["$/Cloth/Gloves"])
+        self.assertEqual(self._folders("cloth_other"), ["$/Cloth/Others"])
+        self.assertEqual(self._folders("cloth"), ["$/Cloth/Full-Body"])
+
+    def test_files_from_every_folder_of_a_category_are_listed(self):
+        self.files = {"$/Cloth/Shirts": ["C:/t/Basic T-shirts.ccCloth"], "$/Cloth/Coats": ["C:/t/Long slim coat.ccCloth"]}
+        self.assertEqual(self.api.browse_content("cloth_upper"),
+                         ["C:/t/Basic T-shirts.ccCloth", "C:/t/Long slim coat.ccCloth"])
+
+    def test_missing_wrinkle_mask_folder_falls_back_to_its_parent(self):
+        # Live: the Wrinkle Mask folder does not exist; the 18 wrinkle images sit in Wrinkle References.
+        self.files = {"$/Others/Skin Textures/Wrinkle References": ["C:/w/Set 1-1_Brow_Raise.png"]}
+        self.assertEqual(self.api.browse_content("wrinkle_mask"), ["C:/w/Set 1-1_Brow_Raise.png"])
+
+    def test_existing_wrinkle_mask_folder_is_used(self):
+        self.files = {"$/Others/Skin Textures/Wrinkle References/Wrinkle Mask": ["C:/w/Mask.png"]}
+        self.assertEqual(self.api.browse_content("wrinkle_mask"), ["C:/w/Mask.png"])
+
+    def test_other_categories_never_fall_back_to_the_parent(self):
+        # An empty clothing folder stays empty: its parent ($/Cloth) would list every garment.
+        self.files = {"$/Cloth": ["C:/c/Everything.ccCloth"]}
+        self.assertEqual(self.api.browse_content("gloves"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

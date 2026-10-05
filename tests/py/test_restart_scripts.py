@@ -41,8 +41,23 @@ class RestartScriptsTest(unittest.TestCase):
         self.assertLess(refusal_at, text.index("Stop-Process"))
         self.assertIn("Unsaved work is lost", text[refusal_at:text.index("Stop-Process")])
 
-    def test_restart_tells_the_user_to_answer_the_recovery_prompt(self):
-        self.assertIn(RECOVERY_GUIDANCE, read("cc5-restart.ps1"))
+    def test_restart_tells_the_user_to_answer_the_recovery_prompt_when_asked_to(self):
+        text = read("cc5-restart.ps1")
+        self.assertIn(RECOVERY_GUIDANCE, text)
+        self.assertIn('if ($RecoveryAnswer -eq "ask")', text)
+
+    def test_restart_has_the_plugin_answer_the_recovery_prompt_by_default(self):
+        # Chad, 2026-10-05 (F-52): when Claude launches CC5, "Unsaved project data found" is answered Cancel.
+        text = read("cc5-restart.ps1")
+        self.assertIn('[ValidateSet("cancel", "ok", "ask")]', text)
+        self.assertIn('[string]$RecoveryAnswer = "cancel"', text)
+        self.assertLess(text.index("$env:CC5_RECOVERY_ANSWER = $RecoveryAnswer"), text.index("Start-Process $cc5Path"))
+
+    def test_force_leaves_the_recovery_prompt_to_the_user_unless_told_otherwise(self):
+        # -Force kills CC5: the recovery prompt is then the only way back to that work (review of F-52).
+        text = read("cc5-restart.ps1")
+        self.assertIn('if ($Force -and -not $PSBoundParameters.ContainsKey("RecoveryAnswer")) {', text)
+        self.assertLess(text.index('$RecoveryAnswer = "ask"'), text.index("Start-Process $cc5Path"))
 
     def test_launch_script_does_not_restart_cc5_and_prints_the_guidance(self):
         text = read("launch_cc5_for_test.ps1")

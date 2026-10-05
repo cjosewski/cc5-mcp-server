@@ -103,7 +103,7 @@ export function registerMaterialTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "set_material_glossiness",
-    "Set the glossiness of a material (0.0 = matte, 1.0 = glossy). Use get_material_info first to find valid mesh and material names.",
+    "Set the legacy (non-PBR) glossiness weight of a material (0.0 = matte, 1.0 = glossy). CC5 materials are PBR: on Digital Human skin this barely shows. To make skin shinier or more matte, use set_skin_shader with 'Original Roughness Strength' (lower = shinier) instead. Use get_material_info first to find valid mesh and material names.",
     {
       mesh_name: z.string().max(256).describe("Mesh name (from get_material_info)"),
       material_name: z.string().max(256).describe("Material name (from get_material_info)"),
@@ -119,7 +119,7 @@ export function registerMaterialTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "set_material_specular",
-    "Set the specular weight of a material (0.0 = no specular, 1.0 = full specular). Use get_material_info first to find valid mesh and material names.",
+    "Set the legacy (non-PBR) specular weight of a material (0.0 = no specular, 1.0 = full specular). It only changes the highlight, barely visible on Digital Human skin, and live CC5 5.13 sometimes kept an earlier value: read it back with get_material_properties. For skin shine use set_skin_shader ('Original Roughness Strength', lower = shinier). Use get_material_info first to find valid mesh and material names.",
     {
       mesh_name: z.string().max(256).describe("Mesh name (from get_material_info)"),
       material_name: z.string().max(256).describe("Material name (from get_material_info)"),

@@ -63,4 +63,20 @@ export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
     async ({ strength }) => bridgeCall(() => bridge.setWrinkleStrength(strength),
       (r) => r.success ? `Wrinkle strength set to ${strength}` : `Failed: ${r.error}`)
   );
+
+  server.tool(
+    "set_skin_shader",
+    "Set one Digital Human skin shader parameter on all four skin materials at once (CC_Base_Body / Std_Skin_Head, _Body, _Arm, _Leg); setting it on one material leaves a visible seam. Skin shine is PBR roughness: 'Original Roughness Strength' (lower = shinier, Kevin starts at 0.85), not set_material_glossiness/specular. Other examples: '_BaseColorMap Brightness', 'Micro Roughness Scale'. get_shader_parameters on CC_Base_Body / Std_Skin_Head lists the names and how many values each takes. One undo step; check with capture_viewport.",
+    {
+      parameter_name: z.string().min(1).max(200).describe("Shader parameter name, e.g. 'Original Roughness Strength'"),
+      values: z.array(z.number()).min(1).max(16).describe("New value(s), as many as the parameter has, e.g. [0.4]"),
+    },
+    async ({ parameter_name, values }) => bridgeCall(() => bridge.setSkinShader(parameter_name, values),
+      (r) => r.success
+        ? [`${parameter_name} set to [${(r.values ?? values).join(", ")}] on: ${(r.materials ?? []).join(", ")}`,
+           ...((r.skipped ?? []).length
+             ? [`WARNING: not set on every skin material, so a seam may show. Skipped: ${(r.skipped ?? []).join("; ")}`]
+             : [])].join("\n")
+        : `Failed: ${r.error}`)
+  );
 }

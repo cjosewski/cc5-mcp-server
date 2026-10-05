@@ -46,13 +46,13 @@ def _check_server_health():
 
 ### Modal dialogs (queue guard)
 
-While CC5 shows a modal dialog, the 16 ms QTimer fires inside that dialog's nested event loop, so a command would run under the dialog: under the "Unsaved project data found" crash-recovery prompt that means before the user has decided whether the unsaved scene comes back, inside an event loop RLPy calls are not made for (CC5 crashes during FBX exports were traced to sessions that most likely had that prompt open). `process_command_queue` therefore leaves the next command queued while `_active_modal_dialog()` reports a dialog, and after `MODAL_WAIT_SECONDS` (5 s) fails it with the dialog's title and text. The actions in `MODAL_SAFE_ACTIONS` (the silent head-export steps, the export/mixer status reads and `exec_python`) still run. The plugin never answers the recovery prompt itself: keeping or discarding unsaved work is the user's choice.
+While CC5 shows a modal dialog, the 16 ms QTimer fires inside that dialog's nested event loop, so a command would run under the dialog: under the "Unsaved project data found" crash-recovery prompt that means before the user has decided whether the unsaved scene comes back, inside an event loop RLPy calls are not made for (CC5 crashes during FBX exports were traced to sessions that most likely had that prompt open). `process_command_queue` therefore leaves the next command queued while `_active_modal_dialog()` reports a dialog, and after `MODAL_WAIT_SECONDS` (5 s) fails it with the dialog's title and text. The actions in `MODAL_SAFE_ACTIONS` (the silent head-export steps, the export/mixer status reads and `exec_python`) still run. Who answers the recovery prompt is set when CC5 starts (Chad, 2026-10-05, flight 01 F-52: "Having Claude run this autonomously is part of the problem"): with `CC5_RECOVERY_ANSWER=cancel` (or `ok`) the dialog lane clicks that button as soon as the prompt appears (`_auto_answer_recovery`, only during the first `RECOVERY_WATCH_SECONDS`, only a prompt whose text was read), records it, and `get_cc5_dialog` reports it. `scripts/cc5-restart.ps1` (the launcher Claude uses) sets `cancel` by default (`-RecoveryAnswer ask|ok|cancel`). Unset, or any other value, is `ask`: the user answers it in CC5, as for a CC5 started by hand.
 
 ### Dialogs a command opens (dialog lane)
 
 CC5 often asks before doing what a command asked: a plain confirmation, or a choice (live: a second `.ccEye` load asked "The target object layer already exists ... Replace / Material Only / Cancel"). The command then waits inside that dialog's nested event loop. On each nested timer tick `_note_command_dialog` records the dialog (title, label text, buttons) in `_command_dialogs`; after `DIALOG_REPORT_SECONDS` (1 s) the waiting HTTP call returns 409 `{state: "waiting_for_dialog", job_id, dialog}` and the command's result goes to `_jobs` (read it with `job_status`). `get_dialog`/`answer_dialog` (`DIALOG_ACTIONS`) run on a separate `dialog_queue`, even while a command runs: they touch only Qt widgets, never RLPy. The lane and the dialog watch run on **their own 50 ms QTimer** (`main._dialog_timer` → `server.process_dialog_lane`): Qt never re-fires a timer while its own callback is still running, so the 16 ms command timer is silent while a command it started waits in a dialog (live: with one timer, neither the report nor `get_cc5_dialog` ran). A job waiting on a dialog reports it through `/jobs/status` (`dialog`, `dialog_message`), so recipe steps and job tools stop and show the question instead of "still running". A command's own progress window (a `QProgressDialog`, or a dialog whose only button is Cancel) is not treated as a question.
 
-`answer_dialog` fails closed: it refuses the recovery prompt wherever its words sit (title or any label), refuses a dialog whose text could not be read, and leaves plugin-driven dialogs (`_PLUGIN_DRIVEN_TITLES`, e.g. "Create Mixer Assets" during `create_actor_mixer`'s dry run) to their own tool. Its optional `expect` (words from the question) refuses a dialog that does not contain them, so an answer cannot land on the next dialog. The button is clicked directly, in the same call that found it (`_click_now`). Live (CC5 5.13, PySide2 5.15.0a1), two deferred clicks (`QTimer.singleShot(0, <python callable>)`, then a kept-alive single-shot `QTimer`, both behind `shiboken2.isValid`) were reported as made but never reached CC5's `QMessageBox`; a direct `click()` from a timer callback answered it at once. If a click opens another dialog, the dialog lane waits in that one until it is answered in CC5.
+`answer_dialog` fails closed: it refuses the recovery prompt wherever its words sit (title or any label), except with the one button `CC5_RECOVERY_ANSWER` names, refuses a dialog whose text could not be read, and leaves plugin-driven dialogs (`_PLUGIN_DRIVEN_TITLES`, e.g. "Create Mixer Assets" during `create_actor_mixer`'s dry run) to their own tool. Its optional `expect` (words from the question) refuses a dialog that does not contain them, so an answer cannot land on the next dialog. The button is clicked directly, in the same call that found it (`_click_now`). Live (CC5 5.13, PySide2 5.15.0a1), two deferred clicks (`QTimer.singleShot(0, <python callable>)`, then a kept-alive single-shot `QTimer`, both behind `shiboken2.isValid`) were reported as made but never reached CC5's `QMessageBox`; a direct `click()` from a timer callback answered it at once. If a click opens another dialog, the dialog lane waits in that one until it is answered in CC5.
 
 Answering rule (Chad, 2026-10-05): Claude answers a plain confirmation of exactly what the user asked for and says so; for a real choice it shows the question and buttons with a recommendation and lets the user pick.
 
@@ -149,6 +149,7 @@ done
 
 # 4. The user answers CC5's startup dialogs in CC5 (until they do, the viewport does not render correctly):
 #   a) "Unsaved project data found": OK restores the auto-saved changes, Cancel discards them
+#      (started with CC5_RECOVERY_ANSWER=cancel, as cc5-restart.ps1 does by default, the plugin answers Cancel)
 #      (README.md, Known issues)
 #   b) Welcome screen: tick "Don't show this again", or close it by hand
 ```
@@ -266,18 +267,18 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 ### Content management (clothes, hair, accessories)
 | Tool | Description |
 |--------|------|
-| list_clothes | List the clothes on the avatar |
+| list_clothes | List the clothes on the avatar by name and ID, or "No clothes are applied." (CC5's numeric type is not a garment kind and is not shown) |
 | list_hair | List the hairstyles on the avatar |
 | list_accessories | List the accessories on the avatar |
 | remove_scene_item | Remove clothes/hair/accessories by name |
-| browse_content | Browse the CC5 content folders (clothes/shoes/accessories + pose/motion/expression/props/light/camera/character) |
+| browse_content | Browse the CC5 content folders: cloth_upper (Shirts + Coats), cloth_lower (Pants + Skirts), cloth (Full-Body), underwear, gloves, cloth_other (socks, outfit sets), shoes, accessory_head (Accessory/Head), accessory_body (Torso + Arm + Leg), accessory_other, hair, eye, plus pose/motion/expression/props/light/camera/character, makeup, skingen and image libraries. A category may read several CC5 folders; `wrinkle_mask` falls back to its parent folder (the Wrinkle Mask subfolder does not exist on CC5 5.13) |
 
 ### Camera, lights, expressions
 | Tool | Description |
 |--------|------|
 | get_camera_info | Get camera position and focal length |
 | set_camera_focal_length | Set the camera focal length |
-| frame_camera | Move the camera to a preset viewpoint (face/front/home/all, etc.) |
+| frame_camera | Move the camera to a preset viewpoint (face/front/home/all, etc.). CC5 frames the selected object, so the character (`target`, else the selected one, else the first) is selected for the move and the selection is put back (F-45) |
 | get_lights | List the lights in the scene (deduplicated) |
 | get_light_info | Light details (color/intensity/on-off/shadow casting/shadow darkness/range) |
 | set_light_color | Change a light's RGB color |
@@ -297,9 +298,10 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 | get_material_info | List mesh and material names |
 | get_shader_parameters | Get Digital Human Shader parameters (skin roughness/SSS/MicroNormal, etc.) |
 | set_shader_parameter | Set Digital Human Shader parameters (name + value list, with validation) |
+| set_skin_shader | Set one skin shader parameter on all four Std_Skin_* materials at once (a single material leaves a seam). Skin shine = `Original Roughness Strength` (lower = shinier); set_material_glossiness/specular are legacy non-PBR weights |
 | get_diffuse_color | Get the diffuse color |
 | set_diffuse_color | Set the diffuse color (skin tone, etc.) |
-| set_eye_color | Set the eye color (convenience shortcut) |
+| set_eye_color | Set the iris color: `Iris Color` + `Iris Inner Color` of the Digital Human Eye shader on Std_Cornea_R/L (one undo step); refused for eyes without that shader (load an eye preset) |
 | set_hair_color | Set the hair color (convenience shortcut) |
 | set_lip_color | Set the lip color (convenience shortcut) |
 
@@ -314,14 +316,17 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 | select_objects | Select scene items by name (characters, worn clothing/hair/accessories, props, lights, cameras); `add` keeps the current selection. An unknown or ambiguous name changes nothing. Not an undo step |
 | get_selection | List what is selected in CC5 |
 | clear_selection | Deselect everything |
+| delete_object | Delete props, lights and worn items by name (one undo step); characters (use delete_avatar) and the camera are refused; unknown or ambiguous names delete nothing |
+| get_object_transform | Position (cm) and scale of a prop, light or character |
+| set_object_transform | Move (cm) and/or scale a prop, light or character, keeping its rotation; read back before/after (one undo step) |
 
 CC5 applies character content (eye, skin, cloth presets) to the **selected** character: live, a `.ccEye` loaded with nothing selected reported success and did nothing. `load_asset` therefore aims character content (`_CHARACTER_CONTENT_EXTENSIONS` in `cc5_api.py`) at `target`, else the selected character, else the first, and selects it.
 
 ### CC5 dialogs
 | Tool | Description |
 |--------|------|
-| get_cc5_dialog | Show the open CC5 dialog (title, question, buttons) and the job waiting on it |
-| answer_cc5_dialog | Click a dialog button by label (refuses "Unsaved project data found"); then `job_status` for the waiting command |
+| get_cc5_dialog | Show the open CC5 dialog (title, question, buttons) and the job waiting on it, and any recovery prompt the plugin answered |
+| answer_cc5_dialog | Click a dialog button by label (refuses "Unsaved project data found" unless `CC5_RECOVERY_ANSWER` names that button); then `job_status` for the waiting command |
 
 ### Assets and export
 | Tool | Description |
@@ -329,7 +334,7 @@ CC5 applies character content (eye, skin, cloth presets) to the **selected** cha
 | load_asset | Load an asset (.iAvatar, .ccAvatar, .ccm, etc.). Character content (.ccEye, .ccCloth, .ccShoes, ...) is applied to `target`, else the selected character, else the first |
 | export_fbx | FBX export (reproduces CC5's "Export FBX" dialog). See "export_fbx details" below.|
 | set_subdivision_level | HD subdivision level |
-| capture_viewport | Viewport screenshot (returns the image to the LLM) |
+| capture_viewport | Viewport screenshot (returns the image to the LLM). The render size is only set when it changes: CC5 records `SetRenderExportParameter` as an undo step, so setting it on every capture made `undo` after a capture reverse the capture (F-53) |
 
 ### ActorMIXER PRO
 | Tool | Description |
@@ -360,5 +365,6 @@ CC5 applies character content (eye, skin, cloth presets) to the **selected** cha
 | CC5_BRIDGE_TOKEN | (empty = use the token file) | Bridge authentication token (`X-CC5-Token`). Must be set to the same value in both the plugin and the MCP server |
 | CC5_DEV_MODE | 0 | Dev mode (1/true/yes enables /reload and /exec/python) |
 | CC5_ALLOW_EXEC | (empty) | 1/true/yes enables /exec/python even when dev mode is disabled |
+| CC5_RECOVERY_ANSWER | (empty = ask) | cancel/ok: the plugin answers CC5's "Unsaved project data found" prompt with that button at startup and records it (get_cc5_dialog). Set by scripts/cc5-restart.ps1 (default cancel) |
 | CC5_REQUEST_TIMEOUT_MS | 35000 | Request timeout (ms) |
 | CC5_ROOT | (auto-detected) | CC5 install path |

@@ -10,6 +10,9 @@ import type {
   OperationResult,
   LoadAssetResult,
   SelectionResult,
+  DeleteObjectResult,
+  SetSkinShaderResult,
+  ObjectTransformResult,
   DialogResult,
   CreateAvatarResult,
   DeleteAvatarResult,
@@ -336,8 +339,9 @@ export class CC5Bridge {
 
   async frameCamera(
     view: string,
-  ): Promise<{ success: boolean; view?: string; camera?: string; error?: string }> {
-    return this.request("/camera/frame", "POST", { view });
+    target?: string,
+  ): Promise<{ success: boolean; view?: string; camera?: string; framed?: string; error?: string }> {
+    return this.request("/camera/frame", "POST", target === undefined ? { view } : { view, target });
   }
 
   // --- Lights ---
@@ -684,6 +688,11 @@ export class CC5Bridge {
     return this.request("/skin/wrinkle", "POST", { strength });
   }
 
+  /** One Digital Human skin shader parameter on every Std_Skin_* material (one undo step). */
+  async setSkinShader(parameterName: string, values: number[]): Promise<SetSkinShaderResult> {
+    return this.request<SetSkinShaderResult>("/skin/shader", "POST", { parameter_name: parameterName, values });
+  }
+
   async loadFacialProfile(filePath: string): Promise<OperationResult> {
     return this.request("/builder/facial_profile", "POST", { file_path: filePath });
   }
@@ -700,6 +709,27 @@ export class CC5Bridge {
 
   async clearSelection(): Promise<SelectionResult> {
     return this.request<SelectionResult>("/scene/selection/clear", "POST", {});
+  }
+
+  /** Delete props, lights and worn items by name (one undo step); characters and the camera are refused. */
+  async deleteObject(names: string[]): Promise<DeleteObjectResult> {
+    return this.request<DeleteObjectResult>("/scene/delete", "POST", { names });
+  }
+
+  async getObjectTransform(name: string): Promise<ObjectTransformResult> {
+    return this.request<ObjectTransformResult>("/scene/transform", "POST", { name });
+  }
+
+  /** Move (cm) and/or scale a prop, light or character, keeping its rotation (one undo step). */
+  async setObjectTransform(
+    name: string,
+    position?: [number, number, number],
+    scale?: number | [number, number, number],
+  ): Promise<ObjectTransformResult> {
+    const body: Record<string, unknown> = { name };
+    if (position !== undefined) body.position = position;
+    if (scale !== undefined) body.scale = scale;
+    return this.request<ObjectTransformResult>("/scene/transform/set", "POST", body);
   }
 
   // --- CC5 dialogs (served even while a command waits inside one) ---

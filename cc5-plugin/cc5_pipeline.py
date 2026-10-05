@@ -399,22 +399,26 @@ def _worn_names(avatar: Any) -> list[str]:
     return [str(item.GetName()) for item in items]
 
 
-def import_fbx(file_path: str, kind: str) -> dict[str, Any]:
-    """Import an FBX from Blender/Maya/etc. as a prop, or as clothing for the current avatar. Kind 'character' is
-    switched off (IMPORT_CHARACTER_DISABLED) and never touches CC5.
+def import_fbx(file_path: str, kind: str, target: str | None = None) -> dict[str, Any]:
+    """Import an FBX from Blender/Maya/etc. as a prop, or as clothing for one avatar (`target`, else the selected
+    avatar, else the first: cc5_api._pick_target_avatar, as load_asset). Kind 'character' is switched off
+    (IMPORT_CHARACTER_DISABLED) and never touches CC5.
     Live signatures: LoadFbxFile(path, EImportFbxOption, ...); LoadClotheFromFbx(avatar, path, WStringVector)."""
     if kind == "character":
         return {"success": False, "error": IMPORT_CHARACTER_DISABLED}
     if not isinstance(kind, str) or kind not in FBX_KINDS:
         return {"success": False, "error": f"kind must be one of: {', '.join(FBX_KINDS)}"}
+    if target is not None and (kind != "clothing" or not isinstance(target, str) or not target):
+        return {"success": False, "error": "target is only for kind 'clothing' and must be a character name"}
     error = _check_existing(file_path, {".fbx"})
     if error:
         return {"success": False, "error": error}
     avatar = None
     if kind == "clothing":
-        avatar = cc5_api.get_first_avatar()
-        if not avatar:
-            return {"success": False, "error": "No avatar in scene to dress"}
+        avatar, pick_error = cc5_api._pick_target_avatar(target, ".fbx")
+        if pick_error:
+            no_avatar = not list(RLPy.RScene.GetAvatars())
+            return {"success": False, "error": "No avatar in scene to dress" if no_avatar else pick_error}
     notes: list[str] = []
     failed_meshes: list[str] = []
     attempts: list[tuple[str, Any]] = []
@@ -623,7 +627,7 @@ ACTIONS: dict[str, Any] = {
     "save_character": lambda p: save_character(p["output_path"]),
     "export_obj": lambda p: export_obj(p["output_path"], bool(p.get("y_up", True))),
     "export_goz": lambda p: export_goz(p["output_dir"], p.get("pose", "tpose")),
-    "import_fbx": lambda p: import_fbx(p["file_path"], p["kind"]),
+    "import_fbx": lambda p: import_fbx(p["file_path"], p["kind"], p.get("target")),
     "list_meshes": lambda p: list_meshes(),
     "replace_mesh_from_obj": lambda p: replace_mesh_from_obj(p["mesh_name"], p["obj_path"]),
     "load_texture": lambda p: load_texture(p["mesh_name"], p["material_name"], p["channel"], p["image_path"]),

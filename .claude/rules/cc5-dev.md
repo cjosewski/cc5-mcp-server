@@ -14,7 +14,7 @@ When CC5 needs a restart, always use this order:
 2. Launch with `CharacterCreator.exe &`
 3. Wait for the bridge to start (poll the health check)
 4. **Never send keys or clicks to CC5.** The user answers CC5's startup dialogs themselves (until they do, the viewport does not render correctly):
-   - "Unsaved project data found": OK restores the auto-saved changes, Cancel discards them
+   - "Unsaved project data found": OK restores the auto-saved changes, Cancel discards them. Exception (Chad, 2026-10-05, F-52): a CC5 launched with `CC5_RECOVERY_ANSWER=cancel` (`scripts/cc5-restart.ps1` does this by default; from bash: `CC5_RECOVERY_ANSWER=cancel "/c/Program Files/.../CharacterCreator.exe" &`) has the plugin answer Cancel itself; tell the user when `get_cc5_dialog` reports it
    - Welcome screen: tick "Don't show this again" (it then stays closed), or close it by hand
 
 ## Viewport Capture

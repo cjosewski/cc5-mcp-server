@@ -77,3 +77,13 @@ describe("dialog tools", () => {
     expect(description).toContain("Unsaved project data found");
   });
 });
+
+describe("recovery prompt answered by the plugin (F-52)", () => {
+  it("get_cc5_dialog reports each automatic answer, so it is never silent", async () => {
+    bridge.getDialog.mockResolvedValue({ success: true, dialog: null, waiting_job: null, recovery_policy: "cancel",
+      recovery_answered: [{ time: "2026-10-05 16:01:00", button: "Cancel", text: "Unsaved project data found." }] });
+    const r = await server.getRegisteredTool("get_cc5_dialog")({});
+    expect(r.content[0].text).toBe("No CC5 dialog is open.\nCC5's \"Unsaved project data found\" prompt was answered "
+      + "Cancel at 2026-10-05 16:01:00 (the auto-saved changes were discarded).");
+  });
+});
