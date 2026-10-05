@@ -17,9 +17,10 @@ export function registerVisibilityTools(server: McpServer, bridge: CC5Bridge) {
     },
     async ({ item_name, visible }) => bridgeCall(
       () => bridge.setItemVisible(item_name, visible),
-      (result) => result.success
-        ? `Item '${result.item ?? item_name}' is now ${result.visible ? "visible" : "hidden"}`
-        : `Failed: ${result.error}`,
+      (result) => !result.success ? `Failed: ${result.error}`
+        : [`Item '${result.item ?? item_name}' set to ${result.visible ? "visible" : "hidden"}` +
+            (result.verified === true ? " (CC5 confirms)." : "."),
+           ...(result.notes ?? [])].join("\n"),
     )
   );
 

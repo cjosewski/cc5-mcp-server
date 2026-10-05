@@ -164,7 +164,7 @@ def set_skin_condition(condition: str, amount: float = 1.0, region: str = "all",
     offsets = {name: round(full * scale, 4) + 0.0 for name, full in PALLOR_OFFSETS.items()}
     tr, tg, tb = SKIN_CONDITIONS[condition]
     rgb = tuple(round(b * (1.0 + (t - 1.0) * amount), 4) for b, t in zip(base, (tr, tg, tb)))
-    color = RLPy.RRgb(*rgb)
+    color = cc5_api._cc5_rgb(*rgb)
     applied: list[str] = []
     RLPy.RGlobal.BeginAction("Set Skin Condition")
     try:

@@ -37,6 +37,8 @@ import type {
   SetShaderParameterResult,
   CreateActorMixerOptions,
   CreateActorMixerResult,
+  SetVisibleResult,
+  SceneObject,
 } from "../../src/types.js";
 
 export type MockBridge = {
@@ -70,6 +72,8 @@ export function createMockBridge(): MockBridge {
     setLightActive: vi.fn<[string, boolean], Promise<{ success: boolean; light?: string; active?: boolean; error?: string }>>(),
     setLightShadow: vi.fn<[string, boolean | null, number | null], Promise<{ success: boolean; light?: string; cast_shadow?: boolean; darken_shadow_strength?: number; error?: string }>>(),
     getVisualSettings: vi.fn<[], Promise<VisualSettings>>(),
+    setItemVisible: vi.fn<[string, boolean], Promise<SetVisibleResult>>(),
+    getSceneObjects: vi.fn<[], Promise<SceneObject[]>>(),
     setAmbient: vi.fn<[number, number, number], Promise<SetAmbientResult>>(),
     setIbl: vi.fn<[string, boolean], Promise<SetIblResult>>(),
     getExpressionInfo: vi.fn<[], Promise<ExpressionInfo>>(),

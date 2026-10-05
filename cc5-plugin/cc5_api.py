@@ -219,7 +219,8 @@ def get_morph_value(morph_id: str) -> dict[str, Any]:
         return {"success": False, "error": "No shaping component found"}
 
     value = shaping_comp.GetShapingMorphWeight(morph_id)
-    return {"success": True, "morph_id": morph_id, "value": value}
+    # CC5 keeps float32: 0.8 reads back as 0.800000011920929 (F-13).
+    return {"success": True, "morph_id": morph_id, "value": None if value is None else round(float(value), 4)}
 
 
 def set_morph_value(morph_id: str, value: float) -> dict[str, Any]:
@@ -898,6 +899,18 @@ $bitmap.Dispose()
         )
 
 
+def _cc5_rgb(r: float, g: float, b: float) -> Any:
+    """RRgb for 0-1 channels, each on the nearest of CC5's 0-255 steps.
+
+    Live (F-14): CC5 stores colours as 0-255 and dropped the fraction, so 0.3 became 76/255 = 0.298. Each channel
+    is rounded to the nearest step k and sent as (k + 0.4) / 255, which lands on k whether CC5 truncates or rounds.
+    """
+    def channel(v: float) -> float:
+        k = int(max(0.0, min(1.0, float(v))) * 255 + 0.5)
+        return min(255.0, k + 0.4) / 255.0 if k < 255 else 1.0
+    return RLPy.RRgb(channel(r), channel(g), channel(b))
+
+
 def _set_render_resolution(width: int, height: int) -> bool:
     """Set RenderImage output size. The default RenderImage output is uselessly
     small (~100x32), making captures unusable for visual verification. Setting
@@ -1301,7 +1314,7 @@ def set_light_color(light_name: str, r: float, g: float, b: float) -> dict[str, 
         return {"success": False, "error": f"Light not found: {light_name}"}
     try:
         RLPy.RGlobal.BeginAction("Set Light Color")
-        color = RLPy.RRgb(r, g, b)
+        color = _cc5_rgb(r, g, b)
         light.SetColor(RLPy.RGlobal.GetTime(), color)
         RLPy.RGlobal.ObjectModified(light, RLPy.EObjectModifiedType_Attribute)
     finally:
@@ -1444,6 +1457,10 @@ def set_light_shadow(
 _IBL_EXTENSIONS = {".hdr", ".exr", ".png", ".jpg", ".jpeg", ".hdri"}
 
 
+# The IBL image set_ibl last loaded in this CC5 session (None: none, or loaded by hand in CC5).
+_ibl_loaded_by_bridge: str | None = None
+
+
 def get_visual_settings() -> dict[str, Any]:
     """Get global environment lighting: ambient color (0-1) and IBL/HDRI state."""
     if not hasattr(RLPy.RGlobal, "GetVisualSettingComponent"):
@@ -1462,6 +1479,8 @@ def get_visual_settings() -> dict[str, Any]:
         result["ibl_enabled"] = bool(vs.IsIBLEnable())
     except Exception:
         result["ibl_enabled"] = None
+    # RLPy can load an IBL image but not say which one is loaded (F-24): report the one this bridge loaded, if any.
+    result["ibl_image_loaded_by_bridge"] = _ibl_loaded_by_bridge
     return result
 
 
@@ -1477,7 +1496,7 @@ def set_ambient(r: float, g: float, b: float) -> dict[str, Any]:
     b = max(0.0, min(1.0, float(b)))
     try:
         RLPy.RGlobal.BeginAction("Set Ambient Color")
-        vs.SetAmbientColor(RLPy.RRgb(r, g, b))
+        vs.SetAmbientColor(_cc5_rgb(r, g, b))
     finally:
         RLPy.RGlobal.EndAction()
     try:
@@ -1511,6 +1530,8 @@ def set_ibl(image_path: str = "", enable: bool = True) -> dict[str, Any]:
             RLPy.RGlobal.BeginAction("Load IBL")
             vs.LoadIBLImage(image_path)
             loaded = image_path
+            global _ibl_loaded_by_bridge
+            _ibl_loaded_by_bridge = image_path
         except Exception as e:
             RLPy.RGlobal.EndAction()
             return {"success": False, "error": f"Failed to load IBL image: {e}"}
@@ -1623,7 +1644,8 @@ def set_expression(expressions: list[dict[str, Any]]) -> dict[str, Any]:
         applied_weights = list(face_comp.GetExpressionWeights(time, names))
     except Exception:
         applied_weights = weights
-    applied = [{"name": n, "weight": w} for n, w in zip(names, applied_weights)]
+    # CC5 keeps float32: 0.8 reads back as 0.800000011920929 (F-13).
+    applied = [{"name": n, "weight": round(float(w), 4)} for n, w in zip(names, applied_weights)]
     return {"success": True, "applied": applied, "skipped": skipped}
 
 
@@ -1645,6 +1667,12 @@ def reset_expression() -> dict[str, Any]:
 
     weights = [0.0] * len(names)
     time = RLPy.RGlobal.GetTime()
+    # Report the sliders that were set, not all of them (live: 172 reported after 2 were set; F-18).
+    try:
+        before = [float(w) for w in face_comp.GetExpressionWeights(time, names)]
+        changed: list[str] | None = [n for n, w in zip(names, before) if abs(w) > 1e-6]
+    except Exception:
+        changed = None
     try:
         RLPy.RGlobal.BeginAction("Reset Expression")
         face_comp.BeginKeyEditing()
@@ -1655,7 +1683,13 @@ def reset_expression() -> dict[str, Any]:
         RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Transform)
     finally:
         RLPy.RGlobal.EndAction()
-    return {"success": True, "reset_count": len(names)}
+    result: dict[str, Any] = {"success": True, "slider_count": len(names)}
+    if changed is not None:
+        result["reset_count"] = len(changed)
+        result["reset"] = changed[:50]
+    else:
+        result["reset_count"] = len(names)  # could not read the weights first: every slider was set to 0
+    return result
 
 
 # --- Material / Texture Control ---
@@ -1770,7 +1804,7 @@ def set_diffuse_color(mesh_name: str, material_name: str, r: float, g: float, b:
         r = max(0.0, min(1.0, r))
         g = max(0.0, min(1.0, g))
         b = max(0.0, min(1.0, b))
-        color = RLPy.RRgb(r, g, b)
+        color = _cc5_rgb(r, g, b)
         try:
             RLPy.RGlobal.BeginAction("Set Diffuse Color")
             mat_comp.AddDiffuseKey(key, mesh_name, material_name, color)
@@ -2492,7 +2526,7 @@ def set_skin_color(r: float, g: float, b: float) -> dict[str, Any]:
     r = max(0.0, min(1.0, r))
     g = max(0.0, min(1.0, g))
     b = max(0.0, min(1.0, b))
-    color = RLPy.RRgb(r, g, b)
+    color = _cc5_rgb(r, g, b)
     key = RLPy.RKey()
     key.SetTime(RLPy.RGlobal.GetTime())
     # Discover skin materials dynamically: name contains 'skin' but not 'eyelash'.
@@ -2531,7 +2565,7 @@ def set_hair_color(r: float, g: float, b: float) -> dict[str, Any]:
     r = max(0.0, min(1.0, r))
     g = max(0.0, min(1.0, g))
     b = max(0.0, min(1.0, b))
-    color = RLPy.RRgb(r, g, b)
+    color = _cc5_rgb(r, g, b)
     time = RLPy.RGlobal.GetTime()
     key = RLPy.RKey()
     key.SetTime(time)
@@ -2591,7 +2625,7 @@ def set_lip_color(r: float, g: float, b: float) -> dict[str, Any]:
     r = max(0.0, min(1.0, r))
     g = max(0.0, min(1.0, g))
     b = max(0.0, min(1.0, b))
-    color = RLPy.RRgb(r, g, b)
+    color = _cc5_rgb(r, g, b)
     time = RLPy.RGlobal.GetTime()
     key = RLPy.RKey()
     key.SetTime(time)
@@ -2638,6 +2672,31 @@ def set_lip_color(r: float, g: float, b: float) -> dict[str, Any]:
 
 # --- Visibility & Scene ---
 
+def _visibility_result(obj: Any, item_name: str, visible: bool) -> dict[str, Any]:
+    """set_item_visible's result, read back from CC5 where it can be (F-24).
+
+    RLPy has IsVisible(time) on characters, props, lights and the sky, but nothing for worn clothing, hair or
+    accessories: their visibility cannot be read back, and the result says so instead of claiming it was checked.
+    A read-back that disagrees is reported as a warning (CC5's Show/Hide may not be what IsVisible reads).
+    """
+    result: dict[str, Any] = {"success": True, "item": item_name, "visible": visible}
+    if not hasattr(obj, "IsVisible"):
+        result["verified"] = None
+        result["notes"] = ["CC5 cannot report this item's visibility: check it with capture_viewport."]
+        return result
+    try:
+        seen = bool(obj.IsVisible(RLPy.RGlobal.GetTime()))
+    except Exception as e:
+        result["verified"] = None
+        result["notes"] = [f"CC5 could not read the visibility back ({e}): check it with capture_viewport."]
+        return result
+    result["verified"] = seen == visible
+    if not result["verified"]:
+        result["notes"] = [f"WARNING: CC5 reports the item as {'visible' if seen else 'hidden'}: "
+                           "check it with capture_viewport."]
+    return result
+
+
 def set_item_visible(item_name: str, visible: bool) -> dict[str, Any]:
     """Set visibility of a scene item (clothing, hair, accessory, prop) by name."""
     if not item_name or len(item_name) > MAX_ITEM_NAME_LENGTH:
@@ -2663,7 +2722,7 @@ def set_item_visible(item_name: str, visible: bool) -> dict[str, Any]:
                             RLPy.RGlobal.ObjectModified(item, RLPy.EObjectModifiedType_Attribute)
                         finally:
                             RLPy.RGlobal.EndAction()
-                        return {"success": True, "item": item_name, "visible": visible}
+                        return _visibility_result(item, item_name, visible)
             except Exception as e:
                 print(f"[CC5 MCP Bridge] set_item_visible getter failed: {e}")
 
@@ -2690,7 +2749,7 @@ def set_item_visible(item_name: str, visible: bool) -> dict[str, Any]:
                     RLPy.RGlobal.ObjectModified(obj, RLPy.EObjectModifiedType_Attribute)
                 finally:
                     RLPy.RGlobal.EndAction()
-                return {"success": True, "item": item_name, "visible": visible}
+                return _visibility_result(obj, item_name, visible)
         except Exception as e:
             print(f"[CC5 MCP Bridge] set_item_visible FindObject failed: {e}")
         # Fallback: iterate FindObjects results
@@ -2704,7 +2763,7 @@ def set_item_visible(item_name: str, visible: bool) -> dict[str, Any]:
                         RLPy.RGlobal.ObjectModified(obj, RLPy.EObjectModifiedType_Attribute)
                     finally:
                         RLPy.RGlobal.EndAction()
-                    return {"success": True, "item": item_name, "visible": visible}
+                    return _visibility_result(obj, item_name, visible)
         except Exception as e:
             print(f"[CC5 MCP Bridge] set_item_visible FindObjects scan failed: {e}")
 

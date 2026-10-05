@@ -20,6 +20,12 @@ def _avatar():
 
 
 class SkinTest(unittest.TestCase):
+    def _assert_rgb(self, r, g, b):
+        # Colours go to CC5 on its 0-255 steps (cc5_api._cc5_rgb, F-14): equal within one step.
+        sent = self.rl.RRgb.call_args.args
+        for got, want in zip(sent, (r, g, b)):
+            self.assertAlmostEqual(got, want, delta=1 / 255)
+
     def setUp(self):
         self.rl = _support.install_fake_rlpy()
         self.skin = _support.fresh_import("cc5_skin")
@@ -48,7 +54,7 @@ class SkinTest(unittest.TestCase):
     def test_condition_tint(self):
         r = self.skin.set_skin_condition("cyanotic", 0.5, "all")
         self.assertTrue(r["success"])
-        self.rl.RRgb.assert_called_with(0.9, 0.93, 0.99)
+        self._assert_rgb(0.9, 0.93, 0.99)
 
     def test_condition_docstring_says_it_replaces_hand_made_brightness_and_saturation(self):
         doc = " ".join(self.skin.set_skin_condition.__doc__.split())
@@ -59,7 +65,7 @@ class SkinTest(unittest.TestCase):
     def test_condition_tints_base_skin_tone(self):
         r = self.skin.set_skin_condition("cyanotic", 0.5, "all", (0.4, 0.3, 0.25))
         self.assertTrue(r["success"])
-        self.rl.RRgb.assert_called_with(0.36, 0.279, 0.2475)
+        self._assert_rgb(0.36, 0.279, 0.2475)
         self.assertEqual(self.skin.ACTIONS["set_skin_condition"]({"condition": "normal", "base_rgb": [0.4, 0.3, 0.25]})["rgb"], [0.4, 0.3, 0.25])
         self.assertFalse(self.skin.set_skin_condition("pale", 1.0, "all", [0.1, 0.2])["success"])
 
@@ -69,7 +75,7 @@ class SkinTest(unittest.TestCase):
         # saturation 0.27 to 0.12.
         r = self.skin.set_skin_condition("pale", 0.8, "all", (0.4, 0.3, 0.25))
         self.assertTrue(r["success"])
-        self.rl.RRgb.assert_called_with(0.4, 0.3, 0.25)  # pale keeps the skin tone: no darkening tint
+        self._assert_rgb(0.4, 0.3, 0.25)  # pale keeps the skin tone: no darkening tint
         mc = self.avatar.GetMaterialComponent.return_value
         for mat in ("Std_Skin_Head", "Std_Skin_Body", "Std_Skin_Arm", "Std_Skin_Leg"):
             mc.SetShaderParameter.assert_any_call("CC_Base_Body", mat, "_BaseColorMap Brightness", [0.048])

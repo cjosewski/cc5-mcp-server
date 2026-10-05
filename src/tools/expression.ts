@@ -58,9 +58,13 @@ export function registerExpressionTools(server: McpServer, bridge: CC5Bridge) {
     {},
     async () => bridgeCall(
       () => bridge.resetExpression(),
-      (result) => result.success
-        ? `Reset ${result.reset_count ?? 0} expression slider(s) to neutral.`
-        : `Failed: ${result.error}`,
+      (result) => !result.success ? `Failed: ${result.error}`
+        : result.reset === undefined
+          ? `Reset ${result.reset_count ?? 0} expression slider(s) to neutral.`
+          : result.reset.length === 0
+            ? "The face was already neutral: no expression slider was set."
+            : `Reset ${result.reset_count} expression slider(s) to neutral: ${result.reset.join(", ")}` +
+              `${(result.reset_count ?? 0) > result.reset.length ? ", ..." : ""}.`,
     )
   );
 }

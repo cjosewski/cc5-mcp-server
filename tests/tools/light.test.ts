@@ -394,3 +394,13 @@ describe("set_ibl handler", () => {
     expect(result.content[0].text).toContain("CC5 bridge error: bridge down");
   });
 });
+
+describe("get_visual_settings IBL image (F-24)", () => {
+  it("reports the IBL image this bridge loaded, labelled as such", async () => {
+    bridge.getVisualSettings.mockResolvedValue({ success: true, ambient: null, ibl_enabled: true,
+      ibl_image_loaded_by_bridge: "C:/hdri/studio.hdr" });
+    const r = await server.getRegisteredTool("get_visual_settings")({});
+    expect(r.content[0].text).toBe("IBL: on\nIBL image last loaded by set_ibl: C:/hdri/studio.hdr " +
+      "(CC5 cannot report the current image; it may since have been undone or replaced in CC5)");
+  });
+});

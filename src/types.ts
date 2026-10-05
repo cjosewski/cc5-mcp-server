@@ -104,6 +104,8 @@ export interface LightShadowResult extends OperationResult {
 export interface VisualSettings extends OperationResult {
   ambient?: { r: number; g: number; b: number } | null;
   ibl_enabled?: boolean | null;
+  /** The IBL image set_ibl loaded in this CC5 session; RLPy cannot say which image is loaded (null: none, or by hand). */
+  ibl_image_loaded_by_bridge?: string | null;
 }
 
 export interface SetAmbientResult extends OperationResult {
@@ -130,7 +132,12 @@ export interface ExpressionSetResult extends OperationResult {
 }
 
 export interface ExpressionResetResult extends OperationResult {
+  /** Sliders that were not at 0 before the reset (all of them when CC5 could not be read first). */
   reset_count?: number;
+  /** Their names (at most 50). */
+  reset?: string[];
+  /** Every expression slider the character has. */
+  slider_count?: number;
 }
 
 export interface ResetMorphsResult extends OperationResult {
@@ -219,6 +226,9 @@ export interface ColorResult extends OperationResult {
 export interface SetVisibleResult extends OperationResult {
   item?: string;
   visible?: boolean;
+  /** CC5's read-back agreed (true), disagreed (false), or cannot be read for this item (null: worn items). */
+  verified?: boolean | null;
+  notes?: string[];
 }
 
 export interface SceneObject {

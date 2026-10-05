@@ -21,23 +21,23 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-05 | bug | fixed (`af5ddfb`) | `answer_cc5_dialog` reported clicks CC5 never received |
 | F-06 | doc | fixed (`499ea45`) / runbook | Camera guidance said to create a second camera; CC5 cannot |
 | F-07 | minor | fixed (`499ea45`) | `get_selection` showed an unknown object type as `0` |
-| F-08 | bug | open | `get_diffuse_color` reads the base color (white), not the applied color |
-| F-09 | bug | likely F-53 (retest) | Undoing a diffuse color change is unreliable |
+| F-08 | bug | not reproduced after F-53 (live, Batch B) | `get_diffuse_color` reads the base color (white), not the applied color |
+| F-09 | bug | fixed by F-53 (live, Batch B) | Undoing a diffuse color change is unreliable |
 | F-10 | bug | fixed, live (Batch A) | `set_eye_color` has no visible effect and reports materials that do not exist |
 | F-11 | bug | open | `reset_morphs` also zeroes a template's identity morphs |
 | F-12 | doc | open | `adjust_morph` description points to a `get_morph_catalog` tool that does not exist |
-| F-13 | minor | open | Morph and expression values come back as raw float32 (0.800000011920929) |
-| F-14 | minor | open | Colors set from 0-1 are truncated to 0-255 steps (0.3 → 0.298), not rounded |
+| F-13 | minor | fixed, Batch B (live check pending) | Morph and expression values come back as raw float32 (0.800000011920929) |
+| F-14 | minor | fixed, Batch B (live check pending) | Colors set from 0-1 are truncated to 0-255 steps (0.3 → 0.298), not rounded |
 | F-15 | minor | open | `delete_avatar` on an empty scene is an error; a named delete then says "No avatars in scene" |
 | F-16 | doc | open | `set_subdivision_level` refusal does not say to run Modify > Subdivide |
 | F-17 | minor | open | `describe_character` says "average build" for templates and for heavy at 50% |
-| F-18 | minor | open | `reset_expression` reports every slider (172), not the ones it changed |
+| F-18 | minor | fixed, Batch B (live check pending) | `reset_expression` reports every slider (172), not the ones it changed |
 | F-19 | gap | fixed (live P4-82) | `search_content` did not cover eye presets |
 | F-20 | doc | runbook | `search_morphs` matches IDs too; several display names repeat with different IDs |
 | F-21 | minor | open | Error wording differs across tools for the same situation |
 | F-22 | minor | open | `capture_viewport` without a path always overwrites the same temp file |
 | F-23 | doc | open | `check_cc5_connection` passes while a CC5 dialog blocks every command |
-| F-24 | gap | open | Some changes cannot be read back: IBL image, item visibility, camera framing |
+| F-24 | gap | partly fixed, Batch B: visibility read-back where CC5 has IsVisible, IBL image the bridge loaded (live check pending); camera framing still capture-only | Some changes cannot be read back: IBL image, item visibility, camera framing |
 | F-25 | bug | retest | `get_camera_info` placed the camera at the side right after the home view |
 | F-26 | minor | retest | The home view cropped Kevin's feet |
 | F-27 | minor | open | `set_light_shadow` with no settings is only refused inside CC5 |
@@ -52,7 +52,7 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-36 | blocker | fixed (live P4-104 to P4-106) | Material setters sent 0-1 to CC5's 0-100 scale: opacity 1.0 = 1%, the skin vanished |
 | F-37 | bug | not a bug (P4-107) | Opacity undo: works on a clean character; the earlier failure came from F-34 |
 | F-38 | doc + bug | fixed, live (Batch A; legacy specular storage not probed) | Glossiness/specular are legacy non-PBR values: skin shine is the roughness shader parameters; specular also stored erratically |
-| F-39 | bug | likely F-53 (retest) | `undo` does not reverse `load_texture`; a texture load is effectively permanent (no undo, no read-back of the old texture) |
+| F-39 | bug | fixed by F-53 (live, Batch B) | `undo` does not reverse `load_texture`; a texture load is effectively permanent (no undo, no read-back of the old texture) |
 | F-40 | minor | fixed, live (Batch A) | `list_clothes` shows the item type as a raw number (`Type: 1`); it should list what is worn or say "No clothes are applied" |
 | F-41 | bug | fixed, live (Batch A) | `browse_content("cloth_upper")` lists nothing: it reads `EContentRootFolder_Upper`, not the Shirts/Coats clothing folders; `cloth_lower` the same |
 | F-42 | bug | fixed, live (Batch A) | `accessory_head` / `accessory_body` both list the 8 handheld/outfit items in Accessory/Others; real head (11), torso (20) and arm (47) accessories are never listed |
@@ -506,6 +506,18 @@ CC5 started with `CC5_RECOVERY_ANSWER=cancel CC5_ALLOW_EXEC=1`, clean CC4 Kevin.
   at (80, 0, 0), scale 0.5.
 - Seen on the way: `get_selection` shows worn hair as "Other (type 0)": CC5 does not report hair as
   `EObjectType_Hair`, which is why `delete_object` decides by where an item was found, not by its type.
+
+### Batch B retests (2026-10-05, fresh CC5 with the 6523971 plugin)
+
+Each change was followed by a `capture_viewport` before the `undo`, the step that used to break it (F-53).
+- F-08: `set_diffuse_color` (0.2, 0.4, 0.9) on Std_Skin_Body turned the torso blue and `get_diffuse_color` read
+  back (0.200, 0.400, 0.898) (0.898 = F-14). The P4 white read-back did not come back; P4 had presets and earlier
+  captures in play, so it is recorded as not reproduced.
+- F-09: one `undo` restored the skin.
+- F-39: `load_texture` Blend_01.jpg into Std_Skin_Body diffuse, capture, one `undo`: the skin texture came back.
+  So texture loads are undoable; the P4 failure was the capture's undo step.
+- Undo reporting what it reversed: not possible, RGlobal has only Undo / Redo / BeginAction / EndAction (no
+  history read). With F-53 fixed, undo reverses the last change.
 
 ## Ideas (not findings)
 

@@ -138,6 +138,8 @@ export function registerLightTools(server: McpServer, bridge: CC5Bridge) {
         const parts: string[] = [];
         if (s.ambient) parts.push(`Ambient: RGB(${s.ambient.r.toFixed(3)}, ${s.ambient.g.toFixed(3)}, ${s.ambient.b.toFixed(3)})`);
         if (s.ibl_enabled !== null && s.ibl_enabled !== undefined) parts.push(`IBL: ${s.ibl_enabled ? "on" : "off"}`);
+        // CC5 cannot say which IBL image is loaded: report only what this bridge last loaded, and say it may be stale.
+        if (s.ibl_image_loaded_by_bridge) parts.push(`IBL image last loaded by set_ibl: ${s.ibl_image_loaded_by_bridge} (CC5 cannot report the current image; it may since have been undone or replaced in CC5)`);
         return parts.length ? parts.join("\n") : "No visual settings available.";
       },
     )

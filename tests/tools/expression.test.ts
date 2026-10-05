@@ -217,3 +217,17 @@ describe("reset_expression handler", () => {
     expect(result.content[0].text).toContain("CC5 bridge error: bridge down");
   });
 });
+
+describe("reset_expression reports the sliders it changed (F-18)", () => {
+  it("names the sliders that were set", async () => {
+    bridge.resetExpression.mockResolvedValue({ success: true, reset_count: 2, reset: ["Brow_Raise_Inner_L", "Mouth_Smile"], slider_count: 172 });
+    const r = await server.getRegisteredTool("reset_expression")({});
+    expect(r.content[0].text).toBe("Reset 2 expression slider(s) to neutral: Brow_Raise_Inner_L, Mouth_Smile.");
+  });
+
+  it("says when the face was already neutral", async () => {
+    bridge.resetExpression.mockResolvedValue({ success: true, reset_count: 0, reset: [], slider_count: 172 });
+    const r = await server.getRegisteredTool("reset_expression")({});
+    expect(r.content[0].text).toBe("The face was already neutral: no expression slider was set.");
+  });
+});
