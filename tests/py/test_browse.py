@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from unittest import mock
 
@@ -168,19 +170,32 @@ class BrowseFolderMapTest(unittest.TestCase):
         self.assertEqual(self.api.browse_content("cloth_upper"),
                          ["C:/t/Basic T-shirts.ccCloth", "C:/t/Long slim coat.ccCloth"])
 
-    def test_missing_wrinkle_mask_folder_falls_back_to_its_parent(self):
-        # Live: the Wrinkle Mask folder does not exist; the 18 wrinkle images sit in Wrinkle References.
-        self.files = {"$/Others/Skin Textures/Wrinkle References": ["C:/w/Set 1-1_Brow_Raise.png"]}
-        self.assertEqual(self.api.browse_content("wrinkle_mask"), ["C:/w/Set 1-1_Brow_Raise.png"])
+    def _template_root_with_wrinkle_masks(self):
+        root = tempfile.mkdtemp()
+        masks = os.path.join(root, "Others", "Skin Textures", "Wrinkle References", "Wrinkle Mask")
+        os.makedirs(masks)
+        for name in ("Set 1-1_Brow_Raise.png", "Set 2_Nose_Crease.png", "readme.txt"):
+            open(os.path.join(masks, name), "wb").close()
+        self.rl.RApplication.GetTemplateDataPath.return_value = root
+        return masks.replace("\\", "/")
 
-    def test_existing_wrinkle_mask_folder_is_used(self):
+    def test_wrinkle_masks_cc5_does_not_list_are_read_from_disk(self):
+        # Live CC5 5.13: the Wrinkle Mask folder holds 14 PNGs, yet GetContentFilesInFolder listed none of them.
+        masks = self._template_root_with_wrinkle_masks()
+        self.assertEqual(self.api.browse_content("wrinkle_mask"),
+                         [f"{masks}/Set 1-1_Brow_Raise.png", f"{masks}/Set 2_Nose_Crease.png"])
+        self.assertEqual(self.api.browse_content("wrinkle_mask", "nose"), [f"{masks}/Set 2_Nose_Crease.png"])
+
+    def test_wrinkle_masks_cc5_lists_are_used_as_they_are(self):
+        self._template_root_with_wrinkle_masks()
         self.files = {"$/Others/Skin Textures/Wrinkle References/Wrinkle Mask": ["C:/w/Mask.png"]}
         self.assertEqual(self.api.browse_content("wrinkle_mask"), ["C:/w/Mask.png"])
 
-    def test_other_categories_never_fall_back_to_the_parent(self):
-        # An empty clothing folder stays empty: its parent ($/Cloth) would list every garment.
-        self.files = {"$/Cloth": ["C:/c/Everything.ccCloth"]}
+    def test_other_categories_never_read_the_disk(self):
+        # An empty clothing folder stays empty: only the image categories listed in the fallback read the disk.
+        self.rl.RApplication.GetTemplateDataPath.return_value = tempfile.mkdtemp()
         self.assertEqual(self.api.browse_content("gloves"), [])
+        self.rl.RApplication.GetTemplateDataPath.assert_not_called()
 
 
 if __name__ == "__main__":

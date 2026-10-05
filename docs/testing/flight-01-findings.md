@@ -23,7 +23,7 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-07 | minor | fixed (`499ea45`) | `get_selection` showed an unknown object type as `0` |
 | F-08 | bug | open | `get_diffuse_color` reads the base color (white), not the applied color |
 | F-09 | bug | likely F-53 (retest) | Undoing a diffuse color change is unreliable |
-| F-10 | bug | fixed, Batch A (live check pending) | `set_eye_color` has no visible effect and reports materials that do not exist |
+| F-10 | bug | fixed, live (Batch A) | `set_eye_color` has no visible effect and reports materials that do not exist |
 | F-11 | bug | open | `reset_morphs` also zeroes a template's identity morphs |
 | F-12 | doc | open | `adjust_morph` description points to a `get_morph_catalog` tool that does not exist |
 | F-13 | minor | open | Morph and expression values come back as raw float32 (0.800000011920929) |
@@ -51,22 +51,22 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-35 | bug | not a bug (P4-102) | `get_material_properties` read-back: works on a clean character; the earlier 100 came from F-34 |
 | F-36 | blocker | fixed (live P4-104 to P4-106) | Material setters sent 0-1 to CC5's 0-100 scale: opacity 1.0 = 1%, the skin vanished |
 | F-37 | bug | not a bug (P4-107) | Opacity undo: works on a clean character; the earlier failure came from F-34 |
-| F-38 | doc + bug | fixed, Batch A (live check pending; specular storage still to probe) | Glossiness/specular are legacy non-PBR values: skin shine is the roughness shader parameters; specular also stored erratically |
+| F-38 | doc + bug | fixed, live (Batch A; legacy specular storage not probed) | Glossiness/specular are legacy non-PBR values: skin shine is the roughness shader parameters; specular also stored erratically |
 | F-39 | bug | likely F-53 (retest) | `undo` does not reverse `load_texture`; a texture load is effectively permanent (no undo, no read-back of the old texture) |
-| F-40 | minor | fixed, Batch A (live check pending) | `list_clothes` shows the item type as a raw number (`Type: 1`); it should list what is worn or say "No clothes are applied" |
-| F-41 | bug | fixed, Batch A (live check pending) | `browse_content("cloth_upper")` lists nothing: it reads `EContentRootFolder_Upper`, not the Shirts/Coats clothing folders; `cloth_lower` the same |
-| F-42 | bug | fixed, Batch A (live check pending) | `accessory_head` / `accessory_body` both list the 8 handheld/outfit items in Accessory/Others; real head (11), torso (20) and arm (47) accessories are never listed |
-| F-43 | bug | partly fixed, Batch A: wrinkle_mask (texture total still capped) | `wrinkle_mask` lists nothing; `texture` stops at 200 of 437 images |
+| F-40 | minor | fixed, live (Batch A) | `list_clothes` shows the item type as a raw number (`Type: 1`); it should list what is worn or say "No clothes are applied" |
+| F-41 | bug | fixed, live (Batch A) | `browse_content("cloth_upper")` lists nothing: it reads `EContentRootFolder_Upper`, not the Shirts/Coats clothing folders; `cloth_lower` the same |
+| F-42 | bug | fixed, live (Batch A) | `accessory_head` / `accessory_body` both list the 8 handheld/outfit items in Accessory/Others; real head (11), torso (20) and arm (47) accessories are never listed |
+| F-43 | bug | wrinkle_mask fixed, live (Batch A); texture total still capped | `wrinkle_mask` lists nothing; `texture` stops at 200 of 437 images |
 | F-44 | gap | open | No collision check after applying items, and no way to fix a poke-through (Kevin's scalp shows through Hat_DarkBlue) |
-| F-45 | bug | fixed, Batch A (live check pending) | `frame_camera("home")` right after `"left"` reported success but did not move the camera; `"left"` framed a hip close-up, not the whole body |
-| F-46 | bug | caused by F-53 | `undo` after `remove_scene_item` reports success but does not bring the item back (Oval Afro stayed removed) |
+| F-45 | bug | fixed, live (Batch A) | `frame_camera("home")` right after `"left"` reported success but did not move the camera; `"left"` framed a hip close-up, not the whole body |
+| F-46 | bug | fixed with F-53, live | `undo` after `remove_scene_item` reports success but does not bring the item back (Oval Afro stayed removed) |
 | F-47 | doc | runbook | The runbook's test inputs (`C:\CC5Test\inputs\`: cube.fbx, overlay.png, notes.txt...) do not exist; file tests only exercise "not found" |
-| F-48 | doc + gap | fixed, Batch A (live check pending) | `import_fbx` description says to answer Import Settings in CC5 (the dialog tools now do it); no tool moves, scales or deletes a prop |
-| F-49 | blocker | fixed, Batch A (live check pending) | Add a "Delete object" tool: nothing can delete a prop (or other scene object) today |
-| F-50 | bug | fixed, Batch A (live check pending) | `import_fbx` as clothing always dresses the first character: no `target`, ignores the selection (unlike `load_asset`) |
+| F-48 | doc + gap | fixed, live (Batch A) | `import_fbx` description says to answer Import Settings in CC5 (the dialog tools now do it); no tool moves, scales or deletes a prop |
+| F-49 | blocker | fixed, live (Batch A) | Add a "Delete object" tool: nothing can delete a prop (or other scene object) today |
+| F-50 | bug | fixed (Batch A; not run live: FBX imports crash a fresh session, F-51) | `import_fbx` as clothing always dresses the first character: no `target`, ignores the selection (unlike `load_asset`) |
 | F-51 | bug | open | CC5 crashed during an FBX prop import, right after "Convert All" (second session, box_01.fbx that imported fine before) |
-| F-52 | blocker | fixed, Batch A (live check pending) | The crash-recovery prompt stops an unattended run: only the user may answer it. Chad: Claude-launched CC5 answers Cancel automatically |
-| F-53 | blocker | fixed, Batch A (live check pending) | `capture_viewport` adds an undo step (it re-sets the render size), so `undo` after any capture reverses the capture, not the change |
+| F-52 | blocker | fixed, live (Batch A) | The crash-recovery prompt stops an unattended run: only the user may answer it. Chad: Claude-launched CC5 answers Cancel automatically |
+| F-53 | blocker | fixed, live (Batch A) | `capture_viewport` adds an undo step (it re-sets the render size), so `undo` after any capture reverses the capture, not the change |
 
 ## Details
 
@@ -479,6 +479,33 @@ with `RScene.RemoveObject` also undoes cleanly. So F-48 / F-49 tools can be one 
 Fix: `_set_render_resolution` reads `GetRenderExportImageParameter()` first and calls `SetRenderExportParameter`
 only when the size differs, so captures at the usual size add no undo step; say in `capture_viewport` that a size
 change is recorded once. Then retest F-09, F-39 and F-46.
+
+### Batch A live check (2026-10-05, after reinstall; commit 5c90be0 plus the corrections below)
+
+CC5 started with `CC5_RECOVERY_ANSWER=cancel CC5_ALLOW_EXEC=1`, clean CC4 Kevin.
+- F-52: the recovery prompt appeared and was answered Cancel by the plugin at 16:42:28; `get_cc5_dialog` reported
+  it. Nobody touched CC5.
+- F-53, corrected: the 5c90be0 fix (set the render size only when it changes) was not enough. Probes: a bare
+  `RenderImage` is itself one undo step; `SetRenderExportParameter` alone is one step; a size change followed by
+  `RenderImage` is ONE step together. A first correction undid two steps for a size change plus a render and also
+  undid the user's removal (the afro came back). Final fix: `capture_viewport` undoes exactly one step when it
+  changed the size or a render wrote the file (`_drop_capture_undo_steps`), never more. Live: remove afro ->
+  capture at a new size -> capture at the same size -> afro still removed -> one `undo` -> afro back.
+- F-43, corrected: the Wrinkle Mask folder does exist on disk (14 PNGs); CC5's `GetContentFilesInFolder` lists none
+  of them, so the parent-folder fallback found nothing. Now an empty CC5 listing for `wrinkle_mask` is replaced by
+  the image files on disk (`RApplication.GetTemplateDataPath()` + the `$/` folder). Live: 14 files.
+- F-45, completed: framing the selection was half of it. CC5's Home keeps the camera's current direction and only
+  re-fits, so "home" right after "left" stayed a side view; "home" now turns to Front first. Live: hair selected ->
+  "home" framed Kevin's full body and the hair stayed selected; "left" -> full-body side view; "home" -> front.
+- F-41/F-42: cloth_upper 107 files (Shirts + Coats), accessory_head the 11 hats and glasses.
+- F-10: Iris Color on both corneas gave visibly green eyes; one `undo` (after a capture) restored them.
+- F-38: `set_skin_shader('Original Roughness Strength', [0.4])` gave an even gloss on head, body, arms and legs
+  (no seam); one `undo` restored it.
+- F-48/F-49: Box_001 at the origin -> `set_object_transform` (80, 0, 0) cm, scale 0.5, read back and seen beside
+  Kevin -> `delete_object` deleted it; Kevin and the Preview Camera were refused -> one `undo` brought the box back
+  at (80, 0, 0), scale 0.5.
+- Seen on the way: `get_selection` shows worn hair as "Other (type 0)": CC5 does not report hair as
+  `EObjectType_Hair`, which is why `delete_object` decides by where an item was found, not by its type.
 
 ## Ideas (not findings)
 

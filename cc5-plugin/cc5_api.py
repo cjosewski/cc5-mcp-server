@@ -898,14 +898,13 @@ $bitmap.Dispose()
         )
 
 
-def _set_render_resolution(width: int, height: int) -> None:
+def _set_render_resolution(width: int, height: int) -> bool:
     """Set RenderImage output size. The default RenderImage output is uselessly
     small (~100x32), making captures unusable for visual verification. Setting
     RExportImageParameter.kCommon.nOutputSizeWidth/Height fixes it (verified live).
 
-    CC5 records SetRenderExportParameter as an undo step (live, F-53): setting it on every capture made `undo`
-    after a capture reverse the capture instead of the user's change. So it is only set when the size differs;
-    the first capture of a session, and a capture at a new size, still record that one step.
+    Returns True when it called SetRenderExportParameter, which CC5 records as an undo step (live, F-53); it is
+    only called when the size differs.
     """
     try:
         g = RLPy.RGlobal
@@ -914,12 +913,32 @@ def _set_render_resolution(width: int, height: int) -> None:
             if hasattr(p, "kCommon"):
                 w, h = max(16, int(width)), max(16, int(height))
                 if p.kCommon.nOutputSizeWidth == w and p.kCommon.nOutputSizeHeight == h:
-                    return
+                    return False
                 p.kCommon.nOutputSizeWidth = w
                 p.kCommon.nOutputSizeHeight = h
                 g.SetRenderExportParameter(p)
+                return True
     except Exception as e:
         print(f"[CC5 MCP Bridge] _set_render_resolution failed: {e}")
+    return False
+
+
+def _drop_capture_undo_steps(steps: int) -> None:
+    """Undo the steps a capture itself recorded, so `undo` (and Ctrl+Z in CC5) reaches the user's change.
+
+    Live CC5 5.13 (F-53): a capture records ONE undo step, so remove an item -> capture -> undo left the item
+    removed. RenderImage alone is one step, SetRenderExportParameter alone is one step, and a size change
+    followed by RenderImage is still one step together (live: undoing two there also undid the user's removal).
+    Undoing that step straight away pops only the capture (live: remove -> RenderImage -> RGlobal.Undo() -> the
+    item stayed removed; the next undo brought it back). A step is only counted when one is known to be
+    recorded, so a miscount leaves a harmless capture step behind rather than undoing the user's work.
+    """
+    for _ in range(steps):
+        try:
+            RLPy.RGlobal.Undo()
+        except Exception as e:
+            print(f"[CC5 MCP Bridge] capture: undoing its own step failed: {e}")
+            return
 
 
 def capture_viewport(output_path: str = "", width: int = 1280, height: int = 720) -> dict[str, Any]:
@@ -947,27 +966,34 @@ def capture_viewport(output_path: str = "", width: int = 1280, height: int = 720
             os.remove(output_path)
 
         # Render at a usable resolution (RenderImage default is ~100x32).
-        _set_render_resolution(width, height)
+        size_changed = _set_render_resolution(width, height)
+        rendered = False
 
         # Try RenderImage first (skip if known broken after .ccProject load, UR-13)
         global _render_image_broken
-        if not _render_image_broken:
-            try:
-                RLPy.RGlobal.RenderImage(output_path)
-            except Exception as e:
-                print(f"[CC5 MCP Bridge] RenderImage attempt 1 failed: {e}")
+        try:
+            if not _render_image_broken:
+                try:
+                    RLPy.RGlobal.RenderImage(output_path)
+                    rendered = os.path.exists(output_path)
+                except Exception as e:
+                    print(f"[CC5 MCP Bridge] RenderImage attempt 1 failed: {e}")
 
-        # If RenderImage didn't create a file, try ForceViewportUpdate + retry
-        if not _render_image_broken and not os.path.exists(output_path):
-            if hasattr(RLPy.RGlobal, "ForceViewportUpdate"):
-                RLPy.RGlobal.ForceViewportUpdate()
-            try:
-                RLPy.RGlobal.RenderImage(output_path)
-            except Exception as e:
-                print(f"[CC5 MCP Bridge] RenderImage attempt 2 failed: {e}")
-            if not os.path.exists(output_path):
-                # Second failure: mark as broken so future calls skip these attempts
-                _render_image_broken = True
+            # If RenderImage didn't create a file, try ForceViewportUpdate + retry
+            if not _render_image_broken and not os.path.exists(output_path):
+                if hasattr(RLPy.RGlobal, "ForceViewportUpdate"):
+                    RLPy.RGlobal.ForceViewportUpdate()
+                try:
+                    RLPy.RGlobal.RenderImage(output_path)
+                    rendered = os.path.exists(output_path)
+                except Exception as e:
+                    print(f"[CC5 MCP Bridge] RenderImage attempt 2 failed: {e}")
+                if not os.path.exists(output_path):
+                    # Second failure: mark as broken so future calls skip these attempts
+                    _render_image_broken = True
+        finally:
+            # One step whether the size changed, a render wrote the file, or both (see _drop_capture_undo_steps).
+            _drop_capture_undo_steps(1 if (size_changed or rendered) else 0)
 
         # Fallback: Windows screenshot of CC5 viewport
         if not os.path.exists(output_path):
@@ -1176,6 +1202,9 @@ _CAMERA_VIEWS = {
     "all": "ECameraLocationType_All",
     "focus": "ECameraLocationType_Focus",
 }
+# Live CC5 5.13 (F-45): Home keeps the camera's current direction and only re-fits, so "home" right after "left"
+# stayed a side view (and after "face", a front one). "home" therefore turns to Front first.
+_CAMERA_VIEW_FIRST = {"home": "ECameraLocationType_Front"}
 
 
 def frame_camera(view: str = "face", target: str | None = None) -> dict[str, Any]:
@@ -1215,6 +1244,9 @@ def frame_camera(view: str = "face", target: str | None = None) -> dict[str, Any
         if avatar is not None:
             RLPy.RScene.ClearSelectObjects()
             RLPy.RScene.SelectObject(avatar)
+        first = getattr(RLPy, _CAMERA_VIEW_FIRST[key], None) if key in _CAMERA_VIEW_FIRST else None
+        if first is not None:
+            cam.SetCameraLocation(first)
         cam.SetCameraLocation(loc)
         if hasattr(RLPy.RGlobal, "ForceViewportUpdate"):
             RLPy.RGlobal.ForceViewportUpdate()
@@ -2095,20 +2127,35 @@ BROWSE_TRUNCATED = f"(truncated: more than {MAX_BROWSE_RESULTS} files matched; o
 MAX_BROWSE_FOLDERS = 500
 
 
-# Live CC5 5.13: _WrinkleMasks resolves to "$/Others/Skin Textures/Wrinkle References/Wrinkle Mask", a folder the
-# install does not have; the wrinkle images (Set 1-1_Brow_Raise.png ...) sit in its parent (F-43).
-_BROWSE_PARENT_FALLBACK = {"wrinkle_mask"}
+# Live CC5 5.13 (F-43): _WrinkleMasks resolves to "$/Others/Skin Textures/Wrinkle References/Wrinkle Mask", which
+# holds 14 PNGs on disk (Set 1-1_Brow_Raise.png ...), yet GetContentFilesInFolder lists none of them. For these
+# categories an empty CC5 listing is replaced by the image files on disk.
+_BROWSE_DISK_IMAGE_FALLBACK = {"wrinkle_mask"}
+_BROWSE_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff")
 
 
-def _existing_or_parent(folder: str) -> str:
-    """The folder if it holds files or subfolders, else its parent ('$/a/b' -> '$/a')."""
+def _content_folder_on_disk(folder: str) -> str | None:
+    """'$/a/b' -> <GetTemplateDataPath()>/a/b; an absolute folder (a custom one) as it is; None if unknown."""
+    if folder.startswith("$/"):
+        try:
+            root = RLPy.RApplication.GetTemplateDataPath()
+        except Exception:
+            return None
+        return os.path.join(str(root), *folder[2:].strip("/").split("/")) if root else None
+    return folder if os.path.isabs(folder) else None
+
+
+def _disk_images(folder: str) -> list[str]:
+    """Image files directly in the CC5 content folder `folder`, read from disk (forward slashes, sorted)."""
+    path = _content_folder_on_disk(folder)
+    if not path or not os.path.isdir(path):
+        return []
     try:
-        if RLPy.RApplication.GetContentFilesInFolder(folder) or RLPy.RApplication.GetContentFoldersInFolder(folder):
-            return folder
-    except Exception:
-        pass
-    parent = folder.rstrip("/").rsplit("/", 1)[0]
-    return parent if parent and parent != "$" else folder
+        names = sorted(os.listdir(path))
+    except OSError:
+        return []
+    return [os.path.join(path, n).replace("\\", "/") for n in names
+            if n.lower().endswith(_BROWSE_IMAGE_EXTENSIONS) and os.path.isfile(os.path.join(path, n))]
 
 
 def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[str]:
@@ -2199,8 +2246,6 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
                             folder_strs.append(fs)
                     except Exception:
                         pass
-        if folder_type in _BROWSE_PARENT_FALLBACK:
-            folder_strs = [_existing_or_parent(fs) for fs in folder_strs]
 
         if not folder_strs:
             return [f"No content folder resolved for '{folder_type}'"]
@@ -2224,6 +2269,8 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
                 files = RLPy.RApplication.GetContentFilesInFolder(fs)
             except Exception:
                 files = None
+            if not files and folder_type in _BROWSE_DISK_IMAGE_FALLBACK:
+                files = _disk_images(fs)
             try:
                 pending += [s for s in (RLPy.RApplication.GetContentFoldersInFolder(fs) or []) if s]
             except Exception:

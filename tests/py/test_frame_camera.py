@@ -66,6 +66,18 @@ class FrameCameraTest(unittest.TestCase):
         self.assertNotIn("framed", r)
         self.rl.RScene.ClearSelectObjects.assert_not_called()
 
+    def test_home_turns_to_the_front_first(self):
+        # Live: Home keeps the current direction, so "home" right after "left" stayed a side view.
+        self.rl.ECameraLocationType_Front = "front"
+        self.rl.ECameraLocationType_Home = "home"
+        self.cam.SetCameraLocation.side_effect = None
+        self.api.frame_camera("home")
+        self.assertEqual([c.args[0] for c in self.cam.SetCameraLocation.call_args_list], ["front", "home"])
+        self.cam.SetCameraLocation.reset_mock()
+        self.rl.ECameraLocationType_Left = "left"
+        self.api.frame_camera("left")
+        self.assertEqual([c.args[0] for c in self.cam.SetCameraLocation.call_args_list], ["left"])
+
     def test_unknown_target_moves_nothing(self):
         r = self.api.frame_camera("home", "Nobody")
         self.assertFalse(r["success"])

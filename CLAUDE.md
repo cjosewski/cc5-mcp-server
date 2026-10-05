@@ -271,14 +271,14 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 | list_hair | List the hairstyles on the avatar |
 | list_accessories | List the accessories on the avatar |
 | remove_scene_item | Remove clothes/hair/accessories by name |
-| browse_content | Browse the CC5 content folders: cloth_upper (Shirts + Coats), cloth_lower (Pants + Skirts), cloth (Full-Body), underwear, gloves, cloth_other (socks, outfit sets), shoes, accessory_head (Accessory/Head), accessory_body (Torso + Arm + Leg), accessory_other, hair, eye, plus pose/motion/expression/props/light/camera/character, makeup, skingen and image libraries. A category may read several CC5 folders; `wrinkle_mask` falls back to its parent folder (the Wrinkle Mask subfolder does not exist on CC5 5.13) |
+| browse_content | Browse the CC5 content folders: cloth_upper (Shirts + Coats), cloth_lower (Pants + Skirts), cloth (Full-Body), underwear, gloves, cloth_other (socks, outfit sets), shoes, accessory_head (Accessory/Head), accessory_body (Torso + Arm + Leg), accessory_other, hair, eye, plus pose/motion/expression/props/light/camera/character, makeup, skingen and image libraries. A category may read several CC5 folders; `wrinkle_mask` lists the image files on disk when CC5's content listing returns none (CC5 5.13 lists none of its 14 PNGs) |
 
 ### Camera, lights, expressions
 | Tool | Description |
 |--------|------|
 | get_camera_info | Get camera position and focal length |
 | set_camera_focal_length | Set the camera focal length |
-| frame_camera | Move the camera to a preset viewpoint (face/front/home/all, etc.). CC5 frames the selected object, so the character (`target`, else the selected one, else the first) is selected for the move and the selection is put back (F-45) |
+| frame_camera | Move the camera to a preset viewpoint (face/front/home/all, etc.). CC5 frames the selected object, so the character (`target`, else the selected one, else the first) is selected for the move and the selection is put back; CC5's Home keeps the current direction, so `home` turns to Front first (F-45) |
 | get_lights | List the lights in the scene (deduplicated) |
 | get_light_info | Light details (color/intensity/on-off/shadow casting/shadow darkness/range) |
 | set_light_color | Change a light's RGB color |
@@ -334,7 +334,7 @@ CC5 applies character content (eye, skin, cloth presets) to the **selected** cha
 | load_asset | Load an asset (.iAvatar, .ccAvatar, .ccm, etc.). Character content (.ccEye, .ccCloth, .ccShoes, ...) is applied to `target`, else the selected character, else the first |
 | export_fbx | FBX export (reproduces CC5's "Export FBX" dialog). See "export_fbx details" below.|
 | set_subdivision_level | HD subdivision level |
-| capture_viewport | Viewport screenshot (returns the image to the LLM). The render size is only set when it changes: CC5 records `SetRenderExportParameter` as an undo step, so setting it on every capture made `undo` after a capture reverse the capture (F-53) |
+| capture_viewport | Viewport screenshot (returns the image to the LLM). CC5 records a capture as one undo step (`RenderImage`, a render-size change, or both together), so the capture undoes exactly that step right away; otherwise `undo` after a capture reversed the capture, not the change (F-53). Never more than one: a miscount must not undo the user's work |
 
 ### ActorMIXER PRO
 | Tool | Description |
