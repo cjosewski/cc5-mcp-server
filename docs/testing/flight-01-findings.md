@@ -32,7 +32,7 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-16 | doc | open | `set_subdivision_level` refusal does not say to run Modify > Subdivide |
 | F-17 | minor | open | `describe_character` says "average build" for templates and for heavy at 50% |
 | F-18 | minor | open | `reset_expression` reports every slider (172), not the ones it changed |
-| F-19 | gap | open | `search_content` does not cover eye presets |
+| F-19 | gap | fixed (live P4-82) | `search_content` did not cover eye presets |
 | F-20 | doc | runbook | `search_morphs` matches IDs too; several display names repeat with different IDs |
 | F-21 | minor | open | Error wording differs across tools for the same situation |
 | F-22 | minor | open | `capture_viewport` without a path always overwrites the same temp file |
@@ -46,6 +46,12 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-30 | doc | runbook | Value checks need a tolerance (float32 and 0-255 storage) |
 | F-31 | retest | open | Worn accessory selection (duplicate-name risk) untested: Kevin has no accessories |
 | F-32 | minor | open | Claude Code showed a stale `load_asset` schema (no `target`) after restarts; the build is correct |
+| F-33 | blocker | fixed (live P4-78 to P4-81) | Hair could not be loaded at all: every CC5 hairstyle is `.rlHair`, which `load_asset` refused |
+| F-34 | gap | open (to become MCP protocol) | Presets override more than they are named for (lip makeup hid hair, brows, probably the Boxers and possibly the torso skin, reset skin); `load_asset` reports a clean load |
+| F-35 | bug | not a bug (P4-102) | `get_material_properties` read-back: works on a clean character; the earlier 100 came from F-34 |
+| F-36 | blocker | fixed (live P4-104 to P4-106) | Material setters sent 0-1 to CC5's 0-100 scale: opacity 1.0 = 1%, the skin vanished |
+| F-37 | bug | not a bug (P4-107) | Opacity undo: works on a clean character; the earlier failure came from F-34 |
+| F-38 | bug | open | `set_material_glossiness` / `set_material_specular` change nothing on Kevin's skin (read-back and viewport) |
 
 ## Details
 
@@ -130,9 +136,9 @@ Built only from morph values: a template ("average build", 2 identity morphs) an
 **F-18: `reset_expression` count** (P3-35) · minor
 Reports 172 (all sliders) after only 2 were set. Report the number changed, or say "all".
 
-**F-19: `search_content` misses eye presets** (P4-19) · gap
-"eye green" and "iris" find nothing; presets are in `Reallusion Templates/Actor/Eye/` (`.ccEye`). Add an `eye`
-category to `search_content` / `browse_content`.
+**F-19: `search_content` misses eye presets** (P4-19) · gap · fixed with F-33; live: `search_content` "green" in `eye` found both green presets (P4-82)
+"eye green" and "iris" found nothing; presets are in `Reallusion Templates/Actor/Eye/` (`.ccEye`). Fixed: an `eye`
+category (`EContentRootFolder_Eye`) in `browse_content` and the `search_content` defaults.
 
 **F-20: `search_morphs` IDs and duplicate names** (P3-2) · doc / runbook
 The search matches IDs (`pack_jaw10` = "Neck Front Smooth"), and "Jaw Height", "Jaw Outer Define", "Jaw Scale"
@@ -180,7 +186,80 @@ Compare floats to about 0.004 (one 0-255 step) or round to 3 decimals.
 The reviewer's open question: whether a worn accessory resolves to one item or a duplicate name. Kevin has no
 accessories; worn clothing (Boxers) resolved to one item. Retest on a character with an accessory.
 
-**F-32: stale tool schema in Claude Code** · minor (environment)
+**F-32: stale tool schema in Claude Code** · minor (environment). Seen again after the F-33 restart: `search_content`
+still showed "Hair is not a searchable category" while the server searched hair. Call with explicit options.
 After the MCP server restarts, the `load_asset` schema Claude Code showed had no `target` option, while
 `build/tools/asset.js` has it and the server runs `build/index.js`. The dialog tools loaded fine. Check whether
 Claude Code caches tool schemas across restarts.
+
+**F-33: hair could not be loaded** (P4-77) · blocker · fixed
+"Apply a short cropped hairstyle to Kevin": all 233 hairstyles under `Reallusion Templates/Hair` are `.rlHair`, and
+`load_asset` refused them ("Disallowed file extension: .rlhair") before reaching CC5. `search_content` and
+`browse_content` had no hair category. Fixed: `.rlHair` is character content in `load_asset` (TypeScript and
+plugin), aimed at the target character; a `hair` category (`EContentRootFolder_Group`, the `Hair/Group` folder;
+CC5 has no `EContentRootFolder_Hair`) lists `.rlHair` files; the create_character prompt no longer says hair is
+not searchable. Live (P4-78 to P4-81): `search_content` "buzz cut" in `hair` found Buzz Cut and Afro Buzz Cut; `load_asset`
+applied Buzz Cut to Kevin with no dialog (he had no hair); `list_hair` shows `Buzz_Cut`; a 4K face capture shows
+the cut. `EContentRootFolder_Group` does resolve to `Hair/Group`.
+
+**F-34: presets override more than they are named for** (P4-87 to P4-91) · gap
+"Red Velvet" (`.ccSkinGenPreset`, lip makeup) made Kevin's lips red, but his Buzz Cut hair and eyebrows stopped
+rendering (meshes still listed; `set_item_visible` did not bring them back) and the skin lost the `set_skin_color`
+tone. Chad: a known CC5 complication; presets, especially Reallusion store content, override things you want to
+keep. `load_asset` said only "Asset loaded". Fix ideas: capture and compare before/after around character presets
+(hair, brows, skin, eyes, morph count) and report every change beyond the intended one, offering `undo`; at minimum,
+say in `load_asset`'s description that presets can override other parts of the character.
+Chad (2026-10-05): this must be baked into the MCP as protocol: every preset load checks before/after and
+reports what else changed, not left to the agent's judgment.
+
+**F-35: material property read-back** (P4-93 to P4-95) · bug
+`set_material_opacity` 0.3 on `Std_Skin_Body` applied (the torso vanished in the viewport) but
+`get_material_properties` still reported Opacity 100. Same pattern as F-08 (keyed value vs base value); fix together.
+Also: 0.3 rendered as fully invisible, not 70% see-through; the viewport probably treats skin opacity as a cut-off.
+Chad: a CC5 quirk; the control that makes a change happen is often buried in another feature (layered controls).
+Find which layer decides partial transparency (material/shader mode) before treating this as an MCP bug.
+
+**F-36: opacity scales differ** (P4-92 to P4-94) · minor
+`set_material_opacity` takes 0.0-1.0; `get_material_properties` reports 0-100 (Opacity 100, Glossiness 20,
+Specular 100). Use one scale (0-1, like the color tools) in both.
+
+**F-37: opacity undo and a lagging read-back** (P4-96 to P4-98) · bug
+Opacity read back: 100 before the set; 100 right after `set_material_opacity` 0.3 (torso already invisible); after one
+`undo`, 0.30000001192092896 (0-1 scale, raw float) while the torso stayed invisible. So the undo did not revert the
+opacity (what it reverted is unknown), and the getter returns values from different sources/steps. Same family as
+F-08, F-09, F-35, F-36: material changes are made as keys, and neither undo nor the getters handle them reliably.
+Workaround: set the value back explicitly and check the viewport.
+
+**Correction to F-35 / F-37** (P4-99) · setting opacity back to 1.0 did not bring the torso back either. The
+full body was never captured between the Red Velvet lip preset (P4-88) and the opacity change, and the first
+full-body view after the preset already showed the torso and Boxers missing. So the missing torso may be a preset
+side effect (F-34), not opacity; whether `set_material_opacity` and its undo work is unknown. Retest on a freshly
+loaded Kevin: capture, opacity 0.3, capture, read back, opacity 1.0, capture, read back.
+
+**Retest on a fresh Kevin (P4-100 to P4-103) resolves F-35 / F-36 / the Boxers.** Baseline read 100 / 20 / 100.
+Opacity 0.3: torso vanished, Boxers stayed (so the missing Boxers were F-34), read back 0.30000001192092896.
+Opacity 1.0: torso still invisible, read back 1. Cause (`cc5_api.py`): `set_material_opacity`, `set_material_glossiness`
+and `set_material_specular` passed their 0-1 value straight to `AddOpacityKey` / `AddGlossinessKey` /
+`AddSpecularKey`, but CC5 uses 0-100, so 1.0 meant 1%. Fixed: the setters scale to 0-100 and
+`get_material_properties` reports 0-1 (rounded to 3 decimals). F-37 (opacity undo) still needs a retest.
+
+**Live check after the F-36 fix (P4-104 to P4-108).** Baseline read 1 / 0.2 / 1. Opacity 0.3 read 0.3 and cut the
+torso out (the skin shader treats low opacity as a cut-out, not a blend: a CC5 layered-controls behavior); opacity 1.0
+restored it and read 1; opacity 0.3 then one `undo` restored it (F-37 not a bug).
+
+**F-38: glossiness and specular do nothing on skin** (P4-108) · bug
+`set_material_glossiness` 0.8 and `set_material_specular` 0.5 on `Std_Skin_Body` reported success, but
+`get_material_properties` still read 0.2 / 1 and the viewport did not change. Likely cause: Kevin's skin uses the
+Digital Human skin shader, whose shine comes from shader parameters (`set_shader_parameter`), so the legacy
+material-level values are ignored or not stored. Fix: verify the value after setting and fail if it did not take;
+say in both descriptions that Digital Human materials use `set_shader_parameter`. Confirm on a non-skin material.
+
+## Ideas (not findings)
+
+**I-01: a panel inside CC5** (Chad, 2026-10-05) · after the run
+CC5's plugin API can add docked panels, menus and hotkeys (`RUi.CreateRDockWidget`, `RUi.AddMenu`,
+`RUi.AddHotKey`, `RUi.GetMainWindow`), and the plugin already runs PySide2 inside CC5. Options, smallest first:
+a bridge activity log panel (live view of MCP commands, waiting dialogs and jobs); a Python console panel (RLPy
+commands on CC5's main thread; must obey the same `CC5_DEV_MODE` / `CC5_ALLOW_EXEC` switch as `exec_python`); a
+shell panel (PowerShell/cmd through a pipe; not a real terminal, so full-screen programs such as Claude Code do not
+render); a Claude chat panel (needs its own link to Claude; separate design). Decide the purpose first.

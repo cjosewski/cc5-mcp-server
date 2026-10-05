@@ -379,6 +379,8 @@ def delete_avatar(name: str = "") -> dict[str, Any]:
 _CHARACTER_CONTENT_EXTENSIONS = {
     ".cceye", ".cccloth", ".ccshoes", ".ccgloves", ".ccacc", ".iacc", ".cchair", ".ccskin", ".ccteeth",
     ".ccskingenpreset", ".iclothes", ".iclothing", ".ihair", ".ishoe", ".iaccessory", ".iskin",
+    # Every hairstyle CC5 5.13 ships is .rlHair (Reallusion Templates/Hair); live, .rlHair was refused outright.
+    ".rlhair",
 }
 
 
@@ -421,7 +423,8 @@ def load_asset(file_path: str, target: str | None = None) -> dict[str, Any]:
     if ".." in file_path or ".." in decoded:
         return {"success": False, "error": "Path traversal ('..') is not allowed"}
     ext = os.path.splitext(os.path.realpath(file_path))[1].lower()
-    if ext not in _ALLOWED_LOAD_EXTENSIONS and not (ext.startswith(".cc") or ext.startswith(".i")):
+    if (ext not in _ALLOWED_LOAD_EXTENSIONS and ext not in _CHARACTER_CONTENT_EXTENSIONS
+            and not (ext.startswith(".cc") or ext.startswith(".i"))):
         return {"success": False, "error": f"Disallowed file extension: {ext}"}
 
     if not os.path.exists(file_path):
@@ -1709,8 +1712,22 @@ def set_diffuse_color(mesh_name: str, material_name: str, r: float, g: float, b:
 # --- Material Properties (Opacity, Glossiness, Specular) ---
 
 
+# CC5 keeps material opacity, glossiness and specular on 0-100 (a fresh CC4 Kevin skin reads 100 / 20 / 100); the
+# tools use 0-1 like the color tools. Live (2026-10-05) the setters passed 0-1 straight through, so "opacity 1.0"
+# set 1% and made the skin vanish.
+_MATERIAL_WEIGHT_SCALE = 100.0
+
+
+def _to_weight_scale(value: float) -> float:
+    return max(0.0, min(1.0, float(value))) * _MATERIAL_WEIGHT_SCALE
+
+
+def _from_weight_scale(value: Any) -> float:
+    return round(float(value) / _MATERIAL_WEIGHT_SCALE, 3)
+
+
 def get_material_properties(mesh_name: str, material_name: str) -> dict[str, Any]:
-    """Get opacity, glossiness, and specular for a material."""
+    """Get opacity, glossiness, and specular for a material, each 0.0-1.0."""
     error = _validate_material_names(mesh_name, material_name)
     if error:
         return {"success": False, "error": error}
@@ -1725,13 +1742,13 @@ def get_material_properties(mesh_name: str, material_name: str) -> dict[str, Any
     try:
         result: dict[str, Any] = {"success": True, "mesh": mesh_name, "material": material_name}
         if hasattr(mat_comp, "GetOpacity"):
-            result["opacity"] = mat_comp.GetOpacity(mesh_name, material_name)
+            result["opacity"] = _from_weight_scale(mat_comp.GetOpacity(mesh_name, material_name))
         if hasattr(mat_comp, "GetGlossinessWeight"):
-            result["glossiness"] = mat_comp.GetGlossinessWeight(mesh_name, material_name)
+            result["glossiness"] = _from_weight_scale(mat_comp.GetGlossinessWeight(mesh_name, material_name))
         if hasattr(mat_comp, "GetSpecularWeight"):
-            result["specular"] = mat_comp.GetSpecularWeight(mesh_name, material_name)
+            result["specular"] = _from_weight_scale(mat_comp.GetSpecularWeight(mesh_name, material_name))
         elif hasattr(mat_comp, "GetSpecular"):
-            result["specular"] = mat_comp.GetSpecular(mesh_name, material_name)
+            result["specular"] = _from_weight_scale(mat_comp.GetSpecular(mesh_name, material_name))
         return result
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1757,7 +1774,7 @@ def set_material_opacity(mesh_name: str, material_name: str, opacity: float) -> 
         key.SetTime(time)
         try:
             RLPy.RGlobal.BeginAction("Set Material Opacity")
-            mat_comp.AddOpacityKey(key, mesh_name, material_name, opacity)
+            mat_comp.AddOpacityKey(key, mesh_name, material_name, _to_weight_scale(opacity))
             RLPy.RGlobal.ObjectModified(avatar, _EOMTYPE_MATERIAL)
         finally:
             RLPy.RGlobal.EndAction()
@@ -1786,7 +1803,7 @@ def set_material_glossiness(mesh_name: str, material_name: str, glossiness: floa
         key.SetTime(time)
         try:
             RLPy.RGlobal.BeginAction("Set Material Glossiness")
-            mat_comp.AddGlossinessKey(key, mesh_name, material_name, glossiness)
+            mat_comp.AddGlossinessKey(key, mesh_name, material_name, _to_weight_scale(glossiness))
             RLPy.RGlobal.ObjectModified(avatar, _EOMTYPE_MATERIAL)
         finally:
             RLPy.RGlobal.EndAction()
@@ -1815,7 +1832,7 @@ def set_material_specular(mesh_name: str, material_name: str, specular: float) -
         key.SetTime(time)
         try:
             RLPy.RGlobal.BeginAction("Set Material Specular")
-            mat_comp.AddSpecularKey(key, mesh_name, material_name, specular)
+            mat_comp.AddSpecularKey(key, mesh_name, material_name, _to_weight_scale(specular))
             RLPy.RGlobal.ObjectModified(avatar, _EOMTYPE_MATERIAL)
         finally:
             RLPy.RGlobal.EndAction()
@@ -2086,6 +2103,10 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
         "skingen": "EContentRootFolder_SkinGenTools",
         "wrinkle_mask": "EContentRootFolder_WrinkleMasks",
         "texture": "EContentRootFolder_Texture",
+        # Whole hairstyles (.rlHair) sit in Reallusion Templates/Hair/Group; CC5 has no EContentRootFolder_Hair.
+        "hair": "EContentRootFolder_Group",
+        # Eye presets (.ccEye), e.g. "_Green CH1 Eyes".
+        "eye": "EContentRootFolder_Eye",
     }
     folder_map: dict[str, Any] = {}
     for key, attr_name in enum_candidates.items():
@@ -2143,7 +2164,9 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
             for f in (files or []):
                 ext = os.path.splitext(f)[1].lower()
                 is_image = folder_type in ("image_layer", "texture", "wrinkle_mask") and ext in (".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff")
-                if (ext.startswith((".cc", ".i")) or (folder_type in ("pose", "motion") and ext.startswith(".rl")) or is_image) and f not in seen:
+                is_hair = folder_type == "hair" and ext == ".rlhair"
+                if (ext.startswith((".cc", ".i")) or (folder_type in ("pose", "motion") and ext.startswith(".rl"))
+                        or is_image or is_hair) and f not in seen:
                     name = os.path.basename(f).lower()
                     if words and not all(w in name for w in words):
                         continue

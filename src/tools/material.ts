@@ -67,7 +67,7 @@ export function registerMaterialTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "get_material_properties",
-    "Get opacity, glossiness, and specular values of a material. Use get_material_info first to find valid mesh and material names.",
+    "Get opacity, glossiness, and specular values of a material, each 0.0-1.0 (the same scale the set_material_* tools take). Use get_material_info first to find valid mesh and material names.",
     {
       mesh_name: z.string().max(256).describe("Mesh name (from get_material_info)"),
       material_name: z.string().max(256).describe("Material name (from get_material_info)"),

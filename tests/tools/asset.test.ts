@@ -125,6 +125,19 @@ describe("load_asset handler – extension validation", () => {
     });
   }
 
+  it("accepts .rlHair hairstyles and passes target through", async () => {
+    bridge.loadAsset.mockResolvedValue({ success: true, path: "C:/h/Buzz Cut.rlHair", target: "Kevin" });
+    const result = await server.getRegisteredTool("load_asset")({ file_path: "C:/h/Buzz Cut.rlHair", target: "Kevin" });
+    expect(bridge.loadAsset).toHaveBeenCalledWith("C:/h/Buzz Cut.rlHair", "Kevin");
+    expect(result.content[0].text).toBe("Asset loaded: C:/h/Buzz Cut.rlHair (applied to Kevin)");
+  });
+
+  it("rejects other .rl files (.rlHairElement)", async () => {
+    const result = await server.getRegisteredTool("load_asset")({ file_path: "C:/h/Buzz Cut.rlHairElement" });
+    expect(result.content[0].text).toContain("Disallowed file extension");
+    expect(bridge.loadAsset).not.toHaveBeenCalled();
+  });
+
   it("rejects disallowed extension (.txt)", async () => {
     const handler = server.getRegisteredTool("load_asset");
     const result = await handler({ file_path: "C:/bad/file.txt" });

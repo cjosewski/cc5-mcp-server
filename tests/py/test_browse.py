@@ -22,6 +22,14 @@ class BrowseSearchTest(unittest.TestCase):
         self._listing([f"C:/c/Shirt_{i:03}.ccCloth" for i in range(249)] + ["C:/c/Camo Jacket.ccCloth"])
         self.assertEqual(self.api.browse_content("cloth_upper", "camo jacket"), ["C:/c/Camo Jacket.ccCloth"])
 
+    def test_hair_lists_rlhair_hairstyles_and_eye_lists_eye_presets(self):
+        # Live CC5 5.13: every hairstyle is .rlHair; other categories still ignore .rl* files.
+        self._listing(["C:/h/Buzz Cut.rlHair", "C:/h/Buzz Cut.rlHairElement", "C:/h/readme.txt"])
+        self.assertEqual(self.api.browse_content("hair", "buzz"), ["C:/h/Buzz Cut.rlHair"])
+        self.assertEqual(self.api.browse_content("cloth_upper", "buzz"), [])
+        self._listing(["C:/e/_Green CH1 Eyes.ccEye"])
+        self.assertEqual(self.api.browse_content("eye", "green"), ["C:/e/_Green CH1 Eyes.ccEye"])
+
     def test_query_words_match_the_file_name_in_any_order_and_case(self):
         self._listing(["C:/c/Military Jacket CAMO.ccCloth", "C:/camo/Hoodie.ccCloth", "C:/c/Jacket.ccCloth"])
         self.assertEqual(self.api.browse_content("cloth_upper", "camo jacket"), ["C:/c/Military Jacket CAMO.ccCloth"])

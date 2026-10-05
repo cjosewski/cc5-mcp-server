@@ -15,7 +15,7 @@ import { claimScene } from "../scene-lock.js";
 export const SEARCH_FOLDERS = [
   "cloth", "cloth_upper", "cloth_lower", "shoes", "accessory_head", "character",
   "pose", "expression", "makeup_full", "makeup_foundation", "makeup_eye", "makeup_lip",
-  "image_layer", "skingen", "texture",
+  "image_layer", "skingen", "texture", "hair", "eye",
 ];
 
 /**
@@ -64,7 +64,7 @@ export async function searchContent(
 export function registerBuilderTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "search_content",
-    "Search installed CC5 content (clothing, shoes, characters, poses, makeup, skin layers, textures) by keywords in the file name. Hair is not a searchable category. Load a hit with load_asset.",
+    "Search installed CC5 content (clothing, shoes, hairstyles, eye presets, characters, poses, makeup, skin layers, textures) by keywords in the file name. Load a hit with load_asset.",
     {
       query: z.string().min(1).max(200).describe("Keywords, e.g. 'camo jacket'"),
       folder_types: z.array(z.string()).optional().describe(`Categories to search (default: ${SEARCH_FOLDERS.join(", ")})`),

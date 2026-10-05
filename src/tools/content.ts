@@ -72,15 +72,15 @@ export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "browse_content",
-    "Browse available CC5 content files by category. Returns file paths that can be loaded with load_asset. Wearables: cloth_upper, cloth_lower, cloth, shoes, accessory_head, accessory_body. Scene/animation: pose, motion, expression, props, light, camera, character (pose/motion may be empty on a base install without content packs).",
+    "Browse available CC5 content files by category. Returns file paths that can be loaded with load_asset. Wearables: cloth_upper, cloth_lower, cloth, shoes, accessory_head, accessory_body, hair (.rlHair hairstyles), eye (.ccEye eye presets). Scene/animation: pose, motion, expression, props, light, camera, character (pose/motion may be empty on a base install without content packs).",
     {
       folder_type: z.enum([
         "cloth_upper", "cloth_lower", "cloth", "shoes", "accessory_head", "accessory_body",
         "pose", "motion", "expression", "props", "light", "camera", "character",
         "makeup_full", "makeup_foundation", "makeup_eye", "makeup_lip",
-        "image_layer", "skingen", "wrinkle_mask", "texture",
+        "image_layer", "skingen", "wrinkle_mask", "texture", "hair", "eye",
       ]).default("cloth_upper")
-        .describe("Content category. Wearables: cloth_upper/cloth_lower/cloth/shoes/accessory_head/accessory_body. Scene & animation: pose/motion/expression/props/light/camera/character. Skin & makeup: makeup_full/makeup_foundation/makeup_eye/makeup_lip/skingen. Image libraries texture/wrinkle_mask also list image files (for apply_skin_overlay and load_texture); image_layer holds CC5 .iImgLayer stage items, not overlay images. Load a returned content path with load_asset."),
+        .describe("Content category. Wearables: cloth_upper/cloth_lower/cloth/shoes/accessory_head/accessory_body/hair/eye. Scene & animation: pose/motion/expression/props/light/camera/character. Skin & makeup: makeup_full/makeup_foundation/makeup_eye/makeup_lip/skingen. Image libraries texture/wrinkle_mask also list image files (for apply_skin_overlay and load_texture); image_layer holds CC5 .iImgLayer stage items, not overlay images. Load a returned content path with load_asset."),
     },
     async ({ folder_type }) => bridgeCall(
       () => bridge.browseContent(folder_type),

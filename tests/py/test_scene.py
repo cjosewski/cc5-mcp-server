@@ -224,6 +224,17 @@ class LoadAssetTargetTest(unittest.TestCase):
         for name in ("Bob.ccHair", "work.ccGloves", "smoky.ccSkinGenPreset"):
             self.assertEqual(self.api.load_asset(self._file(name))["target"], "Kevin", name)
 
+    def test_rlhair_hairstyles_are_character_content(self):
+        # Live: every hairstyle CC5 5.13 ships is .rlHair, and load_asset refused it outright.
+        path = self._file("Buzz Cut.rlHair")
+        r = self.api.load_asset(path)
+        self.assertEqual(r, {"success": True, "path": path, "target": "Kevin"})
+        self.rl.RFileIO.LoadFile.assert_called_once_with(path, True, self.kevin)
+
+    def test_other_rl_files_stay_refused(self):
+        r = self.api.load_asset(self._file("Buzz Cut.rlHairElement"))
+        self.assertEqual(r, {"success": False, "error": "Disallowed file extension: .rlhairelement"})
+
     def test_character_load_is_one_undo_step_even_when_it_fails(self):
         self.rl.RFileIO.LoadFile.side_effect = RuntimeError("boom")
         r = self.api.load_asset(self._file("eyes.ccEye"))

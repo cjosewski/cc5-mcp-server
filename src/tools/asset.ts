@@ -12,6 +12,8 @@ const ALLOWED_ASSET_EXTENSIONS = new Set([
   ".iavatar", ".ccavatar", ".ccproject", ".ccm",
   ".iclothes", ".ihair", ".iprop", ".ccfbx",
   ".iclothing", ".ishoe", ".iaccessory", ".ibody", ".iskin",
+  // Every hairstyle CC5 5.13 ships is .rlHair; it is character content (applied to the target character).
+  ".rlhair",
 ]);
 
 function validateAssetPath(filePath: string): string | null {
@@ -43,7 +45,7 @@ function validateExportPath(filePath: string): string | null {
 export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "load_asset",
-    "Load a CC5 asset file into the scene. Supports .iAvatar, .ccm (character), .iClothes (clothing), .iHair (hair), .iProp (prop), and other CC5 formats. Character content (.ccEye, .ccCloth, .ccShoes, .ccAcc, .ccSkin, .ccTeeth, .iClothes, .iHair, ...) is applied to one character: `target` by name, else the character selected in CC5, else the first; that character becomes selected. With several characters selected (or two sharing the target name) it is refused: pass a unique target.",
+    "Load a CC5 asset file into the scene. Supports .iAvatar, .ccm (character), .iClothes (clothing), .rlHair (hairstyles; find them with search_content or browse_content 'hair'), .iProp (prop), and other CC5 formats. Character content (.ccEye, .ccCloth, .ccShoes, .ccAcc, .ccSkin, .ccTeeth, .rlHair, .iClothes, .iHair, ...) is applied to one character: `target` by name, else the character selected in CC5, else the first; that character becomes selected. With several characters selected (or two sharing the target name) it is refused: pass a unique target.",
     {
       file_path: z.string().describe("Absolute path to the CC5 asset file (e.g., 'C:/Assets/MyChar.iAvatar')"),
       target: z.string().min(1).max(256).optional()
