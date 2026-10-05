@@ -423,6 +423,13 @@ describe("CC5Bridge.loadAsset", () => {
     );
   });
 
+  it("sends target only when given", async () => {
+    mockFetch<OperationResult>({ result: { success: true, target: "Kevin" } });
+    await bridge.loadAsset("C:/e/Green.ccEye", "Kevin");
+    const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ file_path: "C:/e/Green.ccEye", target: "Kevin" });
+  });
+
   it("returns success on successful load", async () => {
     mockFetch<OperationResult>({ result: { success: true } });
     const result = await bridge.loadAsset("C:/Assets/Character.ccm");
@@ -439,6 +446,60 @@ describe("CC5Bridge.loadAsset", () => {
   it("throws on network error", async () => {
     mockFetchError("connection refused");
     await expect(bridge.loadAsset("C:/file.iAvatar")).rejects.toThrow("connection refused");
+  });
+});
+
+// ── selection ─────────────────────────────────────────────────────────────────
+
+describe("CC5Bridge selection", () => {
+  it("selectObjects sends POST /scene/select with names and add", async () => {
+    mockFetch<OperationResult>({ result: { success: true, selected: [] } });
+    await bridge.selectObjects(["Kevin"], true);
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      "http://localhost:5101/scene/select",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ names: ["Kevin"], add: true }) })
+    );
+  });
+
+  it("selectObjects defaults add to false", async () => {
+    mockFetch<OperationResult>({ result: { success: true, selected: [] } });
+    await bridge.selectObjects(["Kevin"]);
+    const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ names: ["Kevin"], add: false });
+  });
+
+  it("getSelection and clearSelection use their routes", async () => {
+    mockFetch<OperationResult>({ result: { success: true, selected: [] } });
+    await bridge.getSelection();
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("http://localhost:5101/scene/selection");
+    mockFetch<OperationResult>({ result: { success: true, selected: [] } });
+    await bridge.clearSelection();
+    expect(vi.mocked(fetch).mock.calls.at(-1)?.[0]).toBe("http://localhost:5101/scene/selection/clear");
+  });
+});
+
+// ── dialogs ───────────────────────────────────────────────────────────────────
+
+describe("CC5Bridge dialogs", () => {
+  it("getDialog and answerDialog use their routes", async () => {
+    mockFetch<OperationResult>({ result: { success: true, dialog: null } });
+    await bridge.getDialog();
+    expect(vi.mocked(fetch).mock.calls[0][0]).toBe("http://localhost:5101/dialog");
+    mockFetch<OperationResult>({ result: { success: true, clicked: "OK" } });
+    await bridge.answerDialog("OK");
+    const call = vi.mocked(fetch).mock.calls.at(-1)!;
+    expect(call[0]).toBe("http://localhost:5101/dialog/answer");
+    expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ button: "OK" });
+    mockFetch<OperationResult>({ result: { success: true, clicked: "OK" } });
+    await bridge.answerDialog("OK", "Delete Kevin?");
+    const body = JSON.parse((vi.mocked(fetch).mock.calls.at(-1)![1] as RequestInit).body as string);
+    expect(body).toEqual({ button: "OK", expect: "Delete Kevin?" });
+  });
+
+  it("passes a waiting-for-dialog reply through as CC5's own text", async () => {
+    const error = 'CC5 is waiting for an answer to "Replace?". Buttons: Replace, Cancel. The command is still running as job cmd_4';
+    mockFetchHttpError(409, JSON.stringify({ state: "waiting_for_dialog", job_id: "cmd_4", error }));
+    await expect(bridge.loadAsset("C:/e/Blue.ccEye")).rejects.toThrow(error);
   });
 });
 

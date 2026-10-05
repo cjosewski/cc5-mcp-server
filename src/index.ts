@@ -33,6 +33,8 @@ import { registerUnityTools } from "./tools/unity.js";
 import { registerPipelineTools } from "./tools/pipeline.js";
 import { registerSkinTools } from "./tools/skin.js";
 import { registerBuilderTools } from "./tools/builder.js";
+import { registerSelectionTools } from "./tools/selection.js";
+import { registerDialogTools } from "./tools/dialog.js";
 import { registerBatchTools } from "./tools/batch.js";
 import { registerMorphResources } from "./resources/morphs.js";
 import { registerCreateCharacterPrompt } from "./prompts/create-character.js";
@@ -67,6 +69,8 @@ async function main() {
   registerPipelineTools(server, bridge);
   registerSkinTools(server, bridge);
   registerBuilderTools(server, bridge);
+  registerSelectionTools(server, bridge);
+  registerDialogTools(server, bridge);
   registerBatchTools(server, bridge);
 
   // Register resources

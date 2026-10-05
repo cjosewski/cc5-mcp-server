@@ -24,6 +24,7 @@ export function registerJobTools(server: McpServer, bridge: CC5Bridge) {
         return isUnknownJob(err) ? errorResult(lostJobMessage(job_id)) : bridgeErrorResult(err);
       }
       if (job.status === "queued" || job.status === "running") {
+        if (job.dialog_message) return errorResult(job.dialog_message);
         return { content: [{ type: "text" as const, text: formatPending(job_id) }] };
       }
       const failed = job.status === "failed";

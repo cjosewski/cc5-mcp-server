@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { runJob, JOB_ID_PATTERN } from "../src/jobs.js";
+import { runJob, runJobStep, runJobTool, JOB_ID_PATTERN } from "../src/jobs.js";
 import { BridgeHttpError, BridgeUnreachableError } from "../src/cc5-bridge.js";
 
 function bridgeWith(statuses: Array<Record<string, unknown>>) {
@@ -29,6 +29,21 @@ describe("runJob", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await runJob(b as any, "a", {}, { waitMs: 5, pollMs: 1 });
     expect(out).toEqual({ done: false, job_id: "cmd_7" });
+  });
+
+  it("stops waiting and passes on the question when the job waits on a CC5 dialog", async () => {
+    const message = 'CC5 is waiting for an answer to "Replace?". Buttons: Replace, Cancel. The command is still running as job cmd_1';
+    const b = bridgeWith([{ status: "running" }, { status: "running", dialog: { title: "", text: "Replace?", buttons: [] }, dialog_message: message }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const out = await runJob(b as any, "load_asset", {}, { waitMs: 60_000, pollMs: 1 });
+    expect(out).toEqual({ done: false, job_id: "cmd_1", dialog: message });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await runJobStep(bridgeWith([{ status: "running", dialog_message: message }]) as any, "load_asset", {}, { waitMs: 1000 }))
+      .toEqual({ success: false, error: message });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tool = await runJobTool(bridgeWith([{ status: "running", dialog_message: message }]) as any, "save_character", {}, () => "ok");
+    expect(tool.isError).toBe(true);
+    expect(tool.content[0].text).toBe(message);
   });
 
   it("keeps polling after a failed status poll instead of losing the job", async () => {

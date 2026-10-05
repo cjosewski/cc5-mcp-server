@@ -227,6 +227,34 @@ export interface SceneObject {
   type: string;
 }
 
+export interface SelectionResult extends OperationResult {
+  /** What CC5 has selected after the call (also on a failed select, when CC5 could be read). */
+  selected?: SceneObject[];
+}
+
+export interface CC5Dialog {
+  title: string;
+  /** The dialog's question: a message box's text, or the visible labels of CC5's own dialogs. */
+  text: string;
+  /** Labels of the visible, enabled buttons. */
+  buttons: string[];
+}
+
+export interface DialogResult extends OperationResult {
+  /** The open dialog, or null when none is open. */
+  dialog?: CC5Dialog | null;
+  /** Job id of the command waiting inside the dialog, if a command opened it. */
+  waiting_job?: string | null;
+  /** answer_cc5_dialog: the button that was clicked. */
+  clicked?: string;
+}
+
+export interface LoadAssetResult extends OperationResult {
+  path?: string;
+  /** The character that character content (.ccEye, .ccCloth, ...) was applied to. */
+  target?: string;
+}
+
 // --- Mesh-to-MetaHuman pipeline ---
 
 export interface ExportFbxOptions {
@@ -360,6 +388,10 @@ export interface JobStatus {
   action: string;
   status: "queued" | "running" | "done" | "failed";
   result?: unknown;
+  /** Set while the job waits on a CC5 dialog it opened (a confirmation or a choice). */
+  dialog?: CC5Dialog;
+  /** Ready-to-show text: the question, the buttons, and how to answer. */
+  dialog_message?: string;
 }
 
 /**

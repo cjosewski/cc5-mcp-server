@@ -8,6 +8,9 @@ import type {
   MorphCatalog,
   AvatarInfo,
   OperationResult,
+  LoadAssetResult,
+  SelectionResult,
+  DialogResult,
   CreateAvatarResult,
   DeleteAvatarResult,
   CaptureResult,
@@ -88,7 +91,8 @@ function describeFetchFailure(err: unknown): string {
 
 /**
  * The bridge answers a failed command with HTTP 400 and the command's {success: false, error} result,
- * and a command timeout with 504 {state: "running" | "cancelled", error}. Surface CC5's own text.
+ * a command timeout with 504 {state: "running" | "cancelled", error}, and a command waiting on a CC5 dialog
+ * with 409 {state: "waiting_for_dialog", job_id, dialog, error}. Surface CC5's own text.
  */
 function describeHttpError(status: number, rawBody: string): string {
   let body: unknown;
@@ -246,9 +250,10 @@ export class CC5Bridge {
     return this.request<DeleteAvatarResult>("/avatar/delete", "POST", { name });
   }
 
-  async loadAsset(filePath: string): Promise<OperationResult> {
-    return this.request<OperationResult>("/asset/load", "POST", {
+  async loadAsset(filePath: string, target?: string): Promise<LoadAssetResult> {
+    return this.request<LoadAssetResult>("/asset/load", "POST", {
       file_path: filePath,
+      ...(target !== undefined ? { target } : {}),
     });
   }
 
@@ -681,5 +686,29 @@ export class CC5Bridge {
 
   async loadFacialProfile(filePath: string): Promise<OperationResult> {
     return this.request("/builder/facial_profile", "POST", { file_path: filePath });
+  }
+
+  // --- Scene selection ---
+
+  async selectObjects(names: string[], add = false): Promise<SelectionResult> {
+    return this.request<SelectionResult>("/scene/select", "POST", { names, add });
+  }
+
+  async getSelection(): Promise<SelectionResult> {
+    return this.request<SelectionResult>("/scene/selection", "POST", {});
+  }
+
+  async clearSelection(): Promise<SelectionResult> {
+    return this.request<SelectionResult>("/scene/selection/clear", "POST", {});
+  }
+
+  // --- CC5 dialogs (served even while a command waits inside one) ---
+
+  async getDialog(): Promise<DialogResult> {
+    return this.request<DialogResult>("/dialog", "POST", {});
+  }
+
+  async answerDialog(button: string, expect?: string): Promise<DialogResult> {
+    return this.request<DialogResult>("/dialog/answer", "POST", { button, ...(expect !== undefined ? { expect } : {}) });
   }
 }

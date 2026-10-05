@@ -10,6 +10,7 @@ import type {
   AvatarInfo,
   MorphCatalog,
   OperationResult,
+  LoadAssetResult,
   CreateAvatarResult,
   DeleteAvatarResult,
   CaptureResult,
@@ -53,7 +54,7 @@ export function createMockBridge(): MockBridge {
     setMultipleMorphs: vi.fn<[Array<{ morph_id: string; value: number }>], Promise<OperationResult>>(),
     createDefaultAvatar: vi.fn<[], Promise<CreateAvatarResult>>(),
     deleteAvatar: vi.fn<[string], Promise<DeleteAvatarResult>>(),
-    loadAsset: vi.fn<[string], Promise<OperationResult>>(),
+    loadAsset: vi.fn<[string, string?], Promise<LoadAssetResult>>(),
     exportFbx: vi.fn<[string, number?, Record<string, unknown>?], Promise<OperationResult>>(),
     captureViewport: vi.fn<[string?], Promise<CaptureResult>>(),
     setSubdivisionLevel: vi.fn<[number], Promise<OperationResult>>(),
@@ -102,6 +103,11 @@ export function createMockBridge(): MockBridge {
     setWrinkleStrength: vi.fn(),
     browseContent: vi.fn(),
     loadFacialProfile: vi.fn(),
+    selectObjects: vi.fn(),
+    getSelection: vi.fn(),
+    clearSelection: vi.fn(),
+    getDialog: vi.fn(),
+    answerDialog: vi.fn(),
     setSkinColor: vi.fn(),
   };
 }

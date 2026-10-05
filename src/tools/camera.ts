@@ -24,7 +24,7 @@ export function registerCameraTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "set_camera_focal_length",
-    "Set the focal length of the current camera in CC5. Common values: 35mm (wide), 50mm (normal), 85mm (portrait), 135mm (telephoto).",
+    "Set the focal length of the current camera in CC5. Common values: 35mm (wide), 50mm (normal), 85mm (portrait), 135mm (telephoto). On CC5 this is refused: the only camera is the Preview Camera, whose focal length the API cannot change, and CC5 cannot create another camera. To change the lens, load a .ccCam camera preset with load_asset (browse_content 'camera'); it replaces the Preview Camera.",
     {
       focal_length: z.number().positive().describe("Focal length in mm (e.g., 50, 85, 135)"),
     },

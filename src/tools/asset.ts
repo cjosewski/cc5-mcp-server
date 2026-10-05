@@ -43,18 +43,22 @@ function validateExportPath(filePath: string): string | null {
 export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "load_asset",
-    "Load a CC5 asset file into the scene. Supports .iAvatar, .ccm (character), .iClothes (clothing), .iHair (hair), .iProp (prop), and other CC5 formats.",
+    "Load a CC5 asset file into the scene. Supports .iAvatar, .ccm (character), .iClothes (clothing), .iHair (hair), .iProp (prop), and other CC5 formats. Character content (.ccEye, .ccCloth, .ccShoes, .ccAcc, .ccSkin, .ccTeeth, .iClothes, .iHair, ...) is applied to one character: `target` by name, else the character selected in CC5, else the first; that character becomes selected. With several characters selected (or two sharing the target name) it is refused: pass a unique target.",
     {
       file_path: z.string().describe("Absolute path to the CC5 asset file (e.g., 'C:/Assets/MyChar.iAvatar')"),
+      target: z.string().min(1).max(256).optional()
+        .describe("Character to apply character content to (a list_avatars name). Only for character content; refused for scene content such as .ccCam or .iProp."),
     },
-    async ({ file_path }) => {
+    async ({ file_path, target }) => {
       const pathError = validateAssetPath(file_path);
       if (pathError) {
         return errorResult(pathError);
       }
       return bridgeCall(
-        () => bridge.loadAsset(file_path),
-        (result) => result.success ? `Asset loaded: ${file_path}` : `Failed to load asset: ${result.error}`,
+        () => (target === undefined ? bridge.loadAsset(file_path) : bridge.loadAsset(file_path, target)),
+        (result) => result.success
+          ? `Asset loaded: ${file_path}${result.target ? ` (applied to ${result.target})` : ""}`
+          : `Failed to load asset: ${result.error}`,
       );
     }
   );

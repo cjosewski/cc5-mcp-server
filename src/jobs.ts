@@ -8,7 +8,7 @@ import { bridgeErrorResult, errorResult, type ToolResult } from "./util.js";
 
 export type JobOutcome =
   | { done: true; failed: boolean; result: unknown }
-  | { done: false; job_id: string };
+  | { done: false; job_id: string; dialog?: string };
 
 /** Job ids carry the bridge's per-start nonce (cmd_<8 hex>_<n>); plain cmd_<n> is an older plugin's id. */
 export const JOB_ID_PATTERN = /^cmd_(?:[0-9a-f]{8}_)?\d+$/;
@@ -58,6 +58,8 @@ export async function runJob(
       if (job.status === "done" || job.status === "failed") {
         return { done: true, failed: job.status === "failed", result: job.result };
       }
+      // CC5 is asking a question (e.g. "Replace / Material Only"): waiting longer cannot help, it needs an answer.
+      if (job.dialog_message) return { done: false, job_id, dialog: job.dialog_message };
     } catch (err) {
       if (isUnknownJob(err)) throw new Error(lostJobMessage(job_id));
       console.error(`[CC5 Bridge] polling job ${job_id} failed; polling again:`, err);
@@ -85,7 +87,9 @@ export async function runJobStep(
   opts: { waitMs?: number; signal?: AbortSignal } = {},
 ): Promise<JobResult> {
   const out = await runJob(bridge, action, params, opts);
-  if (!out.done) return { success: false, error: `still running in CC5 as job ${out.job_id} (check it with job_status)` };
+  if (!out.done) {
+    return { success: false, error: out.dialog ?? `still running in CC5 as job ${out.job_id} (check it with job_status)` };
+  }
   const result = (out.result ?? {}) as JobResult;
   return out.failed ? { ...result, success: false, error: result.error ?? "failed" } : result;
 }
@@ -99,7 +103,9 @@ export async function runJobTool<R extends JobResult>(
 ): Promise<ToolResult> {
   try {
     const out = await runJob(bridge, action, params);
-    if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+    if (!out.done) {
+      return out.dialog ? errorResult(out.dialog) : { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+    }
     const result = (out.result ?? {}) as R;
     if (out.failed || result.success === false) return errorResult(`Failed: ${result.error ?? "unknown error"}`);
     return { content: [{ type: "text" as const, text: formatOk(result) }] };

@@ -18,9 +18,9 @@ The MCP server communicates with Claude via **stdio** transport and forwards com
 
 ## Features
 
-### MCP Tools (79)
+### MCP Tools (84)
 
-The MCP server provides 79 tools across 21 modules for controlling CC5. The tables below cover the core tools; the Exonicus additions are listed under [New tools](#new-tools):
+The MCP server provides 84 tools across 23 modules for controlling CC5. The tables below cover the core tools; the Exonicus additions are listed under [New tools](#new-tools):
 
 #### Scene & Avatar Management
 | Tool | Description |
@@ -50,7 +50,7 @@ The MCP server provides 79 tools across 21 modules for controlling CC5. The tabl
 | `list_accessories` | List accessories on the current avatar |
 | `remove_scene_item` | Remove clothing, hair, or accessories by name |
 | `browse_content` | Browse CC5 content folders (clothes, shoes, etc.) |
-| `load_asset` | Load a CC5 asset file (.iAvatar, .ccm, .iClothes, etc.) |
+| `load_asset` | Load a CC5 asset file (.iAvatar, .ccm, .iClothes, etc.); character content (.ccEye, .ccCloth, ...) goes to `target`, else the selected character, else the first |
 | `export_fbx` | Export the current avatar as an FBX file. Mirrors the CC5 "Export FBX" dialog: `target_tool` preset, `export_motion` ("Mesh and Motion"), `sub_d_level` (HD subdivision), `embed_textures`, `fps`, `motion_range`, `texture_size` (`convert_image_format` is refused: CC5 5.13 crashes right after a scripted export with it). A bare filename exports into `D:\CC5Export` (override via `CC5_EXPORT_DIR`). |
 | `create_actor_mixer` | Generate ActorMIXER PRO mixer assets (.ccMixerPreset) from the open avatar. `confirm_create` gates a dry-run (false, CANCELs) vs real creation (true). Requires the ActorMIXER PRO plugin. |
 
@@ -68,6 +68,21 @@ The MCP server provides 79 tools across 21 modules for controlling CC5. The tabl
 | Tool | Description |
 |------|-------------|
 | `set_item_visible` | Show or hide scene items |
+
+#### Selection
+| Tool | Description |
+|------|-------------|
+| `select_objects` | Select scene items by name (characters, worn items, props, lights, cameras); replace or add to the selection |
+| `get_selection` | List what is selected in CC5 |
+| `clear_selection` | Deselect everything |
+
+#### CC5 dialogs
+| Tool | Description |
+|------|-------------|
+| `get_cc5_dialog` | Show the dialog CC5 has open (title, question, buttons) and the job waiting on it |
+| `answer_cc5_dialog` | Click a dialog button by its label; never the "Unsaved project data found" prompt |
+
+When a command opens a CC5 dialog (a confirmation, or a choice such as "Replace / Material Only / Cancel"), the call fails within about a second with the question, the buttons and a job id. The command keeps running: answer the dialog with `answer_cc5_dialog`, then read the command's result with `job_status`.
 
 #### Camera & Lighting
 | Tool | Description |
@@ -350,7 +365,7 @@ cc5-mcp-server/
 │   ├── jobs.ts             # Job polling helpers for long operations
 │   ├── recipe.ts           # Character recipe engine
 │   ├── image-info.ts       # Texture header scan for the Quest budget check
-│   ├── tools/              # MCP tool definitions (21 files, 79 tools total)
+│   ├── tools/              # MCP tool definitions (23 files, 84 tools total)
 │   │   ├── morph.ts        # Morph search, adjust, reset (5 tools)
 │   │   ├── scene.ts        # Scene/avatar management (7 tools)
 │   │   ├── asset.ts        # Asset loading / FBX export (2 tools)
@@ -371,6 +386,8 @@ cc5-mcp-server/
 │   │   ├── pipeline.ts     # Poses, saving, Blender/ZBrush/Substance round-trips (10 tools)
 │   │   ├── skin.ts         # Skin overlays, clinical skin condition, wrinkles (4 tools)
 │   │   ├── builder.ts      # Content search, facial profile, recipes, Headshot (switched off) (4 tools)
+│   │   ├── selection.ts    # Select scene items, read and clear the selection (3 tools)
+│   │   ├── dialog.ts       # Read and answer CC5 dialogs (2 tools)
 │   │   └── batch.ts        # Batch patient generation (1 tool)
 │   ├── prompts/
 │   │   └── create-character.ts # create_character prompt
@@ -383,6 +400,7 @@ cc5-mcp-server/
 │   ├── cc5_pipeline.py     # Extension: Unity export, mesh stats, poses, DCC round-trips
 │   ├── cc5_skin.py         # Extension: skin overlays, condition tints, wrinkles
 │   ├── cc5_builder.py      # Extension: facial profiles, Headshot (switched off)
+│   ├── cc5_scene.py        # Extension: scene selection
 │   └── config.json         # Plugin configuration
 ├── start_bridge.py         # Manual bridge startup script
 ├── install-plugin.ps1      # Plugin installer (requires admin)
@@ -412,7 +430,12 @@ Every endpoint except `GET /health` needs the `X-CC5-Token` header (the contents
 | `POST /morph/set` | `morph_id`, `value` | Set a morph slider (-1.0 to 1.0) |
 | `POST /morphs/set` | `morphs` (array of `{id, value}`) | Set multiple morphs at once (-1.0 to 1.0 each) |
 | `POST /avatar/create` | *(none)* | Create a default CC3+ avatar |
-| `POST /asset/load` | `file_path` | Load a CC5 asset file |
+| `POST /asset/load` | `file_path`, `target` (optional) | Load a CC5 asset file; character content is applied to `target`, the selected character or the first |
+| `POST /scene/select` | `names`, `add` (optional) | Select scene items by name |
+| `POST /scene/selection` | *(none)* | List the selection |
+| `POST /scene/selection/clear` | *(none)* | Clear the selection |
+| `POST /dialog` | *(none)* | The open CC5 dialog and the job waiting on it (served even while a command waits in a dialog) |
+| `POST /dialog/answer` | `button` | Click a dialog button by its label |
 | `POST /export/fbx` | `output_path`, `options` (optional) | Export avatar as FBX |
 | `POST /viewport/capture` | `output_path` (optional) | Capture viewport screenshot |
 | `POST /subdivision` | `level` (0-2) | Set HD subdivision level |

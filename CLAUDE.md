@@ -48,6 +48,14 @@ def _check_server_health():
 
 While CC5 shows a modal dialog, the 16 ms QTimer fires inside that dialog's nested event loop, so a command would run under the dialog: under the "Unsaved project data found" crash-recovery prompt that means before the user has decided whether the unsaved scene comes back, inside an event loop RLPy calls are not made for (CC5 crashes during FBX exports were traced to sessions that most likely had that prompt open). `process_command_queue` therefore leaves the next command queued while `_active_modal_dialog()` reports a dialog, and after `MODAL_WAIT_SECONDS` (5 s) fails it with the dialog's title and text. The actions in `MODAL_SAFE_ACTIONS` (the silent head-export steps, the export/mixer status reads and `exec_python`) still run. The plugin never answers the recovery prompt itself: keeping or discarding unsaved work is the user's choice.
 
+### Dialogs a command opens (dialog lane)
+
+CC5 often asks before doing what a command asked: a plain confirmation, or a choice (live: a second `.ccEye` load asked "The target object layer already exists ... Replace / Material Only / Cancel"). The command then waits inside that dialog's nested event loop. On each nested timer tick `_note_command_dialog` records the dialog (title, label text, buttons) in `_command_dialogs`; after `DIALOG_REPORT_SECONDS` (1 s) the waiting HTTP call returns 409 `{state: "waiting_for_dialog", job_id, dialog}` and the command's result goes to `_jobs` (read it with `job_status`). `get_dialog`/`answer_dialog` (`DIALOG_ACTIONS`) run on a separate `dialog_queue` drained on every tick, even while a command runs: they touch only Qt widgets, never RLPy. A job waiting on a dialog reports it through `/jobs/status` (`dialog`, `dialog_message`), so recipe steps and job tools stop and show the question instead of "still running". A command's own progress window (a `QProgressDialog`, or a dialog whose only button is Cancel) is not treated as a question.
+
+`answer_dialog` fails closed: it refuses the recovery prompt wherever its words sit (title or any label), refuses a dialog whose text could not be read, and leaves plugin-driven dialogs (`_PLUGIN_DRIVEN_TITLES`, e.g. "Create Mixer Assets" during `create_actor_mixer`'s dry run) to their own tool. Its optional `expect` (words from the question) refuses a dialog that does not contain them, so an answer cannot land on the next dialog. The click is deferred with `QTimer.singleShot` and skipped if the button was deleted first.
+
+Answering rule (Chad, 2026-10-05): Claude answers a plain confirmation of exactly what the user asked for and says so; for a real choice it shows the question and buttons with a recommendation and lets the user pick.
+
 ### Hot reload (apply code changes immediately)
 
 ```
@@ -82,7 +90,7 @@ Changes to cc5_api.py and the extension modules take effect on reload, once the 
 | RenderImage fails | Can happen after loading a .ccProject | Automatically falls back to a Windows screenshot |
 | Welcome dialog gets in the way | Shown when CC5 starts | Tick "Don't show this again", or close it by hand |
 | FBX export fails with a license error | The character contains iContent-licensed assets | Try Help→Activate Purchased Items. With the Content Store assets removed, default content can be exported. Upgrading costs 20% of the list price |
-| Camera focal length does not change | The Preview Camera cannot be changed via the API | Create a new camera in CC5 and use that. The API returns an explicit error rather than reporting false success |
+| Camera focal length does not change | The Preview Camera cannot be changed via the API | CC5 has no way to create a secondary or user camera, so `set_camera_focal_length` cannot succeed on CC5. To change the lens, load a `.ccCam` preset (`browse_content("camera")` + `load_asset`): it replaces the Preview Camera with the preset's lens and framing (a new camera ID, not a second camera). The API returns an explicit error rather than reporting false success |
 | Color range | Input is 0.0-1.0; RLPy returns 0-255 | Normalized on the API side (unified to 0.0-1.0) |
 | `set_subdivision_level` does not add HD detail / `max_level` returns 0 | Generating SubD (HD subdivision) data is the CC5-UI-only `Modify > Subdivide` operation. It cannot be generated from RLPy. If the avatar has no HD data generated yet, `max_level = 0` | This is by design, not a failure. To use HD, run `Modify > Subdivide` once in the CC5 UI to generate the HD data. Once it is generated, switching levels via the API works |
 | SubD/HD or the plugin misbehaves on CC5 versions earlier than 5.07 | Builds before 5.07 sometimes need the SubD cache or plugin modules rebuilt | Update CC5 to 5.07 or later. If you cannot update, reopen the project and regenerate (rebuild) SubD before performing API operations |
@@ -300,10 +308,25 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 |--------|------|
 | set_item_visible | Show or hide a scene item |
 
+### Selection
+| Tool | Description |
+|--------|------|
+| select_objects | Select scene items by name (characters, worn clothing/hair/accessories, props, lights, cameras); `add` keeps the current selection. An unknown or ambiguous name changes nothing. Not an undo step |
+| get_selection | List what is selected in CC5 |
+| clear_selection | Deselect everything |
+
+CC5 applies character content (eye, skin, cloth presets) to the **selected** character: live, a `.ccEye` loaded with nothing selected reported success and did nothing. `load_asset` therefore aims character content (`_CHARACTER_CONTENT_EXTENSIONS` in `cc5_api.py`) at `target`, else the selected character, else the first, and selects it.
+
+### CC5 dialogs
+| Tool | Description |
+|--------|------|
+| get_cc5_dialog | Show the open CC5 dialog (title, question, buttons) and the job waiting on it |
+| answer_cc5_dialog | Click a dialog button by label (refuses "Unsaved project data found"); then `job_status` for the waiting command |
+
 ### Assets and export
 | Tool | Description |
 |--------|------|
-| load_asset | Load an asset (.iAvatar, .ccAvatar, .ccm, etc.) |
+| load_asset | Load an asset (.iAvatar, .ccAvatar, .ccm, etc.). Character content (.ccEye, .ccCloth, .ccShoes, ...) is applied to `target`, else the selected character, else the first |
 | export_fbx | FBX export (reproduces CC5's "Export FBX" dialog). See "export_fbx details" below.|
 | set_subdivision_level | HD subdivision level |
 | capture_viewport | Viewport screenshot (returns the image to the LLM) |

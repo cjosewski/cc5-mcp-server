@@ -374,8 +374,43 @@ def delete_avatar(name: str = "") -> dict[str, Any]:
     return {"success": True, "removed": removed}
 
 
-def load_asset(file_path: str) -> dict[str, Any]:
-    """Load a CC5 asset file (.iAvatar, .ccm, .ccShoes, .ccCloth, etc.)."""
+# Content CC5 applies to a character rather than adding to the scene. Live (2026-10-05): a .ccEye loaded with
+# nothing selected did nothing; with the character selected it applied. These loads are aimed at the character.
+_CHARACTER_CONTENT_EXTENSIONS = {
+    ".cceye", ".cccloth", ".ccshoes", ".ccgloves", ".ccacc", ".iacc", ".cchair", ".ccskin", ".ccteeth",
+    ".ccskingenpreset", ".iclothes", ".iclothing", ".ihair", ".ishoe", ".iaccessory", ".iskin",
+}
+
+
+def _pick_target_avatar(target: str | None, ext: str) -> tuple[Any, str | None]:
+    """The avatar character content goes to: `target` by name, else the selected avatar, else the only/first one.
+
+    Refuses rather than guesses when the name or the selection points at more than one avatar.
+    """
+    avatars = list(RLPy.RScene.GetAvatars())
+    if target is not None:
+        named = [a for a in avatars if a.GetName() == target]
+        if not named:
+            return None, f"Avatar not found: {target}"
+        if len(named) > 1:
+            return None, f"More than one avatar is named {target}"
+        return named[0], None
+    if not avatars:
+        return None, f"No avatar in scene to apply the {ext} file to"
+    avatar_ids = {a.GetID() for a in avatars}
+    selected_ids = {o.GetID() for o in RLPy.RScene.GetSelectedObjects()} & avatar_ids
+    selected = [a for a in avatars if a.GetID() in selected_ids]
+    if len(selected) > 1:
+        return None, "Several characters are selected: pass target to choose one"
+    return (selected[0] if selected else avatars[0]), None
+
+
+def load_asset(file_path: str, target: str | None = None) -> dict[str, Any]:
+    """Load a CC5 asset file (.iAvatar, .ccm, .ccShoes, .ccCloth, etc.).
+
+    Character content (_CHARACTER_CONTENT_EXTENSIONS) is aimed at one character: `target` by name, else the
+    selected character, else the first. That character is selected first, as a click in CC5 would.
+    """
     # Defense-in-depth: validate path even though TypeScript also validates.
     # Path-safety (traversal/null) via _validate_path; for the extension, accept the
     # explicit allowlist OR any CC5.1 / iClone content family (.cc*/.i*) — browse_content
@@ -392,12 +427,35 @@ def load_asset(file_path: str) -> dict[str, Any]:
     if not os.path.exists(file_path):
         return {"success": False, "error": f"File not found: {file_path}"}
 
+    if target is not None and (not isinstance(target, str) or not target or len(target) > MAX_ITEM_NAME_LENGTH):
+        return {"success": False, "error": "target must be a character name"}
+    if ext not in _CHARACTER_CONTENT_EXTENSIONS:
+        if target is not None:
+            return {"success": False, "error": f"target applies only to character content, not {ext} files"}
+        try:
+            _raise_on_error(RLPy.RFileIO.LoadFile(file_path), "LoadFile")
+            _invalidate_caches()
+            return {"success": True, "path": file_path}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     try:
-        result = RLPy.RFileIO.LoadFile(file_path)
+        avatar, error = _pick_target_avatar(target, ext)
+    except Exception as e:
+        return {"success": False, "error": f"Could not read the scene: {e}"}
+    if error:
+        return {"success": False, "error": error}
+    RLPy.RGlobal.BeginAction("Load Asset")
+    try:
+        RLPy.RScene.SelectObject(avatar)
+        # Live signature: LoadFile(path, bRecordStep=True, spObject=0, ...): spObject aims the content at the avatar.
+        _raise_on_error(RLPy.RFileIO.LoadFile(file_path, True, avatar), "LoadFile")
         _invalidate_caches()
-        return {"success": True, "path": file_path}
+        return {"success": True, "path": file_path, "target": avatar.GetName()}
     except Exception as e:
         return {"success": False, "error": str(e)}
+    finally:
+        RLPy.RGlobal.EndAction()
 
 
 # Live CC5 5.13 (Task 18): every scripted export with "Convert Image Format" (EExportFbxOptions_ConvertTifToPNG), with
@@ -1068,8 +1126,10 @@ def get_camera_info() -> dict[str, Any]:
 
 def set_camera_focal_length(focal_length: float) -> dict[str, Any]:
     """Set the focal length of the current camera.
-    Note: CC5's 'Preview Camera' does not support focal length changes via API.
-    This works only on user-created cameras.
+    Note: CC5's 'Preview Camera' does not support focal length changes via API,
+    and CC5 has no way to create a secondary or user camera, so on CC5 this fails.
+    Loading a .ccCam preset (load_asset) replaces the Preview Camera with the
+    preset's lens and framing.
     """
     camera = RLPy.RScene.GetCurrentCamera()
     if not camera:
@@ -1088,7 +1148,7 @@ def set_camera_focal_length(focal_length: float) -> dict[str, Any]:
     if abs(actual - before) < 0.01 and abs(focal_length - before) > 0.01:
         return {
             "success": False,
-            "error": f"Camera '{camera.GetName()}' does not support focal length changes (Preview Camera limitation). Create a new camera in CC5 to use this feature.",
+            "error": f"Camera '{camera.GetName()}' does not support focal length changes (Preview Camera limitation). CC5 has no other camera to switch to; to change the lens, load a .ccCam camera preset with load_asset (browse_content 'camera').",
             "focal_length": actual,
         }
     return {"success": True, "focal_length": actual}
@@ -4031,7 +4091,7 @@ def _auto_patch_server() -> None:
         "set_multiple_morphs":   lambda p: _self.set_multiple_morphs(p["morphs"]),
         "create_default_avatar": lambda p: _self.create_default_avatar(),
         "delete_avatar":         lambda p: _self.delete_avatar(p.get("name", "")),
-        "load_asset":            lambda p: _self.load_asset(p["file_path"]),
+        "load_asset":            lambda p: _self.load_asset(p["file_path"], p.get("target")),
         "export_fbx":            lambda p: _self.export_fbx(
             p["output_path"],
             int(p.get("options", 0)),

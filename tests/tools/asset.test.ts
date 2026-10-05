@@ -73,6 +73,14 @@ describe("load_asset handler – success cases", () => {
     expect(bridge.loadAsset).toHaveBeenCalledWith("C:/Assets/Clothing.iClothes");
   });
 
+  it("passes target through and names the character the content was applied to", async () => {
+    bridge.loadAsset.mockResolvedValue({ success: true, path: "C:/e/Green.ccEye", target: "Kevin" });
+    const handler = server.getRegisteredTool("load_asset");
+    const result = await handler({ file_path: "C:/e/Green.ccEye", target: "Kevin" });
+    expect(bridge.loadAsset).toHaveBeenCalledWith("C:/e/Green.ccEye", "Kevin");
+    expect(result.content[0].text).toBe("Asset loaded: C:/e/Green.ccEye (applied to Kevin)");
+  });
+
   it("returns content with type 'text'", async () => {
     bridge.loadAsset.mockResolvedValue(SUCCESS);
     const handler = server.getRegisteredTool("load_asset");

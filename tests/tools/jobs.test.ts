@@ -22,6 +22,14 @@ describe("job_status", () => {
     expect(r.content[0].text).toContain("Still running");
   });
 
+  it("shows the question a running job waits on", async () => {
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_3", action: "load_asset", status: "running",
+      dialog_message: 'CC5 is waiting for an answer to "Replace?". Buttons: Replace, Cancel.' });
+    const r = await server.getRegisteredTool("job_status")({ job_id: "cmd_3" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("Buttons: Replace, Cancel");
+  });
+
   it("returns the finished result as JSON", async () => {
     bridge.getJob.mockResolvedValue({ job_id: "cmd_3", action: "x", status: "done", result: { success: true, fbx: "a.fbx" } });
     const r = await server.getRegisteredTool("job_status")({ job_id: "cmd_3" });

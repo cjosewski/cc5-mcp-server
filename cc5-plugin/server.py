@@ -86,6 +86,7 @@ def _next_command_id() -> str:
 # --- Required parameters per action (validated before queue dispatch) ---
 
 REQUIRED_PARAMS: dict[str, list[str]] = {
+    "answer_dialog":        ["button"],
     "search_morphs":        ["query"],
     "get_morph_value":      ["morph_id"],
     "set_morph_value":      ["morph_id", "value"],
@@ -129,6 +130,9 @@ REQUIRED_PARAMS: dict[str, list[str]] = {
 # --- Dynamic dispatch tables (can be hot-patched at runtime) ---
 
 ACTION_MAP: dict[str, Any] = {
+    # Dialog lane (DIALOG_ACTIONS): pure Qt, served even while a command waits inside a dialog.
+    "get_dialog":            lambda p: get_dialog(p),
+    "answer_dialog":         lambda p: answer_dialog(p["button"], p.get("expect")),
     "get_avatars":           lambda p: cc5_api.get_avatars(),
     "get_avatar_info":       lambda p: cc5_api.get_avatar_info(),
     "get_morph_catalog":     lambda p: cc5_api.get_morph_catalog(),
@@ -138,7 +142,7 @@ ACTION_MAP: dict[str, Any] = {
     "set_multiple_morphs":   lambda p: cc5_api.set_multiple_morphs(p["morphs"]),
     "create_default_avatar": lambda p: cc5_api.create_default_avatar(),
     "delete_avatar":         lambda p: cc5_api.delete_avatar(p.get("name", "")),
-    "load_asset":            lambda p: cc5_api.load_asset(p["file_path"]),
+    "load_asset":            lambda p: cc5_api.load_asset(p["file_path"], p.get("target")),
     "export_fbx":            lambda p: cc5_api.export_fbx(
         p["output_path"],
         int(p.get("options", 0)),
@@ -225,6 +229,8 @@ ACTION_MAP: dict[str, Any] = {
 
 # POST path -> action name
 POST_ROUTES: dict[str, str] = {
+    "/dialog":           "get_dialog",
+    "/dialog/answer":    "answer_dialog",
     "/morphs/search":    "search_morphs",
     "/morph/get":        "get_morph_value",
     "/morph/set":        "set_morph_value",
@@ -307,7 +313,7 @@ GET_ROUTES: dict[str, str | None] = {
 
 # Feature modules whose ACTIONS / POST_ROUTES / REQUIRED_PARAMS are merged into the
 # dispatch tables above by load_extensions().
-EXTENSION_MODULES: list[str] = ["cc5_pipeline", "cc5_skin", "cc5_builder"]
+EXTENSION_MODULES: list[str] = ["cc5_pipeline", "cc5_skin", "cc5_builder", "cc5_scene"]
 
 
 def load_extensions(reload: bool = False) -> list[str]:
@@ -334,13 +340,10 @@ MODAL_SAFE_ACTIONS = {"silent_configure_and_click", "silent_finalize", "get_expo
 _RECOVERY_PROMPT = "Unsaved project data found"
 
 
-def _active_modal_dialog() -> tuple[str, str] | None:
-    """(title, text) of the modal dialog CC5 is showing, or None.
-
-    None also when PySide2 or a QApplication is unavailable (outside CC5, in the unit tests).
-    """
+def _modal_widget() -> Any:
+    """The modal dialog CC5 is showing, or None (also when PySide2 or a QApplication is unavailable). Main thread only."""
     try:
-        from PySide2.QtWidgets import QApplication, QDialog, QMessageBox  # type: ignore
+        from PySide2.QtWidgets import QApplication, QDialog  # type: ignore
     except Exception:
         return None
     try:
@@ -350,12 +353,80 @@ def _active_modal_dialog() -> tuple[str, str] | None:
         if dialog is None:
             dialog = next((w for w in QApplication.topLevelWidgets()
                            if isinstance(w, QDialog) and w.isVisible() and w.isModal()), None)
-        if dialog is None:
-            return None
-        text = dialog.text() if isinstance(dialog, QMessageBox) else ""
-        return str(dialog.windowTitle() or ""), str(text or "")
+        return dialog
     except Exception:
         return None
+
+
+def _plain(text: Any) -> str:
+    """Qt label text without rich-text tags, entities or mnemonic ampersands, whitespace collapsed."""
+    import html
+    import re
+    s = re.sub(r"<br\s*/?>|</p>", "\n", str(text or ""), flags=re.I)
+    s = html.unescape(re.sub(r"<[^>]+>", "", s))
+    return "\n".join(" ".join(line.split()) for line in s.splitlines() if line.strip())
+
+
+def _dialog_buttons(dialog: Any) -> list[Any]:
+    from PySide2.QtWidgets import QPushButton  # type: ignore
+    return [b for b in dialog.findChildren(QPushButton)
+            if b.isVisible() and b.isEnabled() and _plain(b.text()).replace("&", "")]
+
+
+def _describe_modal() -> dict[str, Any] | None:
+    """{title, text, buttons} of the modal dialog CC5 is showing, or None. Main thread only.
+
+    CC5's own dialogs (e.g. "The target object layer already exists ... Replace / Material Only / Cancel")
+    are not QMessageBoxes: their question sits in QLabels, so every visible label is read.
+    """
+    dialog = _modal_widget()
+    if dialog is None:
+        return None
+    try:
+        title = _plain(dialog.windowTitle())
+    except Exception:
+        return None  # e.g. the dialog was deleted while being read
+    text, buttons, text_read, progress = "", [], False, False
+    try:  # each part separately: a dialog whose text or buttons cannot be read is still reported
+        from PySide2.QtWidgets import QMessageBox  # type: ignore
+        if isinstance(dialog, QMessageBox):
+            info = dialog.informativeText() if hasattr(dialog, "informativeText") else ""
+            parts = [dialog.text(), info]
+        else:
+            from PySide2.QtWidgets import QLabel  # type: ignore
+            parts = [lbl.text() for lbl in dialog.findChildren(QLabel) if lbl.isVisible()]
+        text = "\n".join(p for p in (_plain(x) for x in parts) if p)
+        text_read = True
+    except Exception:
+        pass
+    try:
+        buttons = [_plain(b.text()).replace("&", "") for b in _dialog_buttons(dialog)]
+    except Exception:
+        pass
+    try:
+        from PySide2.QtWidgets import QProgressDialog  # type: ignore
+        progress = isinstance(dialog, QProgressDialog)
+    except Exception:
+        pass
+    return {"title": title, "text": text, "buttons": buttons, "text_read": text_read, "progress": progress}
+
+
+def _is_recovery_prompt(described: dict[str, Any]) -> bool:
+    """CC5's crash-recovery question, wherever its words sit (title, any label, any line)."""
+    return _RECOVERY_PROMPT.lower() in f"{described.get('title', '')}\n{described.get('text', '')}".lower()
+
+
+def _is_question(described: dict[str, Any]) -> bool:
+    """A dialog waiting for an answer, not a command's own progress window (whose only button is Cancel)."""
+    if described.get("progress"):
+        return False
+    return [b.lower() for b in described.get("buttons") or []] != ["cancel"]
+
+
+def _active_modal_dialog() -> tuple[str, str] | None:
+    """(title, text) of the modal dialog CC5 is showing, or None."""
+    described = _describe_modal()
+    return (described["title"], described["text"]) if described else None
 
 
 def _modal_dialog_error(title: str, text: str) -> str:
@@ -368,7 +439,7 @@ def _modal_dialog_error(title: str, text: str) -> str:
     if len(question) > 300:
         question = question[:297] + "..."
     where = f' (the "{title}" window)' if title and text else ""
-    if question.startswith(_RECOVERY_PROMPT):
+    if _is_recovery_prompt({"title": title, "text": text}):
         action = "answer it in CC5 (OK restores your last unsaved work, Cancel discards it)"
     else:
         action = "answer or close it in CC5"
@@ -397,6 +468,149 @@ def _blocked_by_modal_dialog() -> tuple[bool, str | None]:
     return False, _modal_dialog_error(*dialog)
 
 
+# --- Dialogs a command is waiting on: report them, read them, answer them ---
+#
+# CC5 often asks before doing what a command asked (live: a .ccEye load on a character that already had an eye
+# preset asked "The target object layer already exists ... Replace / Material Only / Cancel"). The command then
+# sits inside that dialog's nested event loop, so the queue cannot run anything else. The dialog lane below is
+# drained on every timer tick, even while a command runs: its actions touch only Qt widgets (never RLPy).
+
+# Actions served by the dialog lane: pure Qt, safe inside a dialog's nested event loop.
+DIALOG_ACTIONS = {"get_dialog", "answer_dialog"}
+dialog_queue: queue.Queue = queue.Queue(maxsize=20)
+# How long a running command's dialog stays open before its caller is told about it.
+DIALOG_REPORT_SECONDS = 1.0
+# Running command id -> the dialog it is waiting on: {title, text, buttons, since}. Written on the main thread.
+_command_dialogs: dict[str, dict[str, Any]] = {}
+# Sync commands whose caller was answered "waiting for a dialog": their result goes to _jobs instead.
+_detached: set[str] = set()
+# Dialog-lane commands being run right now (the lane's equivalent of _running_id).
+_dialog_running: set[str] = set()
+
+
+def _note_command_dialog() -> None:
+    """Called on a nested timer tick while a command runs: remember the dialog it is waiting on, if any."""
+    running = _running_id
+    if running is None:
+        return
+    described = _describe_modal()
+    if described is not None and not _is_question(described):
+        described = None  # the command's own progress window: it is working, not asking
+    with _store_lock:
+        if described is None:
+            _command_dialogs.pop(running, None)
+        else:
+            since = _command_dialogs.get(running, {}).get("since", time.monotonic())
+            _command_dialogs[running] = {**described, "since": since}
+
+
+def _drain_dialog_queue() -> None:
+    while True:
+        try:
+            cmd = dialog_queue.get_nowait()
+        except queue.Empty:
+            return
+        cmd_id = cmd["id"]
+        with _store_lock:
+            if cmd_id in _cancelled:
+                _cancelled.discard(cmd_id)
+                dialog_queue.task_done()
+                continue
+            _dialog_running.add(cmd_id)  # from here a timed-out caller is told "running", never "cancelled"
+        try:
+            handler = ACTION_MAP.get(cmd["action"])
+            result = handler(cmd["params"]) if handler else {"success": False, "error": f"Unknown action: {cmd['action']}"}
+        except Exception as e:
+            print(f"[CC5 MCP Bridge] Dialog action '{cmd['action']}' failed: {traceback.format_exc()}")
+            result = {"success": False, "error": str(e)}
+        with _store_lock:
+            _dialog_running.discard(cmd_id)
+            event = response_events.pop(cmd_id, None)
+            if event:
+                response_store[cmd_id] = result
+                event.set()
+        dialog_queue.task_done()
+
+
+def _waiting_dialog_error(dialog: dict[str, Any], job_id: str) -> str:
+    question = " ".join((dialog.get("text") or dialog.get("title") or "a dialog").split())
+    if len(question) > 400:
+        question = question[:397] + "..."
+    where = f' (the "{dialog["title"]}" window)' if dialog.get("title") and dialog.get("text") else ""
+    buttons = ", ".join(dialog.get("buttons") or []) or "none found"
+    if _is_recovery_prompt(dialog):
+        how = "the user must answer it in CC5"
+    else:
+        how = "answer it with answer_cc5_dialog (ask the user when it is a real choice)"
+    return (f'CC5 is waiting for an answer to "{question}"{where}. Buttons: {buttons}. '
+            f'The command is still running as job {job_id}: {how}, then check its result with job_status("{job_id}").')
+
+
+def get_dialog(params: dict | None = None) -> dict[str, Any]:
+    """The open CC5 dialog (title, text, buttons) and the command waiting on it, if any."""
+    described = _describe_modal()
+    with _store_lock:
+        waiting = _running_id if _running_id in _command_dialogs else None
+    view = {k: described[k] for k in ("title", "text", "buttons")} if described else None
+    return {"success": True, "dialog": view, "waiting_job": waiting}
+
+
+# Dialogs the plugin's own tools drive (create_actor_mixer's dry run keeps "Create Mixer Assets" open on purpose):
+# clicking them from answer_cc5_dialog would bypass that tool's own safety gate.
+_PLUGIN_DRIVEN_TITLES = ("create mixer assets",)
+
+
+def _click_later(button: Any) -> None:
+    """Click from the event loop, not from inside this call: a click can start more work or open another dialog.
+    Skipped if the button is gone by then (the user answered first and CC5 deleted the dialog)."""
+    from PySide2.QtCore import QTimer  # type: ignore
+    try:
+        from shiboken2 import isValid  # type: ignore
+    except Exception:
+        isValid = lambda obj: True  # noqa: E731 - outside CC5 (unit tests)
+    QTimer.singleShot(0, lambda: button.click() if isValid(button) else None)
+
+
+def answer_dialog(button: Any, expect: Any = None) -> dict[str, Any]:
+    """Click one of the open dialog's buttons by its label (case and '&' ignored).
+
+    `expect`: words from the question the caller is answering; refused when the open dialog does not contain
+    them, so an answer meant for one dialog never clicks the next one.
+    """
+    if not isinstance(button, str) or not button.strip() or len(button) > 100:
+        return {"success": False, "error": "button must be the label of one of the dialog's buttons"}
+    if expect is not None and (not isinstance(expect, str) or not expect.strip() or len(expect) > 500):
+        return {"success": False, "error": "expect must be words from the dialog's question"}
+    dialog = _modal_widget()
+    described = _describe_modal()
+    if dialog is None or described is None:
+        return {"success": False, "error": "No CC5 dialog is open"}
+    # Fail closed: a dialog whose words could not be read might be the crash-recovery prompt.
+    if _is_recovery_prompt(described) or not described.get("text_read"):
+        return {"success": False, "error": (
+            '"Unsaved project data found" is the user\'s decision: answer it in CC5 '
+            "(OK restores the last unsaved work, Cancel discards it)." if described.get("text_read") else
+            "The dialog's text could not be read, so it may be CC5's crash-recovery prompt: "
+            "ask the user to answer it in CC5.")}
+    if any(t in described["title"].lower() for t in _PLUGIN_DRIVEN_TITLES):
+        return {"success": False, "error": f'"{described["title"]}" is driven by its own tool; use that tool, '
+                                           "or ask the user to answer it in CC5."}
+    if expect is not None:
+        seen = " ".join(f"{described['title']} {described['text']}".split()).lower()
+        if " ".join(expect.split()).lower() not in seen:
+            return {"success": False, "error": (
+                f'The open dialog is not the one expected (it asks: "{described["text"] or described["title"]}"). '
+                "Read it with get_cc5_dialog and answer again.")}
+    wanted = button.replace("&", "").strip().lower()
+    matches = [b for b in _dialog_buttons(dialog) if _plain(b.text()).replace("&", "").strip().lower() == wanted]
+    if len(matches) != 1:
+        found = ", ".join(described["buttons"]) or "none"
+        return {"success": False, "error": f'No single button "{button}" in the dialog. Buttons: {found}'}
+    _click_later(matches[0])
+    view = {k: described[k] for k in ("title", "text", "buttons")}
+    return {"success": True, "clicked": _plain(matches[0].text()).replace("&", ""), "dialog": view}
+
+
 def process_command_queue() -> None:
     """Drain the queue and execute RLPy calls on the main thread. Called by QTimer.
 
@@ -407,7 +621,10 @@ def process_command_queue() -> None:
     wait in the queue, and fail with the dialog's text after MODAL_WAIT_SECONDS.
     """
     global _processing, _running_id
+    _drain_dialog_queue()
     if _processing:
+        # A nested tick: the running command is inside a dialog's event loop (or pumping events).
+        _note_command_dialog()
         return
     _processing = True
     try:
@@ -448,7 +665,13 @@ def process_command_queue() -> None:
 
             with _store_lock:
                 _running_id = None
-                if cmd.get("job"):
+                _command_dialogs.pop(cmd_id, None)
+                if cmd_id in _detached:
+                    _detached.discard(cmd_id)
+                    response_events.pop(cmd_id, None)
+                    failed = isinstance(result, dict) and result.get("success") is False
+                    _jobs[cmd_id].update({"status": "failed" if failed else "done", "result": result})
+                elif cmd.get("job"):
                     failed = isinstance(result, dict) and result.get("success") is False
                     _jobs[cmd_id].update({"status": "failed" if failed else "done", "result": result})
                 else:
@@ -482,24 +705,46 @@ def _execute_sync(action: str, params: dict, timeout: float = 30.0) -> tuple[int
 
     cmd_id = _next_command_id()
     event = threading.Event()
+    lane = dialog_queue if action in DIALOG_ACTIONS else command_queue
 
     with _store_lock:
         response_events[cmd_id] = event
 
     try:
-        command_queue.put_nowait({"id": cmd_id, "action": action, "params": params})
+        lane.put_nowait({"id": cmd_id, "action": action, "params": params})
     except queue.Full:
         with _store_lock:
             response_events.pop(cmd_id, None)
         return 503, {"error": "server busy, command queue full"}
 
-    if not event.wait(timeout=timeout):
+    deadline = time.monotonic() + timeout
+    finished = False
+    while True:
+        if event.wait(timeout=max(0.0, min(0.25, deadline - time.monotonic()))):
+            finished = True
+            break
+        with _store_lock:
+            dialog = _command_dialogs.get(cmd_id)
+            if (dialog and cmd_id not in response_store
+                    and time.monotonic() - dialog["since"] >= DIALOG_REPORT_SECONDS):
+                # The command opened a dialog and waits on an answer: tell the caller now, and keep the
+                # command's eventual result as a job they can read after answering.
+                response_events.pop(cmd_id, None)
+                _detached.add(cmd_id)
+                _jobs[cmd_id] = {"job_id": cmd_id, "action": action, "status": "running"}
+                view = {k: dialog[k] for k in ("title", "text", "buttons")}
+                return 409, {"state": "waiting_for_dialog", "job_id": cmd_id, "dialog": view,
+                             "error": _waiting_dialog_error(view, cmd_id)}
+        if time.monotonic() >= deadline:
+            break
+
+    if not finished:
         with _store_lock:
             # A result stored right at the deadline means the command ran: fall through
             # to the normal result handling below instead of discarding it.
             if cmd_id not in response_store:
                 response_events.pop(cmd_id, None)
-                if _running_id == cmd_id:
+                if _running_id == cmd_id or cmd_id in _dialog_running:
                     return 504, {"state": "running", "error": (
                         "CC5 is still working on this command. Check the scene before retrying; "
                         "the command may still complete.")}
@@ -520,7 +765,7 @@ def _execute_sync(action: str, params: dict, timeout: float = 30.0) -> tuple[int
 
 MAX_JOBS = 200
 _jobs: dict[str, dict[str, Any]] = {}
-JOB_FORBIDDEN = {"exec_python"}
+JOB_FORBIDDEN = {"exec_python", "get_dialog", "answer_dialog"}
 
 
 def _start_job(action: str, params: dict) -> tuple[int, Any]:
@@ -548,7 +793,15 @@ def _start_job(action: str, params: dict) -> tuple[int, Any]:
 def _job_status(job_id: str) -> tuple[int, Any]:
     with _store_lock:
         job = _jobs.get(job_id)
-        return (200, {"result": dict(job)}) if job else (404, {"error": f"Unknown job: {job_id}"})
+        if not job:
+            return 404, {"error": f"Unknown job: {job_id}"}
+        out = dict(job)
+        dialog = _command_dialogs.get(job_id)
+        if dialog and out.get("status") == "running" and time.monotonic() - dialog["since"] >= DIALOG_REPORT_SECONDS:
+            # A job (recipe step, batch load, export) waiting on a CC5 question: say so instead of just "running".
+            view = {k: dialog[k] for k in ("title", "text", "buttons")}
+            out.update({"dialog": view, "dialog_message": _waiting_dialog_error(view, job_id)})
+        return 200, {"result": out}
 
 
 def reload_modules() -> dict[str, Any]:
