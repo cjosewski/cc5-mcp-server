@@ -69,6 +69,15 @@ export async function runJob(
   return { done: false, job_id };
 }
 
+/**
+ * What a job tool says when its job has not finished: CC5's question when the job waits on a CC5 dialog (runJob
+ * returns it as soon as the job reports one), else the usual "still running" note plus any extra hint.
+ */
+export function pendingResult(out: { job_id: string; dialog?: string }, extra = ""): ToolResult {
+  if (out.dialog) return errorResult(out.dialog);
+  return { content: [{ type: "text" as const, text: `${formatPending(out.job_id)}${extra ? ` ${extra}` : ""}` }] };
+}
+
 export function formatPending(jobId: string): string {
   return `Still running in CC5 (job ${jobId}). Call job_status with job_id "${jobId}" to get the result. Do not start the same operation again.`;
 }
@@ -103,9 +112,7 @@ export async function runJobTool<R extends JobResult>(
 ): Promise<ToolResult> {
   try {
     const out = await runJob(bridge, action, params);
-    if (!out.done) {
-      return out.dialog ? errorResult(out.dialog) : { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
-    }
+    if (!out.done) return pendingResult(out);
     const result = (out.result ?? {}) as R;
     if (out.failed || result.success === false) return errorResult(`Failed: ${result.error ?? "unknown error"}`);
     return { content: [{ type: "text" as const, text: formatOk(result) }] };

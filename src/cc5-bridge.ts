@@ -76,6 +76,14 @@ export class BridgeUnreachableError extends Error {
   }
 }
 
+/** No reply within the request timeout: CC5 may still be running the command (it is not known to be down). */
+export class BridgeTimeoutError extends BridgeUnreachableError {
+  constructor(message: string) {
+    super(message);
+    this.name = "BridgeTimeoutError";
+  }
+}
+
 /** The bridge answered with an HTTP error status. The message is CC5's own error text when the body has one. */
 export class BridgeHttpError extends Error {
   constructor(message: string, readonly status: number) {
@@ -163,7 +171,7 @@ export class CC5Bridge {
         response = await fetch(`${this.baseUrl}${path}`, options);
       } catch (err) {
         if ((err as { name?: string } | null)?.name === "AbortError") {
-          throw new BridgeUnreachableError(
+          throw new BridgeTimeoutError(
             `No reply from CC5 within ${timeoutMs / 1000}s. CC5 may still be running this command; ` +
             "check the scene (list_avatars / capture_viewport) before retrying.");
         }

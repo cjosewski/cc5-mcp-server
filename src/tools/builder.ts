@@ -6,8 +6,8 @@
 import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { isBrowseTruncation, type CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall, errorResult, progressReporter } from "../util.js";
+import { BridgeHttpError, BridgeUnreachableError, isBrowseTruncation, type CC5Bridge } from "../cc5-bridge.js";
+import { bridgeCall, bridgeErrorResult, errorResult, progressReporter } from "../util.js";
 import { isLocalAbsolute } from "./unity.js";
 import { applyRecipe, formatReport, RecipeSchema, HEADSHOT_DISABLED } from "../recipe.js";
 import { claimScene } from "../scene-lock.js";
@@ -40,6 +40,12 @@ export async function searchContent(
     try {
       files = await bridge.browseContent(folder, query);
     } catch (e) {
+      // CC5 down or not answering, or a reply that holds for every folder (browse_content never refuses one folder
+      // with a 400: that is the open-dialog guard, 5 s per folder; 409/504 are a dialog wait and a timeout): stop
+      // here, unwrapped, so the caller's error says what happened.
+      if (e instanceof BridgeUnreachableError || (e instanceof BridgeHttpError && [400, 409, 504].includes(e.status))) {
+        throw e;
+      }
       failures.push(`${folder}: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
@@ -82,7 +88,7 @@ export function registerBuilderTools(server: McpServer, bridge: CC5Bridge) {
         const lines = hits.slice(0, limit).map((h) => `[${h.folder}] ${h.path}`);
         return { content: [{ type: "text" as const, text: `${hits.length} match(es):\n${lines.join("\n")}${note}` }] };
       } catch (e) {
-        return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
+        return bridgeErrorResult(e);
       }
     }
   );

@@ -46,11 +46,11 @@ def _check_server_health():
 
 ### Modal dialogs (queue guard)
 
-While CC5 shows a modal dialog, the 16 ms QTimer fires inside that dialog's nested event loop, so a command would run under the dialog: under the "Unsaved project data found" crash-recovery prompt that means before the user has decided whether the unsaved scene comes back, inside an event loop RLPy calls are not made for (CC5 crashes during FBX exports were traced to sessions that most likely had that prompt open). `process_command_queue` therefore leaves the next command queued while `_active_modal_dialog()` reports a dialog, and after `MODAL_WAIT_SECONDS` (5 s) fails it with the dialog's title and text. The actions in `MODAL_SAFE_ACTIONS` (the silent head-export steps, the export/mixer status reads and `exec_python`) still run. Who answers the recovery prompt is set when CC5 starts (Chad, 2026-10-05, flight 01 F-52: "Having Claude run this autonomously is part of the problem"): with `CC5_RECOVERY_ANSWER=cancel` (or `ok`) the dialog lane clicks that button as soon as the prompt appears (`_auto_answer_recovery`, only during the first `RECOVERY_WATCH_SECONDS`, only a prompt whose text was read), records it, and `get_cc5_dialog` reports it. `scripts/cc5-restart.ps1` (the launcher Claude uses) sets `cancel` by default (`-RecoveryAnswer ask|ok|cancel`). Unset, or any other value, is `ask`: the user answers it in CC5, as for a CC5 started by hand.
+While CC5 shows a modal dialog, the 16 ms QTimer fires inside that dialog's nested event loop, so a command would run under the dialog: under the "Unsaved project data found" crash-recovery prompt that means before the user has decided whether the unsaved scene comes back, inside an event loop RLPy calls are not made for (CC5 crashes during FBX exports were traced to sessions that most likely had that prompt open). `process_command_queue` therefore leaves the next command queued while `_describe_modal()` reports a dialog, and after `MODAL_WAIT_SECONDS` (5 s) fails it with the dialog's title and text. The guard only runs while no MCP command runs, so no MCP command waits on that dialog: the error says it is probably the user's own or CC5's and to ask the user (`_modal_dialog_error`); a progress window reads "CC5 is busy" and a dialog whose text could not be read goes to the user too (C2 review). The actions in `MODAL_SAFE_ACTIONS` (the silent head-export steps, the export/mixer status reads and `exec_python`) still run. Who answers the recovery prompt is set when CC5 starts (Chad, 2026-10-05, flight 01 F-52: "Having Claude run this autonomously is part of the problem"): with `CC5_RECOVERY_ANSWER=cancel` (or `ok`) the dialog lane clicks that button as soon as the prompt appears (`_auto_answer_recovery`, only during the first `RECOVERY_WATCH_SECONDS`, only a prompt whose text was read), records it, and `get_cc5_dialog` reports it. `scripts/cc5-restart.ps1` (the launcher Claude uses) sets `cancel` by default (`-RecoveryAnswer ask|ok|cancel`). Unset, or any other value, is `ask`: the user answers it in CC5, as for a CC5 started by hand.
 
 ### Dialogs a command opens (dialog lane)
 
-CC5 often asks before doing what a command asked: a plain confirmation, or a choice (live: a second `.ccEye` load asked "The target object layer already exists ... Replace / Material Only / Cancel"). The command then waits inside that dialog's nested event loop. On each nested timer tick `_note_command_dialog` records the dialog (title, label text, buttons) in `_command_dialogs`; after `DIALOG_REPORT_SECONDS` (1 s) the waiting HTTP call returns 409 `{state: "waiting_for_dialog", job_id, dialog}` and the command's result goes to `_jobs` (read it with `job_status`). `get_dialog`/`answer_dialog` (`DIALOG_ACTIONS`) run on a separate `dialog_queue`, even while a command runs: they touch only Qt widgets, never RLPy. The lane and the dialog watch run on **their own 50 ms QTimer** (`main._dialog_timer` → `server.process_dialog_lane`): Qt never re-fires a timer while its own callback is still running, so the 16 ms command timer is silent while a command it started waits in a dialog (live: with one timer, neither the report nor `get_cc5_dialog` ran). A job waiting on a dialog reports it through `/jobs/status` (`dialog`, `dialog_message`), so recipe steps and job tools stop and show the question instead of "still running". A command's own progress window (a `QProgressDialog`, or a dialog whose only button is Cancel) is not treated as a question.
+CC5 often asks before doing what a command asked: a plain confirmation, or a choice (live: a second `.ccEye` load asked "The target object layer already exists ... Replace / Material Only / Cancel"). The command then waits inside that dialog's nested event loop. On each nested timer tick `_note_command_dialog` records the dialog (title, label text, buttons) in `_command_dialogs`; after `DIALOG_REPORT_SECONDS` (1 s) the waiting HTTP call returns 409 `{state: "waiting_for_dialog", job_id, dialog}` and the command's result goes to `_jobs` (read it with `job_status`). `get_dialog`/`answer_dialog` (`DIALOG_ACTIONS`) run on a separate `dialog_queue`, even while a command runs: they touch only Qt widgets, never RLPy. The lane and the dialog watch run on **their own 50 ms QTimer** (`main._dialog_timer` → `server.process_dialog_lane`): Qt never re-fires a timer while its own callback is still running, so the 16 ms command timer is silent while a command it started waits in a dialog (live: with one timer, neither the report nor `get_cc5_dialog` ran). A job waiting on a dialog reports it through `/jobs/status` (`dialog`, `dialog_message`), so recipe steps and job tools stop and show the question instead of "still running". So does a job queued behind it (`blocked_by`: it has not started, and runs after the answer; C2b review: a recipe's later steps each waited 120 s and then said "still running"). A command's own progress window (a `QProgressDialog`, or a dialog whose only button is Cancel) is not treated as a question: `get_dialog` marks it `progress: true` (the tools then say "CC5 is busy"), and `answer_dialog` refuses to click its Cancel, because that aborts the running command (flight 01 F-56: an export's progress window was reported as a question). The bridge's request log prints failed requests only (`BridgeHandler.log_message`; F-57: every request was printed from HTTP threads into CC5's console and into a running exec_python's output).
 
 `answer_dialog` fails closed: it refuses the recovery prompt wherever its words sit (title or any label), except with the one button `CC5_RECOVERY_ANSWER` names, refuses a dialog whose text could not be read, and leaves plugin-driven dialogs (`_PLUGIN_DRIVEN_TITLES`, e.g. "Create Mixer Assets" during `create_actor_mixer`'s dry run) to their own tool. Its optional `expect` (words from the question) refuses a dialog that does not contain them, so an answer cannot land on the next dialog. The button is clicked directly, in the same call that found it (`_click_now`). Live (CC5 5.13, PySide2 5.15.0a1), two deferred clicks (`QTimer.singleShot(0, <python callable>)`, then a kept-alive single-shot `QTimer`, both behind `shiboken2.isValid`) were reported as made but never reached CC5's `QMessageBox`; a direct `click()` from a timer callback answered it at once. If a click opens another dialog, the dialog lane waits in that one until it is answered in CC5.
 
@@ -168,7 +168,7 @@ Having the user do this once is the most reliable approach.
 2. **ForceViewportUpdate + retry** — when RenderImage fails on the first attempt
 3. **Windows screenshot (PowerShell)** — when RenderImage does not work at all, e.g. after loading a .ccProject
 
-Note: fallback 3 is a full-screen capture, so the CC5 window must be in the foreground.
+Note: fallback 3 copies the CC5 window's area of the screen (the whole primary screen when CC5 has no main window), so the CC5 window must be in the foreground. It runs in the plugin (`_capture_window_screenshot`). Until the C2b review it never wrote a file: its path was passed after `-Command`, where PowerShell does not bind it; the path now travels in `CC5_CAP_OUT`. Live (C2 check, called directly): it wrote a 2575x1407 PNG of the window area; not yet reached through capture_viewport's own fallback chain. It starts PowerShell without `CREATE_NO_WINDOW`, so a console window may show in the capture (flight 01 F-64, open).
 
 ## Directory structure
 
@@ -246,7 +246,7 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 ### Scene management
 | Tool | Description |
 |--------|------|
-| check_cc5_connection | Check the CC5 connection |
+| check_cc5_connection | Check the CC5 connection; also reports an open dialog (other commands do not run until it is answered: behind a dialog an MCP command is waiting on, a direct command waits the bridge's 30 s and is cancelled while a job stays queued, says so in `job_status` and runs after the answer; behind any other dialog the queue guard fails them after 5 s; a dialog no MCP command waits on may be the user's own, so the user is asked first), a progress window (CC5 busy), and a recovery prompt the plugin answered at startup. The dialog check waits at most 3 s; a refused check (e.g. a wrong token) shows CC5's error instead of "busy" |
 | list_avatars | List avatars in the scene |
 | get_avatar_info | Avatar details and morph values |
 | create_avatar | Create a neutral CC3+ base body (untextured = mannequin; for a real face, browse_content("character")+load_asset is recommended) |
@@ -261,7 +261,7 @@ powershell -ExecutionPolicy Bypass -File install-plugin.ps1
 | adjust_morph | Adjust a single morph slider [-1, 1] |
 | adjust_multiple_morphs | Adjust multiple morphs at once (up to 500) |
 | get_morph_value | Get a morph's current value |
-| reset_morphs | Reset all morphs to zero |
+| reset_morphs | Reset all morphs to zero. WARNING: also zeroes a template's identity morphs (CC4 Kevin's `cc4 kevin_body` / `cc4 kevin_head`), changing its face and body (F-11); prefer undo |
 | apply_body_preset | Body preset (athletic/muscular/slim/heavy/average) |
 
 ### Content management (clothes, hair, accessories)
@@ -325,8 +325,8 @@ CC5 applies character content (eye, skin, cloth presets) to the **selected** cha
 ### CC5 dialogs
 | Tool | Description |
 |--------|------|
-| get_cc5_dialog | Show the open CC5 dialog (title, question, buttons) and the job waiting on it, and any recovery prompt the plugin answered |
-| answer_cc5_dialog | Click a dialog button by label (refuses "Unsaved project data found" unless `CC5_RECOVERY_ANSWER` names that button); then `job_status` for the waiting command |
+| get_cc5_dialog | Show the open CC5 dialog (title, question, buttons) and the job waiting on it, or that CC5 is busy with a progress window, and any recovery prompt the plugin answered at startup |
+| answer_cc5_dialog | Click a dialog button by label (refuses "Unsaved project data found" unless `CC5_RECOVERY_ANSWER` names that button, and a progress window's Cancel); then `job_status` for the waiting command |
 
 ### Assets and export
 | Tool | Description |
@@ -334,7 +334,7 @@ CC5 applies character content (eye, skin, cloth presets) to the **selected** cha
 | load_asset | Load an asset (.iAvatar, .ccAvatar, .ccm, etc.). Character content (.ccEye, .ccCloth, .ccShoes, ...) is applied to `target`, else the selected character, else the first |
 | export_fbx | FBX export (reproduces CC5's "Export FBX" dialog). See "export_fbx details" below.|
 | set_subdivision_level | HD subdivision level |
-| capture_viewport | Viewport screenshot (returns the image to the LLM). CC5 records a capture as one undo step (`RenderImage`, a render-size change, or both together), so the capture undoes exactly that step right away; otherwise `undo` after a capture reversed the capture, not the change (F-53). Never more than one: a miscount must not undo the user's work |
+| capture_viewport | Viewport screenshot (returns the image to the LLM). CC5 records a capture as one undo step (`RenderImage`, a render-size change, or both together), so the capture undoes exactly that step right away; otherwise `undo` after a capture reversed the capture, not the change (F-53). Never more than one: a miscount must not undo the user's work. A render over 10 MB (e.g. 8K) is not sent back: the tool returns its path and the plugin's warning (F-58: a desktop screenshot used to overwrite it) |
 
 ### ActorMIXER PRO
 | Tool | Description |
@@ -345,7 +345,7 @@ CC5 applies character content (eye, skin, cloth presets) to the **selected** cha
 | Tool | Description |
 |--------|------|
 | undo | Undo the last operation |
-| redo | Re-apply an undone operation |
+| redo | Re-apply an undone operation. Refused when a capture taken after the undo holds CC5's redo slot (the capture replaced CC5's redo history; F-55) |
 
 ## Development notes
 
@@ -354,7 +354,7 @@ CC5 applies character content (eye, skin, cloth presets) to the **selected** cha
 - Bridge authentication: every route except `/health` requires the `X-CC5-Token` header. The token is generated at `%LOCALAPPDATA%\CC5_MCP_Bridge\token` the first time the plugin starts (can be overridden with the environment variable `CC5_BRIDGE_TOKEN`). The MCP server sends it automatically
 - Hot reload: `curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/reload` (applies cc5_api.py changes immediately; requires `CC5_DEV_MODE=1`, returns 403 when disabled)
 - API discovery: `curl -H "X-CC5-Token: $(cat "$LOCALAPPDATA/CC5_MCP_Bridge/token")" http://127.0.0.1:5101/api`
-- CC5 restart: `taskkill` → `CharacterCreator.exe &` → the bridge starts automatically
+- CC5 restart: ask the user to save and close CC5 (never kill it), then `scripts/cc5-restart.ps1` (see "Full CC5 restart procedure") → the bridge starts automatically
 
 ## Environment variables
 

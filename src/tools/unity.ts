@@ -9,8 +9,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import type { MeshStatsResult } from "../types.js";
-import { bridgeCall, errorResult, warningNotes } from "../util.js";
-import { runJob, formatPending } from "../jobs.js";
+import { bridgeCall, bridgeErrorResult, errorResult, warningNotes } from "../util.js";
+import { runJob, pendingResult } from "../jobs.js";
 import { readImageSize } from "../image-info.js";
 
 export const CHARACTER_NAME = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/)
@@ -157,7 +157,7 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
         const out = await runJob(bridge, "export_for_unity",
           { unity_dir, character_name, sub_d_level, texture_size, include_current_pose },
           { waitMs: (wait_seconds ?? 25) * 1000 });
-        if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+        if (!out.done) return pendingResult(out);
         const r = out.result as {
           success: boolean; error?: string; fbx?: string; files?: Array<{ path: string; bytes: number }>;
           notes?: string[]; export_level?: number | null;
@@ -180,7 +180,7 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
         }
         return { content: [{ type: "text" as const, text: `${exported} Switch to Unity to import it.` }] };
       } catch (err) {
-        return errorResult(`CC5 bridge error: ${err instanceof Error ? err.message : String(err)}`);
+        return bridgeErrorResult(err);
       }
     }
   );

@@ -91,7 +91,8 @@ describe("apply_skin_overlay through the real bridge client", () => {
     registerSkinTools(live as any, new CC5Bridge("http://127.0.0.1:5101"));
     const r = await live.getRegisteredTool("apply_skin_overlay")({ image_path: "C:/o/bruise.png", region: "all", strength: 50 });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe("CC5 bridge error: No avatar in scene");
+    // C2 (F-21): CC5's own refusal is shown as CC5 wrote it, without "CC5 bridge error".
+    expect(r.content[0].text).toBe("No avatar in scene");
   });
 });
 

@@ -4,6 +4,7 @@
  * before forwarding to the bridge. Bridge errors are caught by bridgeCall.
  */
 
+import fs from "node:fs";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { registerAssetTools } from "../../src/tools/asset.js";
 import { createMockBridge, SUCCESS, FAILURE } from "../helpers/mock-bridge.js";
@@ -362,8 +363,19 @@ describe("load_asset points to the right tool for files it refuses (F-21)", () =
     const text = async (file_path: string) => (await handler({ file_path })).content[0].text as string;
     expect(await text("C:/a/overlay.png")).toBe(
       "Disallowed file extension: .png (an image goes in with load_texture (a material map) or apply_skin_overlay (a skin overlay))");
-    expect(await text("C:/a/box.fbx")).toContain("import_fbx");
+    expect(await text("C:/a/box.fbx")).toBe("Disallowed file extension: .fbx (a prop or clothing FBX goes in with " +
+      "import_fbx; save first, CC5 can crash on an FBX import early in a session)");
     expect(await text("C:/a/head.obj")).toContain("replace_mesh_from_obj");
     expect(bridge.loadAsset).not.toHaveBeenCalled();
+  });
+
+  it("gives the same hints as the plugin (cc5_api._LOAD_ASSET_HINTS), which answers when TypeScript lets a file by", async () => {
+    const handler = server.getRegisteredTool("load_asset");
+    const plugin = fs.readFileSync(new URL("../../cc5-plugin/cc5_api.py", import.meta.url), "utf-8");
+    for (const file_path of ["C:/a/overlay.png", "C:/a/box.fbx", "C:/a/head.obj"]) {
+      const text = (await handler({ file_path })).content[0].text as string;
+      const hint = text.slice(text.indexOf(" (") + 2, -1);
+      expect(plugin).toContain(`"${hint}"`);
+    }
   });
 });

@@ -206,6 +206,27 @@ def search_morphs(query: str, category: str = "") -> list[dict[str, str]]:
     return unique[:MAX_SEARCH_RESULTS]
 
 
+def _unknown_morph_ids(morph_ids: list[str]) -> list[str] | None:
+    """The IDs the current avatar's morph catalog does not have, after one fresh read when any looked unknown (the
+    per-avatar cache can be stale, e.g. after a slider was added). None when the catalog cannot be read: the caller
+    then does not check, as before."""
+    try:
+        known = _get_all_morph_ids()
+        if not known:
+            return None
+        unknown = [m for m in morph_ids if m not in known]
+        if unknown:
+            avatar = get_first_avatar()
+            if avatar is not None:
+                _morph_id_cache.pop(avatar.GetID(), None)
+            known = _get_all_morph_ids()
+            unknown = [m for m in morph_ids if m not in known]
+        return unknown
+    except Exception as e:
+        print(f"[CC5 MCP Bridge] reading the morph catalog failed: {e}")
+        return None
+
+
 def get_morph_value(morph_id: str) -> dict[str, Any]:
     """Get current value of a shaping morph slider."""
     error = _validate_morph_id(morph_id)
@@ -219,6 +240,9 @@ def get_morph_value(morph_id: str) -> dict[str, Any]:
     if not shaping_comp:
         return {"success": False, "error": "No shaping component found"}
 
+    # Live (C2): an unknown ID read back as "current value: 0", which looks like a real slider at zero.
+    if _unknown_morph_ids([morph_id]):
+        return {"success": False, "error": f"Morph not found: {morph_id} (find morph IDs with search_morphs)"}
     value = shaping_comp.GetShapingMorphWeight(morph_id)
     # CC5 keeps float32: 0.8 reads back as 0.800000011920929 (F-13).
     return {"success": True, "morph_id": morph_id, "value": None if value is None else round(float(value), 4)}
@@ -238,8 +262,7 @@ def set_morph_value(morph_id: str, value: float) -> dict[str, Any]:
         return {"success": False, "error": "No shaping component found"}
 
     # Validate morph ID exists
-    known_ids = _get_all_morph_ids()
-    if known_ids and morph_id not in known_ids:
+    if _unknown_morph_ids([morph_id]):
         return {"success": False, "error": f"Morph not found: {morph_id} (find morph IDs with search_morphs)"}
 
     value = max(-1.0, min(1.0, value))
@@ -280,11 +303,9 @@ def set_multiple_morphs(morphs: list[dict[str, Any]]) -> dict[str, Any]:
         normalized.append((morph_id, float(morph["value"])))
 
     # Validate morph IDs
-    known_ids = _get_all_morph_ids()
-    if known_ids:
-        unknown = [mid for mid, _ in normalized if mid not in known_ids]
-        if unknown:
-            return {"success": False, "error": f"Morph(s) not found: {', '.join(unknown)} (find morph IDs with search_morphs)"}
+    unknown = _unknown_morph_ids([mid for mid, _ in normalized])
+    if unknown:
+        return {"success": False, "error": f"Morph(s) not found: {', '.join(unknown)} (find morph IDs with search_morphs)"}
 
     try:
         RLPy.RGlobal.BeginAction("Set Multiple Morphs")
@@ -363,19 +384,20 @@ def delete_avatar(name: str = "") -> dict[str, Any]:
         if target:
             return {"success": False, "error": f"Avatar not found: {target} (the scene has no characters)"}
         return {"success": True, "removed": [], "note": "The scene has no characters: nothing to delete."}
+    matches = [a for a in list(avatars) if not target or a.GetName() == target]
+    if not matches:
+        names = ", ".join(str(a.GetName()) for a in avatars)
+        return {"success": False, "error": f"Avatar not found: {target}. Characters in the scene: {names}."}
     removed: list[str] = []
     try:
         RLPy.RGlobal.BeginAction("Delete Avatar")
-        for avatar in list(avatars):
+        for avatar in matches:
             aname = avatar.GetName()
-            if not target or aname == target:
-                RLPy.RScene.RemoveObject(avatar)
-                removed.append(aname)
+            RLPy.RScene.RemoveObject(avatar)
+            removed.append(aname)
     finally:
         RLPy.RGlobal.EndAction()
     _invalidate_caches()
-    if not removed:
-        return {"success": False, "error": f"Avatar not found: {target}"}
     return {"success": True, "removed": removed}
 
 
@@ -393,7 +415,7 @@ _CHARACTER_CONTENT_EXTENSIONS = {
 _LOAD_ASSET_HINTS = {
     **{e: "an image goes in with load_texture (a material map) or apply_skin_overlay (a skin overlay)"
        for e in (".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff")},
-    ".fbx": "a prop or clothing FBX goes in with import_fbx",
+    ".fbx": "a prop or clothing FBX goes in with import_fbx; save first, CC5 can crash on an FBX import early in a session",
     ".obj": "an OBJ replaces a mesh with replace_mesh_from_obj",
 }
 
@@ -867,12 +889,14 @@ def get_avatar_info() -> dict[str, Any] | None:
 def _capture_window_screenshot(output_path: str) -> None:
     """Fallback: capture CC5 window only via PowerShell + GetWindowRect."""
     import subprocess
-    # Pass the output path as a bound PowerShell parameter instead of
-    # interpolating it into the script body — prevents PS command injection
-    # via single-quote / paren breakout in caller-influenced paths.
+    # The output path travels in an environment variable, never in the script text (no PowerShell injection through
+    # a caller's path). An argument after -Command is not bound to a param() block: PowerShell appends it to the
+    # command text, so this fallback used to run with an empty path and fail every time (C2b review; checked: the
+    # path read back empty and "-OutputPath" was run as a command).
     ps_script = """
-param([string]$OutputPath)
+$OutputPath = $env:CC5_CAP_OUT
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
@@ -884,7 +908,6 @@ public class Win32 {
 $proc = Get-Process -Name "CharacterCreator*" -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $proc -or $proc.MainWindowHandle -eq [IntPtr]::Zero) {
     $screen = [System.Windows.Forms.Screen]::PrimaryScreen
-    Add-Type -AssemblyName System.Windows.Forms
     $bitmap = New-Object System.Drawing.Bitmap($screen.Bounds.Width, $screen.Bounds.Height)
     $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
     $graphics.CopyFromScreen($screen.Bounds.Location, [System.Drawing.Point]::Empty, $screen.Bounds.Size)
@@ -906,9 +929,8 @@ $graphics.Dispose()
 $bitmap.Dispose()
 """
     result = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script,
-         "-OutputPath", output_path],
-        capture_output=True, timeout=10,
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+        capture_output=True, timeout=10, env={**os.environ, "CC5_CAP_OUT": output_path},
     )
     if result.returncode != 0:
         stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
@@ -964,6 +986,11 @@ def _drop_capture_undo_steps(steps: int) -> None:
     item stayed removed; the next undo brought it back). A step is only counted when one is known to be
     recorded, so a miscount leaves a harmless capture step behind rather than undoing the user's work.
     """
+    if steps:
+        # Recording the capture cleared CC5's redo history (live, F-55: undo -> capture -> redo said "Redo
+        # successful" and the undone change did not come back). Marked before undoing the capture's step, so a
+        # failed undo still counts: either way nothing of the user's is left to redo.
+        _redo_slots[:] = ["capture"]
     for _ in range(steps):
         try:
             RLPy.RGlobal.Undo()
@@ -1171,10 +1198,23 @@ def _active_morph_count() -> int:
     return count
 
 
+# What CC5's redo slots hold, newest last, as far as this bridge has seen: "user" for a change `undo` took back,
+# "capture" for a capture's own step (_drop_capture_undo_steps). Changes made in CC5 itself are not seen, and RLPy's
+# Undo/Redo report nothing (live: both return None), so an undo past the start of the history still counts as "user".
+# Kept across /reload (importlib.reload re-runs this module in the same namespace).
+_redo_slots: list[str] = globals().get("_redo_slots", [])
+
+REDO_HOLDS_CAPTURE = ("Nothing of yours to redo: a viewport capture taken after the undo replaced CC5's redo history "
+                      "(CC5 records each capture as an action). Re-apply the change instead. Only something undone in "
+                      "CC5 itself after the capture can still be redone there with Edit > Redo; anything undone "
+                      "before it was dropped (Edit > Redo would replay the capture's own step).")
+
+
 def undo() -> dict[str, Any]:
     """Undo the last action in CC5."""
     try:
         RLPy.RGlobal.Undo()
+        _redo_slots.append("user")
         avatar = get_first_avatar()
         if avatar:
             RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Attribute)
@@ -1186,9 +1226,13 @@ def undo() -> dict[str, Any]:
 
 
 def redo() -> dict[str, Any]:
-    """Redo the last undone action in CC5."""
+    """Redo the last undone action in CC5, unless the redo slot holds a capture's own step (F-55)."""
+    if _redo_slots and _redo_slots[-1] == "capture":
+        return {"success": False, "error": REDO_HOLDS_CAPTURE}
     try:
         RLPy.RGlobal.Redo()
+        if _redo_slots:
+            _redo_slots.pop()
         avatar = get_first_avatar()
         if avatar:
             RLPy.RGlobal.ObjectModified(avatar, RLPy.EObjectModifiedType_Attribute)
@@ -2076,7 +2120,7 @@ def set_shader_parameter(
         hint = f" Close matches: {', '.join(close)}." if close else ""
         return {"success": False,
                 "error": f"Shader parameter not found: {parameter_name} on {mesh_name} / {material_name}.{hint} "
-                         "get_shader_parameters lists them all."}
+                         "get_shader_parameters shows the parameter names."}
 
     # Length must match the existing parameter (passing the wrong arity can crash SWIG)
     try:
@@ -2556,10 +2600,24 @@ def set_skin_shader(parameter_name: str, values: list[float]) -> dict[str, Any]:
     applied, skipped = _set_shader_values(avatar, mat_comp, [(_SKIN_MESH, m) for m in materials],
                                           {parameter_name: values}, "Set Skin Shader")
     if not applied:
-        return {"success": False,
-                "error": f"No skin material has '{parameter_name}' with {len(values)} value(s). Use "
-                         "get_shader_parameters on CC_Base_Body / Std_Skin_Head to see the names.",
-                "skipped": skipped}
+        names: set[str] = set()
+        for material in materials:
+            try:
+                names.update(mat_comp.GetShaderParameterNames(_SKIN_MESH, material) or [])
+            except Exception:
+                pass
+        how = " get_shader_parameters on CC_Base_Body / Std_Skin_Head shows the names and how many values each takes."
+        unreadable = [s for s in skipped if "unreadable" in s]
+        if parameter_name in names and unreadable:
+            error = f"CC5 could not read '{parameter_name}' on the skin materials: {'; '.join(unreadable)}.{how}"
+        elif parameter_name in names:
+            error = f"'{parameter_name}' does not take {len(values)} value(s) on the skin materials.{how}"
+        else:
+            import difflib
+            close = difflib.get_close_matches(parameter_name, sorted(names), n=3, cutoff=0.6)
+            hint = f" Close matches: {', '.join(close)}." if close else ""
+            error = f"Shader parameter not found on the skin materials: {parameter_name}.{hint}{how}"
+        return {"success": False, "error": error, "skipped": skipped}
     result: dict[str, Any] = {"success": True, "parameter": parameter_name,
                               "materials": [a["material"] for a in applied], "values": applied[0]["values"]}
     if skipped:
@@ -2824,7 +2882,20 @@ def set_item_visible(item_name: str, visible: bool) -> dict[str, Any]:
         except Exception as e:
             print(f"[CC5 MCP Bridge] set_item_visible FindObjects scan failed: {e}")
 
-    return {"success": False, "error": f"Item not found: {item_name}"}
+    worn = _worn_item_names(avatar) if avatar else []
+    hint = f" Worn now: {', '.join(worn)}." if worn else ""
+    return {"success": False, "error": f"Item not found: {item_name}.{hint} Props and lights: see get_scene_objects."}
+
+
+def _worn_item_names(avatar: Any) -> list[str]:
+    """Names of the clothes, hair and accessories the avatar wears (a getter that fails is skipped)."""
+    names: list[str] = []
+    for getter in (avatar.GetClothes, avatar.GetHairs, lambda: avatar.GetAccessories(True)):
+        try:
+            names += [str(item.GetName()) for item in getter()]
+        except Exception:
+            pass
+    return names
 
 
 def get_scene_objects() -> list[dict[str, Any]]:

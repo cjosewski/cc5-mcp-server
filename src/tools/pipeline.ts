@@ -6,9 +6,9 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall, errorResult, warningNotes } from "../util.js";
+import { bridgeCall, bridgeErrorResult, errorResult, warningNotes } from "../util.js";
 import { isLocalAbsolute } from "./unity.js";
-import { runJob, runJobTool, formatPending, type JobResult } from "../jobs.js";
+import { runJob, runJobTool, pendingResult, type JobResult } from "../jobs.js";
 
 /** Local absolute path (no '..', no UNC/network or device path), extension in the allowed set. Returns an error message or null. */
 export function checkFile(filePath: string, allowed: string[]): string | null {
@@ -95,13 +95,13 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       if (!isLocalAbsolute(output_dir)) return errorResult("output_dir must be a local absolute path without '..' (no network/UNC paths)");
       try {
         const out = await runJob(bridge, "export_goz", { output_dir, pose });
-        if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+        if (!out.done) return pendingResult(out);
         const r = out.result as { success: boolean; error?: string; folder?: string; files?: unknown[]; pose_applied?: boolean };
         if (out.failed || !r.success) return errorResult(`GoZ export failed: ${r.error ?? "unknown error"}`);
         const warn = r.pose_applied === false ? `\nWARNING: pose '${pose}' was NOT applied (RExportGoZMeshOption took no pose); files use the character's current pose.` : "";
         return { content: [{ type: "text" as const, text: `GoZ files written to ${r.folder} (${r.files?.length ?? 0} files)${warn}` }] };
       } catch (e) {
-        return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
+        return bridgeErrorResult(e);
       }
     }
   );
@@ -122,7 +122,7 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       try {
         const out = await runJob(bridge, "import_fbx", target === undefined ? { file_path, kind } : { file_path, kind, target });
         if (!out.done) {
-          return { content: [{ type: "text" as const, text: `${formatPending(out.job_id)} If CC5 shows its Import Settings dialog, read it with get_cc5_dialog and answer it with answer_cc5_dialog: the import waits for it.` }] };
+          return pendingResult(out, "If CC5 shows its Import Settings dialog, read it with get_cc5_dialog and answer it with answer_cc5_dialog: the import waits for it.");
         }
         const r = out.result as { success: boolean; error?: string; signature?: string; notes?: string[] };
         if (out.failed || !r.success) return errorResult(`Import failed: ${r.error ?? "unknown error"}`);
@@ -133,7 +133,7 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
           ? `${done} (${r.signature}), with warnings:\n${warnings.join("\n")}\nThe import ran: check the scene before importing again.`
           : done }] };
       } catch (e) {
-        return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
+        return bridgeErrorResult(e);
       }
     }
   );
@@ -199,7 +199,7 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       if (!isLocalAbsolute(output_dir)) return errorResult("output_dir must be a local absolute path without '..' (no network/UNC paths)");
       try {
         const out = await runJob(bridge, "export_textures", { output_dir, character_name });
-        if (!out.done) return { content: [{ type: "text" as const, text: formatPending(out.job_id) }] };
+        if (!out.done) return pendingResult(out);
         const r = out.result as { success: boolean; error?: string; folder?: string; files?: unknown[]; notes?: string[] };
         const warnings = warningNotes(r);
         const warningText = warnings.length ? `\n${warnings.join("\n")}` : "";
@@ -209,7 +209,7 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
           ? errorResult(`${exported}, but CC5 did not apply every export setting:${warningText}`)
           : { content: [{ type: "text" as const, text: exported }] };
       } catch (e) {
-        return errorResult(`CC5 bridge error: ${e instanceof Error ? e.message : String(e)}`);
+        return bridgeErrorResult(e);
       }
     }
   );

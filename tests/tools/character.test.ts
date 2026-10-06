@@ -314,7 +314,7 @@ describe("describe_character handler", () => {
     expect(result.content[0].text).toContain("average build");
   });
 
-  it("describes 'average build' when active_morphs is empty (all morph defaults to 0)", async () => {
+  it("does not grade the build when no build slider is set (a template's own shape is not known here)", async () => {
     const info: AvatarInfo = {
       id: "av1",
       name: "Default",
@@ -323,7 +323,9 @@ describe("describe_character handler", () => {
     bridge.getAvatarInfo.mockResolvedValue(info);
     const handler = server.getRegisteredTool("describe_character");
     const result = await handler({});
-    expect(result.content[0].text).toContain("average build");
+    expect(result.content[0].text).toContain("Description: build not graded: the build sliders are not set " +
+      "(a template's own shape comes from its identity morph)\n");
+    expect(result.content[0].text).not.toContain("average build");
   });
 
   it("notes 'larger head' when Head Scale > 0.5", async () => {
@@ -422,14 +424,54 @@ describe("describe_character handler", () => {
 });
 
 describe("describe_character build and worn items (F-17)", () => {
-  it("reads heavy at 50% as slightly heavy, and an unmorphed template as the template's own build", async () => {
+  it("reads heavy at 50% as slightly heavy, and says only what the build sliders show (F-60)", async () => {
     const { describeBuild } = await import("../../src/tools/character.js");
     // apply_body_preset heavy at 50%: Body Fat A 0.35, Muscular 0.1, Thin 0.
     expect(describeBuild({ "essential body morphs/pack_full_body1": 0.35, "cc embed morphs/embed_full_body6": 0.1 }))
       .toBe("slightly heavy build");
-    expect(describeBuild({})).toBe("average build (no body-shape slider set: the template's own build)");
+    // A template's identity morph is not a build slider; nothing here claims to know the template's shape.
+    expect(describeBuild({ "2022-05-09-17-57-44_cc4 kevin_body": 1 })).toBe(
+      "build not graded: the build sliders are not set (a template's own shape comes from its identity morph)");
+    // Heavy at 20% (Body Fat A 0.14) used to read "no body-shape slider set".
+    expect(describeBuild({ "essential body morphs/pack_full_body1": 0.14, "cc embed morphs/embed_full_body6": 0.04 }))
+      .toBe("average build (build sliders below 15%)");
+    // A negative slider is named, not called "not set".
+    expect(describeBuild({ "essential body morphs/pack_full_body1": -0.8 })).toBe("average build (Body Fat A at -80%)");
+    expect(describeBuild({ "cc embed morphs/embed_full_body6": 0.9, "cc embed morphs/embed_full_body5": -0.3 }))
+      .toBe("muscular build (Body Thin at -30%)");
     expect(describeBuild({ "essential body morphs/pack_full_body1": 0.3, "cc embed morphs/embed_full_body6": 0.3,
       "cc embed morphs/embed_full_body5": 0.3 })).toBe("average build");
+  });
+
+  it("grades whole percents, so CC5's float32 weights read like the slider values (C2 review)", async () => {
+    const { describeBuild } = await import("../../src/tools/character.js");
+    // Live CC5 sends Muscular 0.4 and Fat 0.3 as float32: a gap of 0.0999999940 used to read "average build".
+    expect(describeBuild({ "cc embed morphs/embed_full_body6": 0.4000000059604645,
+      "essential body morphs/pack_full_body1": 0.30000001192092896 })).toBe("slightly muscular build");
+    expect(describeBuild({ "cc embed morphs/embed_full_body6": 0.4, "essential body morphs/pack_full_body1": 0.3 }))
+      .toBe("slightly muscular build");
+    // Below half a percent counts as not set.
+    expect(describeBuild({ "cc embed morphs/embed_full_body6": 0.004 })).toBe(
+      "build not graded: the build sliders are not set (a template's own shape comes from its identity morph)");
+  });
+
+  it("names both sliders when two lead together, instead of calling the body average (C2 review)", async () => {
+    const { describeBuild } = await import("../../src/tools/character.js");
+    expect(describeBuild({ "cc embed morphs/embed_full_body6": 1, "essential body morphs/pack_full_body1": 1 }))
+      .toBe("muscular, heavy build (Body Muscular A 100%, Body Fat A 100%)");
+    expect(describeBuild({ "cc embed morphs/embed_full_body6": 0.8, "essential body morphs/pack_full_body1": 0.75 }))
+      .toBe("muscular, heavy build (Body Muscular A 80%, Body Fat A 75%)");
+    expect(describeBuild({ "cc embed morphs/embed_full_body5": 0.4, "cc embed morphs/embed_full_body6": 0.35,
+      "essential body morphs/pack_full_body1": -0.2 }))
+      .toBe("slightly slim, muscular build (Body Thin 40%, Body Muscular A 35%, Body Fat A at -20%)");
+    // All three within 10% of each other stays average (the average preset).
+    expect(describeBuild({ "essential body morphs/pack_full_body1": 0.35, "cc embed morphs/embed_full_body6": 0.3,
+      "cc embed morphs/embed_full_body5": 0.28 })).toBe("average build");
+    // A runner-up under the 15% floor is not named: alone, Fat 12% reads "build sliders below 15%" (C2b review).
+    expect(describeBuild({ "cc embed morphs/embed_full_body6": 0.2, "essential body morphs/pack_full_body1": 0.12 }))
+      .toBe("slightly muscular build");
+    expect(describeBuild({ "cc embed morphs/embed_full_body6": 0.2, "essential body morphs/pack_full_body1": 0.15 }))
+      .toBe("slightly muscular, heavy build (Body Muscular A 20%, Body Fat A 15%)");
   });
 
   it("lists what the character wears, and leaves out a list CC5 could not give", async () => {

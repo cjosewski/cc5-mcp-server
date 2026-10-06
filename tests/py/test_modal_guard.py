@@ -20,12 +20,18 @@ class ModalGuardTest(BridgeTestCase):
 
     def setUp(self):
         super().setUp()
-        self.dialog = RECOVERY
-        p = mock.patch.object(self.srv, "_active_modal_dialog", side_effect=lambda: self.dialog)
+        self.dialog = RECOVERY  # (title, text) of a readable OK/Cancel question, a full description, or None
+        p = mock.patch.object(self.srv, "_describe_modal", side_effect=self._described)
         p.start()
         self.addCleanup(p.stop)
         self.ran: list[object] = []
         self.srv.ACTION_MAP["mark"] = lambda p: self.ran.append(self.dialog) or {"success": True}
+
+    def _described(self):
+        if self.dialog is None or isinstance(self.dialog, dict):
+            return self.dialog
+        title, text = self.dialog
+        return {"title": title, "text": text, "buttons": ["OK", "Cancel"], "text_read": True, "progress": False}
 
     def test_waits_for_the_dialog_then_runs(self):
         threading.Timer(0.3, lambda: setattr(self, "dialog", None)).start()
@@ -50,7 +56,36 @@ class ModalGuardTest(BridgeTestCase):
         self.dialog = ("CCSkinGen", "")  # live: bake_skin_textures opens SkinGen's About box
         status, body = self.srv._execute_sync("mark", {}, timeout=5)
         self.assertEqual(status, 400)
-        self.assertEqual(body["error"], 'CC5 is waiting for an answer to "CCSkinGen" - answer or close it in CC5, then try again.')
+        # The guard runs only while no MCP command runs, so no command waits on this dialog: it may be the user's own,
+        # and answering it is not a confirmation of something the user asked for (C2 review).
+        self.assertEqual(body["error"], 'CC5 is waiting for an answer to "CCSkinGen" - no MCP command is waiting on it, '
+                                        "so it is probably the user's own or CC5's: ask the user to answer or close it "
+                                        "in CC5, then try again.")
+        self.assertNotIn("Unsaved", body["error"])
+        self.assertNotIn("answer_cc5_dialog", body["error"])
+
+    def test_a_progress_window_is_reported_as_busy_not_as_a_question(self):
+        # F-56: a command's progress window (an export's) is not a question, and its Cancel aborts that command.
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        for buttons, progress in ((["Cancel"], False), ([], True)):
+            with self.subTest(buttons=buttons, progress=progress):
+                self.dialog = {"title": "Exporting", "text": "Exporting FBX...", "buttons": buttons,
+                               "text_read": True, "progress": progress}
+                status, body = self.srv._execute_sync("mark", {}, timeout=5)
+                self.assertEqual(status, 400)
+                self.assertEqual(body["error"], 'CC5 is busy with "Exporting" (the progress window of a command it is '
+                                                "running) - try again when it closes. Do not cancel it unless the user "
+                                                "asks; they cancel it in CC5.")
+        self.assertEqual(self.ran, [])
+
+    def test_a_dialog_whose_text_could_not_be_read_goes_to_the_user(self):
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        self.dialog = {"title": "Character Creator 5", "text": "", "buttons": ["OK", "Cancel"], "text_read": False,
+                       "progress": False}
+        status, body = self.srv._execute_sync("mark", {}, timeout=5)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], 'CC5 is waiting for an answer to "Character Creator 5" - its text could not be '
+                                        "read, so ask the user to answer it in CC5, then try again.")
 
     def test_an_untitled_window_is_named_as_the_welcome_page(self):
         # Live CC5 5.13 can start with its full-screen Welcome / What's New page: untitled, with no text.

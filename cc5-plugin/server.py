@@ -448,7 +448,7 @@ def _active_modal_dialog() -> tuple[str, str] | None:
     return (described["title"], described["text"]) if described else None
 
 
-def _modal_dialog_error(title: str, text: str) -> str:
+def _modal_dialog_error(title: str, text: str, described: dict[str, Any] | None = None) -> str:
     if not title and not text:
         # Live CC5 5.13 can start with its full-screen Welcome / What's New page, an untitled modal window
         # (Qt class CRLWhatsNewWebEngineWidget, a name that means nothing to the user).
@@ -458,10 +458,18 @@ def _modal_dialog_error(title: str, text: str) -> str:
     if len(question) > 300:
         question = question[:297] + "..."
     where = f' (the "{title}" window)' if title and text else ""
+    if described is not None and not _is_question(described):
+        # A command's own progress window (an export's): not a question, and its Cancel aborts that command (F-56).
+        return (f'CC5 is busy with "{title or question}" (the progress window of a command it is running) - try '
+                "again when it closes. Do not cancel it unless the user asks; they cancel it in CC5.")
     if _is_recovery_prompt({"title": title, "text": text}):
         action = "answer it in CC5 (OK restores your last unsaved work, Cancel discards it)"
+    elif described is not None and not described.get("text_read"):
+        action = "its text could not be read, so ask the user to answer it in CC5"
     else:
-        action = "answer or close it in CC5"
+        # The guard runs only while no MCP command is running, so no MCP command is waiting on this dialog: it is
+        # the user's own or CC5's, and not a confirmation of something the user asked the agent to do.
+        action = "no MCP command is waiting on it, so it is probably the user's own or CC5's: ask the user to answer or close it in CC5"
     return f'CC5 is waiting for an answer to "{question}"{where} - {action}, then try again.'
 
 
@@ -478,13 +486,13 @@ def _blocked_by_modal_dialog() -> tuple[bool, str | None]:
     with _store_lock:
         if head["id"] in _cancelled:
             return False, None
-    dialog = _active_modal_dialog()
-    if dialog is None:
+    described = _describe_modal()
+    if described is None:
         return False, None
     waiting_since = head.setdefault("modal_since", time.monotonic())
     if time.monotonic() - waiting_since < MODAL_WAIT_SECONDS:
         return True, None
-    return False, _modal_dialog_error(*dialog)
+    return False, _modal_dialog_error(described["title"], described["text"], described)
 
 
 # --- Dialogs a command is waiting on: report them, read them, answer them ---
@@ -573,6 +581,9 @@ def get_dialog(params: dict | None = None) -> dict[str, Any]:
     with _store_lock:
         waiting = _running_id if _running_id in _command_dialogs else None
     view = {k: described[k] for k in ("title", "text", "buttons")} if described else None
+    if view is not None:
+        # A command's own progress window (an export's), not a question (live, F-56).
+        view["progress"] = not _is_question(described)
     result: dict[str, Any] = {"success": True, "dialog": view, "waiting_job": waiting}
     with _store_lock:
         if _recovery_answers:
@@ -626,6 +637,11 @@ def answer_dialog(button: Any, expect: Any = None) -> dict[str, Any]:
     if any(t in described["title"].lower() for t in _PLUGIN_DRIVEN_TITLES):
         return {"success": False, "error": f'"{described["title"]}" is driven by its own tool; use that tool, '
                                            "or ask the user to answer it in CC5."}
+    if not _is_question(described):
+        # A command's own progress window (an export's): its Cancel aborts that command (F-56).
+        return {"success": False, "error": f'"{described["title"]}" is the progress window of a command CC5 is '
+                                           "running, not a question. It closes by itself when the command ends; "
+                                           "cancelling it aborts the command, so only the user should do that, in CC5."}
     if expect is not None:
         seen = " ".join(f"{described['title']} {described['text']}".split()).lower()
         if " ".join(expect.split()).lower() not in seen:
@@ -876,11 +892,23 @@ def _job_status(job_id: str) -> tuple[int, Any]:
         if not job:
             return 404, {"error": f"Unknown job: {job_id}"}
         out = dict(job)
+        now = time.monotonic()
         dialog = _command_dialogs.get(job_id)
-        if dialog and out.get("status") == "running" and time.monotonic() - dialog["since"] >= DIALOG_REPORT_SECONDS:
+        if dialog and out.get("status") == "running" and now - dialog["since"] >= DIALOG_REPORT_SECONDS:
             # A job (recipe step, batch load, export) waiting on a CC5 question: say so instead of just "running".
             view = {k: dialog[k] for k in ("title", "text", "buttons")}
             out.update({"dialog": view, "dialog_message": _waiting_dialog_error(view, job_id)})
+        elif out.get("status") == "queued" and _running_id is not None and _running_id != job_id:
+            # Queued behind a command that waits on a CC5 question: it cannot start before that answer, so say so
+            # instead of "still running" (C2b review: a recipe's later steps waited 120 s each, then said "still
+            # running"). It is not cancelled: it runs once the question is answered.
+            blocking = _command_dialogs.get(_running_id)
+            if blocking and now - blocking["since"] >= DIALOG_REPORT_SECONDS:
+                view = {k: blocking[k] for k in ("title", "text", "buttons")}
+                out.update({"dialog": view, "blocked_by": _running_id, "dialog_message": (
+                    f"Job {job_id} has not started: it is queued behind job {_running_id}. "
+                    f"{_waiting_dialog_error(view, _running_id)} Job {job_id} runs after that answer; read its "
+                    f'result with job_status("{job_id}").')})
         return 200, {"result": out}
 
 
@@ -914,9 +942,17 @@ class BridgeHandler(BaseHTTPRequestHandler):
     """HTTP request handler for the CC5 bridge API."""
 
     def log_message(self, format: str, *args: Any) -> None:
-        # Log non-2xx responses for debugging
-        if args and not str(args[0]).startswith("2"):
-            print(f"[CC5 MCP Bridge] {format % args}")
+        # Log failed responses only. log_request passes (request line, status, size) and log_error passes
+        # (status, message). The old test read args[0], the request line, so every request was printed from this
+        # HTTP thread, into CC5's console or a running exec_python's captured output (live, F-57).
+        status = ""
+        if len(args) >= 2 and str(args[1]).isdigit():
+            status = str(args[1])
+        elif args and str(args[0]).isdigit():
+            status = str(args[0])
+        if status.startswith(("2", "3")):
+            return
+        print(f"[CC5 MCP Bridge] {format % args}")
 
     def _send_json(self, status: int, data: Any) -> None:
         body = json.dumps(data).encode("utf-8")

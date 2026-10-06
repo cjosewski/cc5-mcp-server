@@ -89,7 +89,7 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
         sub_d_level: parsed.sub_d_level, texture_size: parsed.texture_size,
         include_current_pose: Boolean(v.recipe.pose_file),
       }, { waitMs: EXPORT_WAIT_MS, signal });
-      if (!out.done) throw new Error(`export still running in CC5 as job ${out.job_id}`);
+      if (!out.done) throw new Error(out.dialog ?? `export still running in CC5 as job ${out.job_id}`);
       const r = out.result as { success: boolean; error?: string; fbx?: string; folder?: string; notes?: string[] };
       const warnings = warningNotes(r);
       if (warnings.length) entry.notes = warnings;

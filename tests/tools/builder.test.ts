@@ -4,6 +4,7 @@ import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
 import { HEADSHOT_DISABLED } from "../../src/recipe.js";
+import { BridgeHttpError, BridgeTimeoutError, BridgeUnreachableError } from "../../src/cc5-bridge.js";
 
 let bridge: MockBridge;
 let server: ReturnType<typeof createMockServer>;
@@ -77,6 +78,46 @@ describe("search_content", () => {
     expect(r.isError).toBeFalsy();
     expect(r.content[0].text).toContain("Combat Boots");
     expect(r.content[0].text).toContain("skipped folders");
+  });
+
+  it("stops at the first folder when CC5 cannot be reached, and asks whether CC5 runs (C2 review)", async () => {
+    bridge.browseContent.mockRejectedValue(new BridgeUnreachableError("fetch failed (connect ECONNREFUSED 127.0.0.1:5101)"));
+    const r = await server.getRegisteredTool("search_content")({ query: "boots", folder_types: ["cloth_upper", "shoes"], limit: 40 });
+    expect(bridge.browseContent).toHaveBeenCalledTimes(1);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("CC5 bridge error: fetch failed (connect ECONNREFUSED 127.0.0.1:5101). " +
+      "Is CC5 running with the MCP Bridge plugin?");
+  });
+
+  it("stops at the first folder behind an open dialog and shows CC5's text as it is (C2 review)", async () => {
+    // The open-dialog guard fails every command after 5 s: 22 folders would take almost two minutes.
+    const guard = 'CC5 is waiting for an answer to "Replace?" - no MCP command is waiting on it, so it is probably the ' +
+      "user's own or CC5's: ask the user to answer or close it in CC5, then try again.";
+    bridge.browseContent.mockRejectedValue(new BridgeHttpError(guard, 400));
+    const r = await server.getRegisteredTool("search_content")({ query: "boots", folder_types: ["cloth_upper", "shoes"], limit: 40 });
+    expect(bridge.browseContent).toHaveBeenCalledTimes(1);
+    expect(r.content[0].text).toBe(guard);
+  });
+
+  it.each([
+    new BridgeHttpError("CC5 timed out (cancelled): Timed out before CC5 started the command; it was cancelled and will not run.", 504),
+    new BridgeHttpError('CC5 is waiting for an answer to "Replace?". Buttons: Replace, Cancel.', 409),
+    new BridgeTimeoutError("No reply from CC5 within 35s. CC5 may still be running this command; check the scene " +
+      "(list_avatars / capture_viewport) before retrying."),
+  ])("stops at the first folder on '%s' and shows that text (C2 review: 22 folders x 30 s)", async (err) => {
+    bridge.browseContent.mockRejectedValue(err);
+    const r = await server.getRegisteredTool("search_content")({ query: "boots", folder_types: ["cloth_upper", "shoes"], limit: 40 });
+    expect(bridge.browseContent).toHaveBeenCalledTimes(1);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(err.message);
+  });
+
+  it("keeps searching past a folder that fails on its own (e.g. a 500)", async () => {
+    bridge.browseContent.mockRejectedValueOnce(new BridgeHttpError("boom", 500)).mockResolvedValueOnce(["C:/s/Combat Boots.ccShoes"]);
+    const r = await server.getRegisteredTool("search_content")({ query: "boots", folder_types: ["cloth_upper", "shoes"], limit: 40 });
+    expect(bridge.browseContent).toHaveBeenCalledTimes(2);
+    expect(r.content[0].text).toContain("Combat Boots");
+    expect(r.content[0].text).toContain("(skipped folders that failed: cloth_upper: boom)");
   });
 
   it("says the search was incomplete when CC5 cut a folder off at its cap", async () => {

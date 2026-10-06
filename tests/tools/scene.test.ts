@@ -4,7 +4,7 @@
  * The check_cc5_connection handler has its own try/catch with specific behavior.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import { registerSceneTools } from "../../src/tools/scene.js";
 import {
   createMockBridge,
@@ -17,6 +17,7 @@ import type { MockBridge } from "../helpers/mock-bridge.js";
 import type { CC5Avatar, AvatarInfo, CreateAvatarResult, CaptureResult } from "../../src/types.js";
 
 import { createMockServer } from "../helpers/mock-server.js";
+import { BridgeHttpError } from "../../src/cc5-bridge.js";
 
 // ── setup ─────────────────────────────────────────────────────────────────────
 
@@ -387,6 +388,37 @@ describe("capture_viewport handler", () => {
     expect(bridge.captureViewport).toHaveBeenCalledWith("C:/temp/capture.png", undefined, undefined);
   });
 
+  it("returns the path and the plugin's warning for a render too large to send, without a desktop screenshot", async () => {
+    // Live (F-58): the TypeScript fallback copied a full-screen screenshot over the real render.
+    bridge.captureViewport.mockResolvedValue({ success: true, path: "C:/t/cc5_captures/cc5_viewport_1.png",
+      warning: "Image too large to embed (35000000 bytes). Read from path directly." });
+    const result = await server.getRegisteredTool("capture_viewport")({ width: 7680, height: 4320 });
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].text).toBe("Viewport captured: C:/t/cc5_captures/cc5_viewport_1.png\n" +
+      "Image too large to embed (35000000 bytes). Read from path directly.");
+  });
+
+  it("says the image was not sent back when the plugin gives only a path", async () => {
+    bridge.captureViewport.mockResolvedValue({ success: true, path: "C:/t/cc5_captures/cc5_viewport_2.png" });
+    const result = await server.getRegisteredTool("capture_viewport")({});
+    expect(result.content).toEqual([{ type: "text",
+      text: "Viewport captured: C:/t/cc5_captures/cc5_viewport_2.png\nThe image was not sent back: open the file." }]);
+  });
+
+  it("is an error when CC5 sends neither the image nor its path", async () => {
+    bridge.captureViewport.mockResolvedValue({ success: true });
+    const result = await server.getRegisteredTool("capture_viewport")({});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe("CC5 reported a capture but sent neither the image nor its file path.");
+  });
+
+  it("shows CC5's own text when no file was written (the plugin answers 400; C2 review)", async () => {
+    bridge.captureViewport.mockRejectedValue(new BridgeHttpError("RenderImage did not create file at C:/t/x.png", 400));
+    const result = await server.getRegisteredTool("capture_viewport")({});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe("RenderImage did not create file at C:/t/x.png");
+  });
+
   it("calls bridge.captureViewport with undefined when no path given", async () => {
     const captured: CaptureResult = { success: true, path: "/tmp/snap.png" };
     bridge.captureViewport.mockResolvedValue(captured);
@@ -513,5 +545,51 @@ describe("check_cc5_connection does not wait on a busy CC5 (review of F-23)", ()
     const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
     expect(bridge.getDialog).toHaveBeenCalledWith(3000);
     expect(text).toContain("Could not check for an open CC5 dialog within 3 s");
+  });
+});
+
+describe("check_cc5_connection after the Batch C live check (F-56, F-59)", () => {
+  beforeEach(() => bridge.healthCheck.mockResolvedValue(true));
+
+  it("reports a progress window as CC5 being busy, not as a question to answer", async () => {
+    bridge.getDialog.mockResolvedValue({ success: true, waiting_job: null,
+      dialog: { title: "Exporting", text: "Exporting FBX...", buttons: ["Cancel"], progress: true } });
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(text).toBe('CC5 bridge is connected.\nCC5 is busy: progress window "Exporting" (Exporting FBX...). ' +
+      "It closes when the command finishes. Do not cancel it unless the user asks; they cancel it in CC5.");
+  });
+
+  it("behind a dialog no MCP command opened: commands fail after about 5 s, and the user is asked first", async () => {
+    bridge.getDialog.mockResolvedValue({ success: true, waiting_job: null,
+      dialog: { title: "Character Creator 5", text: "Replace?", buttons: ["Replace", "Cancel"], progress: false } });
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(text).toBe("CC5 bridge is connected.\nBut CC5 has a dialog open. Other commands do not run until it is " +
+      "closed (they fail after about 5 s):\nCC5 dialog \"Character Creator 5\":\nReplace?\nButtons: Replace, Cancel\n" +
+      "No MCP command is waiting on this dialog: it may be the user's own, so ask the user before answering it.");
+  });
+
+  it("behind a dialog an MCP command is waiting on: direct commands are cancelled after ~30 s, jobs wait (F-59)", async () => {
+    bridge.getDialog.mockResolvedValue({ success: true, waiting_job: "cmd_ab12cd34_7",
+      dialog: { title: "Character Creator 5", text: "Replace?", buttons: ["Replace", "Cancel"], progress: false } });
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(text).toBe("CC5 bridge is connected.\nBut CC5 has a dialog open that an MCP command is waiting on. " +
+      "Nothing else starts until it is answered: a direct command sent now is cancelled after about 30 s; a job " +
+      "(export, import, recipe step) stays queued and runs after the answer. get_cc5_dialog and answer_cc5_dialog " +
+      "still work:\nCC5 dialog \"Character Creator 5\":\nReplace?\nButtons: Replace, Cancel\n" +
+      "Job cmd_ab12cd34_7 is waiting on this answer; read its result with job_status after answering.");
+  });
+
+  it("shows CC5's error when the dialog check is refused, instead of calling CC5 busy (C2 review)", async () => {
+    bridge.getDialog.mockRejectedValue(new BridgeHttpError("Unauthorized", 401));
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(text).toBe("CC5 bridge is connected.\n(Could not check for an open CC5 dialog: Unauthorized)");
+  });
+
+  it("shows the recovery prompt the plugin answered at startup", async () => {
+    bridge.getDialog.mockResolvedValue({ success: true, dialog: null, waiting_job: null,
+      recovery_answered: [{ time: "2026-10-05 19:10:05", button: "Cancel", text: "Unsaved project data found." }] });
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(text).toBe("CC5 bridge is connected and ready.\nWhen CC5 started, its \"Unsaved project data found\" prompt " +
+      "was answered Cancel automatically (2026-10-05 19:10:05, local time): the auto-saved changes were discarded.");
   });
 });

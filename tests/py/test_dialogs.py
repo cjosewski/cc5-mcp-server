@@ -54,10 +54,15 @@ class _CC5Dialog:
         return list(self._labels if cls is _Label else self._buttons)
 
 
+class _ProgressDialog(_CC5Dialog):
+    """A QProgressDialog: a command's progress window, whatever its buttons say."""
+
+
 def _fake_qt(singleshot_calls):
     widgets = types.ModuleType("PySide2.QtWidgets")
     widgets.QLabel, widgets.QPushButton = _Label, _Button
     widgets.QMessageBox = type("QMessageBox", (), {})
+    widgets.QProgressDialog = _ProgressDialog
     core = types.ModuleType("PySide2.QtCore")
     class QTimer:
         """Fires on start(). Live, QTimer.singleShot(0, callable) never fired in CC5, so it must not be used."""
@@ -269,6 +274,50 @@ class DialogTest(BridgeTestCase):
             self.assertTrue(self.srv.answer_dialog("Cancel")["success"])
         self.assertEqual([b.clicked for b in prompt._buttons], [0, 1])
 
+    def _progress_window(self):
+        # A command's own progress window: only Cancel (F-56: an export's would be reported as a question).
+        self.dialog = _CC5Dialog("Exporting", [_Label("Exporting FBX...")], [_Button("Cancel")])
+        return self.dialog
+
+    def test_get_dialog_marks_a_progress_window(self):
+        self._progress_window()
+        view = self.srv.get_dialog()["dialog"]
+        self.assertTrue(view["progress"])
+        self.dialog = self.layer_dialog
+        self.assertFalse(self.srv.get_dialog()["dialog"]["progress"])
+
+    def test_answer_dialog_will_not_cancel_a_progress_window(self):
+        window = self._progress_window()
+        r = self.srv.answer_dialog("Cancel")
+        self.assertFalse(r["success"])
+        self.assertIn("progress window", r["error"])
+        self.assertEqual(window._buttons[0].clicked, 0)
+
+    def test_a_qprogressdialog_is_a_progress_window_whatever_its_button_says(self):
+        # F-56: only the QProgressDialog check catches a progress window whose button is "Abort", not "Cancel".
+        window = _ProgressDialog("Exporting", [_Label("Exporting FBX... 40%")], [_Button("Abort")])
+        self.dialog = window
+        self.assertTrue(self.srv._describe_modal()["progress"])
+        self.assertTrue(self.srv.get_dialog()["dialog"]["progress"])
+        r = self.srv.answer_dialog("Abort")
+        self.assertFalse(r["success"])
+        self.assertIn("progress window", r["error"])
+        self.assertEqual(window._buttons[0].clicked, 0)
+        self.dialog = None  # closed again: a window already open when a command is queued holds it (modal guard)
+
+        def export(p):
+            self.dialog = window
+            end = time.monotonic() + 0.8
+            while time.monotonic() < end:
+                self.srv.process_dialog_lane()
+                time.sleep(0.01)
+            self.dialog = None
+            return {"success": True}
+
+        self.srv.ACTION_MAP["export"] = export
+        status, body = self.srv._execute_sync("export", {}, timeout=10)
+        self.assertEqual((status, body["result"]), (200, {"success": True}))  # not a 409 "waiting for an answer"
+
     def test_refuses_a_dialog_whose_text_cannot_be_read(self):
         class Unreadable(_CC5Dialog):
             def findChildren(self, cls):
@@ -337,6 +386,36 @@ class DialogTest(BridgeTestCase):
             time.sleep(0.02)
         self.assertEqual(job["result"], {"success": True, "answer": "&Replace"})  # the button's raw Qt label
         self.assertNotIn("dialog", job)
+
+    def test_a_job_queued_behind_a_dialog_says_so_and_runs_after_the_answer(self):
+        # C2b review: a job queued behind another command's dialog said "Still running" with no word of the question,
+        # so a recipe's later steps each waited their full budget.
+        self.srv.ACTION_MAP["later"] = lambda p: {"success": True, "ran": "later"}
+        first = self.srv._start_job("load_eyes", {})[1]["result"]["job_id"]
+        second = self.srv._start_job("later", {})[1]["result"]["job_id"]
+        end = time.monotonic() + 5
+        job: dict = {}
+        while time.monotonic() < end:
+            job = self.srv._job_status(second)[1]["result"]
+            if "dialog_message" in job:
+                break
+            time.sleep(0.02)
+        self.assertEqual((job["status"], job.get("blocked_by")), ("queued", first))
+        self.assertTrue(job["dialog_message"].startswith(
+            f"Job {second} has not started: it is queued behind job {first}. CC5 is waiting for an answer to "
+            '"The target object layer already exists. Do you want to replace the object, or the material only?"'),
+            job["dialog_message"])
+        self.assertTrue(job["dialog_message"].endswith(
+            f'Job {second} runs after that answer; read its result with job_status("{second}").'))
+        self.assertEqual(job["dialog"]["buttons"], ["Replace", "Material Only", "Cancel"])
+        self.srv._execute_sync("answer_dialog", {"button": "Replace"}, timeout=5)
+        while time.monotonic() < end + 5:
+            job = self.srv._job_status(second)[1]["result"]
+            if job["status"] == "done":
+                break
+            time.sleep(0.02)
+        self.assertEqual(job["result"], {"success": True, "ran": "later"})
+        self.assertNotIn("dialog_message", job)
 
     def test_a_dialog_command_being_run_is_never_reported_cancelled(self):
         gate = threading.Event()
@@ -421,6 +500,35 @@ class MainTimersTest(unittest.TestCase):
                 main.uninitialize_plugin()
             self.assertIsNone(main._dialog_timer)
         sys.modules.pop("main", None)
+
+
+
+class RequestLogTest(unittest.TestCase):
+    """Only failed requests are printed (F-57: every request was printed from an HTTP thread)."""
+
+    def setUp(self):
+        _support.install_fake_rlpy()
+        self.srv = _support.fresh_import("server")
+
+    def _logged(self, fmt, *args):
+        with mock.patch("builtins.print") as printed:
+            self.srv.BridgeHandler.log_message(mock.Mock(), fmt, *args)
+        return printed.call_count
+
+    def test_successful_requests_are_not_printed(self):
+        self.assertEqual(self._logged('"%s" %s %s', "GET /health HTTP/1.1", "200", "-"), 0)
+        self.assertEqual(self._logged('"%s" %s %s', "POST /dialog HTTP/1.1", "200", "-"), 0)
+
+    def test_failed_requests_and_errors_are_printed(self):
+        self.assertEqual(self._logged('"%s" %s %s', "POST /scene/delete HTTP/1.1", "400", "-"), 1)
+        self.assertEqual(self._logged("code %d, message %s", 404, "Not Found"), 1)
+
+    def test_redirects_are_not_printed(self):
+        self.assertEqual(self._logged('"%s" %s %s', "GET /x HTTP/1.1", "304", "-"), 0)
+
+    def test_errors_without_a_status_are_printed(self):
+        # BaseHTTPRequestHandler.log_error("Request timed out: %r", e) carries no status.
+        self.assertEqual(self._logged("Request timed out: %r", TimeoutError()), 1)
 
 
 if __name__ == "__main__":

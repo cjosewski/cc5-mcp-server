@@ -2,7 +2,7 @@
  * Shared utilities for MCP tool callbacks.
  */
 
-import { BridgeUnreachableError } from "./cc5-bridge.js";
+import { BridgeHttpError, BridgeTimeoutError, BridgeUnreachableError } from "./cc5-bridge.js";
 
 export type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: true };
 
@@ -56,8 +56,16 @@ export function progressReporter(extra?: ProgressExtra): (message: string) => vo
 export function bridgeErrorResult(err: unknown): ToolResult {
   console.error("[CC5 Bridge] bridge call failed:", err);
   const message = err instanceof Error ? err.message : String(err);
-  const hint = err instanceof BridgeUnreachableError ? ". Is CC5 running with the MCP Bridge plugin?" : "";
-  return errorResult(`CC5 bridge error: ${message}${hint}`);
+  // CC5 answered: a command it refused or that failed (400), a command waiting on a CC5 dialog (409) or one that
+  // timed out (504). Its own text says what happened; "CC5 bridge error" would read as a connection fault (F-21).
+  if (err instanceof BridgeHttpError && [400, 409, 504].includes(err.status)) return errorResult(message);
+  // A request that timed out: CC5 may still be working on it; its text says what to check, it is not a connection fault.
+  if (err instanceof BridgeTimeoutError) return errorResult(message);
+  if (err instanceof BridgeUnreachableError) {
+    // One period before the question, whether or not the message ends with one.
+    return errorResult(`CC5 bridge error: ${message.replace(/\.$/, "")}. Is CC5 running with the MCP Bridge plugin?`);
+  }
+  return errorResult(`CC5 bridge error: ${message}`);
 }
 
 /**

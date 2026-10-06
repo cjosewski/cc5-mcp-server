@@ -21,7 +21,7 @@ const IMAGE_HINT = "an image goes in with load_texture (a material map) or apply
 const LOAD_ASSET_HINTS: Record<string, string> = {
   ".png": IMAGE_HINT, ".jpg": IMAGE_HINT, ".jpeg": IMAGE_HINT, ".tga": IMAGE_HINT, ".bmp": IMAGE_HINT,
   ".tif": IMAGE_HINT, ".tiff": IMAGE_HINT,
-  ".fbx": "a prop or clothing FBX goes in with import_fbx",
+  ".fbx": "a prop or clothing FBX goes in with import_fbx; save first, CC5 can crash on an FBX import early in a session",
   ".obj": "an OBJ replaces a mesh with replace_mesh_from_obj",
 };
 

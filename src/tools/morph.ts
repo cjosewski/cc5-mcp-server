@@ -28,7 +28,7 @@ export function registerMorphTools(server: McpServer, bridge: CC5Bridge) {
     "adjust_morph",
     "Adjust a single morph slider on the current character. Use search_morphs first to find morph IDs (e.g. search_morphs('jaw')).",
     {
-      morph_id: z.string().describe("The morph slider ID (e.g., 'Fat', 'Head_Narrow', 'Nose_Size')"),
+      morph_id: z.string().describe("The morph slider ID from search_morphs (e.g. 'cc embed morphs/embed_full_body6', 'essential body morphs/pack_full_body1')"),
       value: z.number().min(-1).max(1).describe("Morph value between -1.0 and 1.0. Negative values shrink features."),
     },
     async ({ morph_id, value }) => bridgeCall(
@@ -68,7 +68,7 @@ export function registerMorphTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "reset_morphs",
-    "Reset all morph sliders to zero for the current avatar (or a named avatar). Useful for starting fresh with character customization.",
+    "Reset all morph sliders to zero for the current avatar (or a named avatar). WARNING: this also zeroes a template's identity morphs (e.g. CC4 Kevin's 'cc4 kevin_body' and 'cc4 kevin_head'), which changes its face and body. To take back only your own changes, use undo, or set the morphs you changed back to the values get_avatar_info showed before your change; never zero a template's identity morphs.",
     {
       avatar_name: z.string().max(256).optional().describe("Name of the avatar to reset. Defaults to the first avatar if omitted."),
     },

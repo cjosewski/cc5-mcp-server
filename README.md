@@ -25,7 +25,7 @@ The MCP server provides 84 tools across 23 modules for controlling CC5. The tabl
 #### Scene & Avatar Management
 | Tool | Description |
 |------|-------------|
-| `check_cc5_connection` | Verify CC5 is running and the bridge plugin is active |
+| `check_cc5_connection` | Verify CC5 is running and the bridge plugin is active, and report an open dialog or progress window that holds other commands |
 | `list_avatars` | List all avatars in the current scene |
 | `list_scene_objects` | List all scene objects (avatars, props, lights, cameras) |
 | `get_avatar_info` | Get avatar details including all non-zero morph values |
@@ -79,8 +79,8 @@ The MCP server provides 84 tools across 23 modules for controlling CC5. The tabl
 #### CC5 dialogs
 | Tool | Description |
 |------|-------------|
-| `get_cc5_dialog` | Show the dialog CC5 has open (title, question, buttons) and the job waiting on it |
-| `answer_cc5_dialog` | Click a dialog button by its label; the "Unsaved project data found" prompt only with the button `CC5_RECOVERY_ANSWER` names |
+| `get_cc5_dialog` | Show the dialog CC5 has open (title, question, buttons) and the job waiting on it, or that CC5 is busy with a command's progress window |
+| `answer_cc5_dialog` | Click a dialog button by its label; the "Unsaved project data found" prompt only with the button `CC5_RECOVERY_ANSWER` names; a progress window's Cancel is refused (it would abort the running command) |
 
 When a command opens a CC5 dialog (a confirmation, or a choice such as "Replace / Material Only / Cancel"), the call fails within about a second with the question, the buttons and a job id. The command keeps running: answer the dialog with `answer_cc5_dialog`, then read the command's result with `job_status`.
 
@@ -106,8 +106,8 @@ When a command opens a CC5 dialog (a confirmation, or a choice such as "Replace 
 #### Edit & History
 | Tool | Description |
 |------|-------------|
-| `undo` | Undo the last operation |
-| `redo` | Redo an undone operation |
+| `undo` | Undo the last operation (CC5 does not report an undo with nothing left to undo) |
+| `redo` | Redo an undone operation; refused when a viewport capture taken after the undo replaced CC5's redo history |
 
 #### Advanced Features
 | Tool | Description |

@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { CC5Bridge, BridgeHttpError, BridgeUnreachableError } from "../src/cc5-bridge.js";
+import { CC5Bridge, BridgeHttpError, BridgeTimeoutError, BridgeUnreachableError } from "../src/cc5-bridge.js";
 import type {
   CC5Response,
   CC5Avatar,
@@ -842,6 +842,10 @@ describe("CC5Bridge error answers from the live bridge", () => {
     await expect(bridge.getAvatars()).rejects.toBeInstanceOf(BridgeUnreachableError);
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("This operation was aborted", "AbortError")));
     await expect(bridge.getAvatars()).rejects.toBeInstanceOf(BridgeUnreachableError);
+    // A timeout is its own kind: CC5 may still be working, so the tools show its text without the connection hint.
+    await expect(bridge.getAvatars()).rejects.toBeInstanceOf(BridgeTimeoutError);
+    mockFetchError("fetch failed");
+    await expect(bridge.getAvatars()).rejects.not.toBeInstanceOf(BridgeTimeoutError);
     mockFetchHttpError(400, JSON.stringify({ success: false, error: "File not found: C:/x.png" }));
     await expect(bridge.getAvatars()).rejects.not.toBeInstanceOf(BridgeUnreachableError);
   });

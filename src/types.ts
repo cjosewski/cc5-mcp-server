@@ -50,6 +50,8 @@ export interface DeleteAvatarResult extends OperationResult {
 export interface CaptureResult extends OperationResult {
   path?: string;
   base64?: string;
+  /** Set when the plugin wrote the file but did not send it (over its 10 MB limit). */
+  warning?: string;
 }
 
 export interface CameraInfo {
@@ -275,6 +277,8 @@ export interface CC5Dialog {
   text: string;
   /** Labels of the visible, enabled buttons. */
   buttons: string[];
+  /** True for a command's own progress window (only button Cancel): not a question (F-56). */
+  progress?: boolean;
 }
 
 export interface DialogResult extends OperationResult {
@@ -429,10 +433,12 @@ export interface JobStatus {
   action: string;
   status: "queued" | "running" | "done" | "failed";
   result?: unknown;
-  /** Set while the job waits on a CC5 dialog it opened (a confirmation or a choice). */
+  /** Set while the job waits on a CC5 dialog it opened (a confirmation or a choice), or is queued behind one. */
   dialog?: CC5Dialog;
   /** Ready-to-show text: the question, the buttons, and how to answer. */
   dialog_message?: string;
+  /** A queued job: the job whose dialog it waits behind (it starts after that answer). */
+  blocked_by?: string;
 }
 
 /**

@@ -280,6 +280,20 @@ describe("batch cancellation, one scene edit at a time, and progress", () => {
     expect(bridge.getMeshStats).not.toHaveBeenCalled();
   });
 
+  it("records CC5's question when an export waits on a dialog, not 'export still running' (C2 review)", async () => {
+    const question = 'CC5 is waiting for an answer to "Overwrite?". Buttons: Yes, No. The command is still running as ' +
+      'job cmd_ab12cd34_7: answer it with answer_cc5_dialog (ask the user when it is a real choice), then check its ' +
+      'result with job_status("cmd_ab12cd34_7").';
+    bridge.startJob.mockImplementation(async (action: string) => ({ job_id: action === "export_for_unity" ? "cmd_ab12cd34_7" : "cmd_ab12cd34_1" }));
+    bridge.getJob.mockImplementation(async (id: string) => id === "cmd_ab12cd34_7"
+      ? { job_id: id, action: "export_for_unity", status: "running", dialog_message: question }
+      : { job_id: id, action: "load_asset", status: "done", result: ok });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, { ...input, variants: [input.variants[0]] }, () => undefined);
+    expect(m.variants[0]).toMatchObject({ name: "A", ok: false, error: question });
+    expect(bridge.getMeshStats).not.toHaveBeenCalled();
+  });
+
   it("returns a cancelled batch as an error and writes the cancellation to the manifest file", async () => {
     const ac = new AbortController();
     bridge.setSkinCondition.mockImplementation(async () => { ac.abort(); return ok; });

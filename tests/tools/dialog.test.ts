@@ -31,8 +31,15 @@ describe("formatDialog", () => {
       "Job cmd_12 is waiting on this answer; read its result with job_status after answering.");
   });
 
-  it("names an untitled dialog without buttons", () => {
-    expect(formatDialog({ title: "", text: "", buttons: [] })).toBe('CC5 dialog "(untitled)":\nButtons: none found');
+  it("names an untitled dialog without buttons, and says when no MCP command waits on it", () => {
+    expect(formatDialog({ title: "", text: "", buttons: [] })).toBe('CC5 dialog "(untitled)":\nButtons: none found\n' +
+      "No MCP command is waiting on this dialog: it may be the user's own, so ask the user before answering it.");
+  });
+
+  it("reports a command's progress window as CC5 being busy (F-56)", () => {
+    expect(formatDialog({ title: "Exporting", text: "Exporting FBX...", buttons: ["Cancel"], progress: true }, null))
+      .toBe('CC5 is busy: progress window "Exporting" (Exporting FBX...). It closes when the command finishes. ' +
+        "Do not cancel it unless the user asks; they cancel it in CC5.");
   });
 });
 
@@ -83,7 +90,7 @@ describe("recovery prompt answered by the plugin (F-52)", () => {
     bridge.getDialog.mockResolvedValue({ success: true, dialog: null, waiting_job: null, recovery_policy: "cancel",
       recovery_answered: [{ time: "2026-10-05 16:01:00", button: "Cancel", text: "Unsaved project data found." }] });
     const r = await server.getRegisteredTool("get_cc5_dialog")({});
-    expect(r.content[0].text).toBe("No CC5 dialog is open.\nCC5's \"Unsaved project data found\" prompt was answered "
-      + "Cancel at 2026-10-05 16:01:00 (the auto-saved changes were discarded).");
+    expect(r.content[0].text).toBe("No CC5 dialog is open.\nWhen CC5 started, its \"Unsaved project data found\" prompt "
+      + "was answered Cancel automatically (2026-10-05 16:01:00, local time): the auto-saved changes were discarded.");
   });
 });

@@ -25,22 +25,22 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-09 | bug | fixed by F-53 (live, Batch B) | Undoing a diffuse color change is unreliable |
 | F-10 | bug | fixed, live (Batch A) | `set_eye_color` has no visible effect and reports materials that do not exist |
 | F-11 | bug | open | `reset_morphs` also zeroes a template's identity morphs |
-| F-12 | doc | fixed, Batch C (live check pending) | `adjust_morph` description points to a `get_morph_catalog` tool that does not exist |
+| F-12 | doc | fixed, live (Batch C); parameter examples still wrong (C2) | `adjust_morph` description points to a `get_morph_catalog` tool that does not exist |
 | F-13 | minor | fixed, live (Batch B) | Morph and expression values come back as raw float32 (0.800000011920929) |
 | F-14 | minor | fixed, live (Batch B) | Colors set from 0-1 are truncated to 0-255 steps (0.3 → 0.298), not rounded |
-| F-15 | minor | fixed, Batch C (live check pending) | `delete_avatar` on an empty scene is an error; a named delete then says "No avatars in scene" |
-| F-16 | doc | fixed, Batch C (live check pending) | `set_subdivision_level` refusal does not say to run Modify > Subdivide |
-| F-17 | minor | partly fixed, Batch C: graded build + worn items; skin/eyes/face still need a capture (live check pending) | `describe_character` says "average build" for templates and for heavy at 50% |
+| F-15 | minor | fixed, live (Batch C) | `delete_avatar` on an empty scene is an error; a named delete then says "No avatars in scene" |
+| F-16 | doc | fixed, live (Batch C); tool description still silent (C2) | `set_subdivision_level` refusal does not say to run Modify > Subdivide |
+| F-17 | minor | partly fixed, live (Batch C); build sentence can be false (F-60) | `describe_character` says "average build" for templates and for heavy at 50% |
 | F-18 | minor | fixed, live (Batch B) | `reset_expression` reports every slider (172), not the ones it changed |
 | F-19 | gap | fixed (live P4-82) | `search_content` did not cover eye presets |
 | F-20 | doc | runbook | `search_morphs` matches IDs too; several display names repeat with different IDs |
-| F-21 | minor | fixed, Batch C (live check pending) | Error wording differs across tools for the same situation |
-| F-22 | minor | fixed, Batch C (live check pending) | `capture_viewport` without a path always overwrites the same temp file |
-| F-23 | doc | fixed, Batch C (live check pending) | `check_cc5_connection` passes while a CC5 dialog blocks every command |
+| F-21 | minor | partly fixed, live (Batch C); three refusal styles and four tools left (C2) | Error wording differs across tools for the same situation |
+| F-22 | minor | fixed, live (Batch C); large-capture fallback broken (F-58) | `capture_viewport` without a path always overwrites the same temp file |
+| F-23 | doc | fixed, live (Batch C); wording and progress windows (F-56, F-59) | `check_cc5_connection` passes while a CC5 dialog blocks every command |
 | F-24 | gap | partly fixed, live (Batch B): visibility read-back for props/lights/characters, IBL image the bridge loaded; worn items and camera framing still capture-only | Some changes cannot be read back: IBL image, item visibility, camera framing |
 | F-25 | bug | retest | `get_camera_info` placed the camera at the side right after the home view |
 | F-26 | minor | retest | The home view cropped Kevin's feet |
-| F-27 | minor | fixed, Batch C (live check pending) | `set_light_shadow` with no settings is only refused inside CC5 |
+| F-27 | minor | fixed, live (Batch C) | `set_light_shadow` with no settings is only refused inside CC5 |
 | F-28 | gap | open | Every second character preset stops on "Replace / Material Only"; batch runs need a preset answer |
 | F-29 | doc | runbook | Runbook placeholders ("‹first jaw ID›") are ambiguous; give real IDs |
 | F-30 | doc | runbook | Value checks need a tolerance (float32 and 0-255 storage) |
@@ -67,6 +67,17 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-51 | bug | open | CC5 crashed during an FBX prop import, right after "Convert All" (second session, box_01.fbx that imported fine before) |
 | F-52 | blocker | fixed, live (Batch A) | The crash-recovery prompt stops an unattended run: only the user may answer it. Chad: Claude-launched CC5 answers Cancel automatically |
 | F-53 | blocker | fixed, live (Batch A) | `capture_viewport` adds an undo step (it re-sets the render size), so `undo` after any capture reverses the capture, not the change |
+| F-54 | bug (CC5) | open | CC5 crashed on its own 2-3 minutes after a launch, before any MCP command; Chad: CC5 often crashes on the first launch attempt |
+| F-55 | bug | fixed, live (C2) | `redo` after a capture reports success but brings nothing back: the capture's own undo step takes the redo slot |
+| F-56 | bug | fixed, live (C2) | A progress window (an export's, only button Cancel) is reported as a dialog waiting for an answer, inviting an agent to cancel it |
+| F-57 | bug | fixed, live (C2); failed requests still print (F-63) | The bridge's request log filter never matches, so every request is printed from HTTP threads (and lands in exec_python output) |
+| F-58 | bug | fixed, live (C2) | A capture over 10 MB (e.g. 8K) is overwritten by a full-screen desktop screenshot; a unit test takes a real screenshot on every npm test |
+| F-59 | doc | fixed, live (C2) | check_cc5_connection overstates what an open dialog does and never shows the automatic recovery answer |
+| F-60 | bug | fixed, live (C2) | describe_character's "no body-shape slider set: the template's own build" can be false (light presets, negative sliders, non-templates) |
+| F-61 | minor | open | With no character in the scene, list_clothes / list_hair / list_accessories say "No clothes are applied." (as for a character wearing nothing) |
+| F-62 | minor | open | `get_avatar_info` still prints raw float32 morph weights (0.3499999940395355): F-13's fix covered get_morph_value and expressions only |
+| F-63 | minor | open | Failed bridge requests (4xx/5xx) are still printed from HTTP threads, into CC5's console and a running exec_python's output |
+| F-64 | minor | open | The CC5-window screenshot fallback starts PowerShell without CREATE_NO_WINDOW: a console window may flash over CC5 and land in the capture |
 
 ## Details
 
@@ -531,6 +542,188 @@ Each change was followed by a `capture_viewport` before the `undo`, the step tha
   follows `RScene.Hide/Show` on props (the review's open question). `set_ibl` Birchwood.hdr ->
   `get_visual_settings` "IBL image last loaded by set_ibl: ...Birchwood.hdr (CC5 cannot report the current image;
   it may since have been undone or replaced in CC5)"; one undo reverted the load.
+
+**F-54: CC5 crashes on its own soon after launch** (Batch C live check, 2026-10-05 ~19:05-19:08) · bug (CC5)
+CC5 was launched with `CC5_RECOVERY_ANSWER=cancel CC5_ALLOW_EXEC=1`; the bridge answered `/health` after 22 s. The
+first MCP call, about 2-3 minutes later (19:08:02), got ECONNREFUSED and the CharacterCreator.exe process was gone;
+nothing had been sent to CC5 in between. Chad: "CC5 has a tendency to crash on first launch attempt. I would try
+again." The second launch was watched for 120 s after the bridge came up and stayed up. This may also explain
+F-51 (the crash during an FBX import a few minutes into a fresh session). Proposed: `scripts/cc5-restart.ps1` (and
+the documented bash launch) wait about two minutes after the bridge answers, check that the process is still
+running, and relaunch once if it died (the recovery prompt that follows is answered by `CC5_RECOVERY_ANSWER`).
+Chad (2026-10-06): the crash happens when CC5 goes from loading the plug-ins and the back end to loading the UI;
+once the UI has loaded, CC5 has started correctly and there is no need to wait. The bridge answers `/health` before
+that point (the plug-in starts it while the back end loads), so `/health` alone does not show a safe start. The UI
+is up when CC5's main window is showing: live, `exec_python` listed a visible `QMainWindow` titled
+"Character Creator 5 - Default.ccProject" two minutes after launch. Revised proposal: the launcher waits for that
+window (for example a `ui_ready` flag the plug-in's main-thread timer sets and `/health` reports), relaunches once
+if the process dies before it, and does not wait after it.
+
+### Batch C live check (2026-10-05 19:10-19:23, workflow: six sequential CC5 steps, two verifiers each, critic)
+
+All six steps passed and all 12 verifier verdicts confirmed (0 refuted). L1: `get_cc5_dialog` showed the recovery
+prompt answered Cancel at 19:10:05 (F-52 live again after the F-54 relaunch); `delete_avatar` on the empty scene ->
+"The scene has no characters: nothing to delete."; named -> "Avatar not found: Kevin (the scene has no characters)";
+`check_cc5_connection` -> "connected and ready". L2: CC4 Kevin -> "average build (no body-shape slider set: ...)",
+"Wearing: Boxers", "Hair: none", "Accessories: none"; heavy 50% -> "slightly heavy build"; one undo restored it;
+subdivision 2 -> the Modify > Subdivide refusal. L3: .jpg and .fbx load_asset hints, shader close match
+("Original Roughness Strength"), "Item not found: nope. Worn now: Boxers.", "Morph not found: ...", F-27 refusal.
+L4: two captures -> two files in %TEMP%\cc5_captures with 13-digit names; the restarted MCP server shows the Batch C
+descriptions. L5: an exec_python QMessageBox -> 409 with a job id; `check_cc5_connection` reported the open dialog;
+`answer_cc5_dialog` OK; `job_status` -> "closed". L6: clean Kevin, Boxers only.
+
+Follow-up probes (main loop, same session): undo -> capture -> redo: "Redo successful" but the heavy preset did not
+come back (F-55). heavy 50% -> `delete_avatar("Nobody")` -> undo: the preset was undone, so a failed named delete
+records no empty step. A 3840x2160 capture through exec_python: 8.95 MB, returned with base64 (the >10 MB path needs
+8K, F-58). `check_cc5_connection` during an 8 s exec sleep: "connected." plus the 3 s fallback line; the exec output
+contained "GET /health 200" from an HTTP thread (F-57). A non-blocking QMessageBox no command waits on: the check
+reported it; `list_avatars` failed after ~5 s with "answer or close it in CC5" (F-59). A non-blocking QProgressDialog
+("Cancel" only): reported as "a dialog open, and commands wait until it is answered ... Buttons: Cancel" (F-56).
+`get_morph_value("not_a_real_morph")` -> "current value: 0" (no not-found check); `set_skin_shader` with a typo -> no
+close matches; `set_item_visible("nope")` -> "Item not found: nope" with no hint (F-21 left).
+
+**F-55: redo after a capture** · bug. A capture records one CC5 undo step and undoes it at once (F-53), so the
+capture sits in the redo slot, and CC5 dropped the user's undone change from redo when the capture was recorded.
+`redo` then replays the invisible render and says "Redo successful". Fix: the plugin remembers that the redo slot
+holds a capture and `redo` refuses with a plain message instead of calling CC5 (an undo through the MCP makes redo
+normal again). Redo of something undone in CC5 itself is not visible to the plugin.
+
+**F-56: progress windows reported as questions** · bug. `get_dialog` (server.py) does not drop progress windows the
+way `_note_command_dialog` does, and `answer_dialog` would click their Cancel. Fix: report a progress window as
+"CC5 is busy" with the rule not to cancel it unless the user asks.
+
+**F-57: request log filter** · bug. `BridgeHandler.log_message` tests `args[0]` (the request line) instead of the
+status code, so every request is printed from an HTTP thread into CC5's Python stdout (and into a running
+exec_python's captured output, since it redirects sys.stdout process-wide). Printing from non-main threads into CC5's
+console is a crash candidate for F-51 / F-54. Fix the filter to log only non-2xx/3xx.
+
+**F-58: large captures** · bug. For a render over MAX_IMAGE_BYTES (10 MB) the plugin returns the path without image
+data and a warning; the TypeScript tool then takes a PowerShell screenshot of the whole primary screen and copies it
+over that file (Batch C pointed the fallback at result.path), so the real render is destroyed and the warning lost.
+tests/tools/scene.test.ts mocks exactly that reply without mocking execSync, so every npm test screenshots the
+desktop. Fix: return the path and the warning; take a screenshot only when there is no file; mock it in tests.
+
+**F-59: connection check wording** · doc. "An open dialog holds every command until it is answered" is too strong:
+behind a dialog no command opened, a queued command fails after MODAL_WAIT_SECONDS (5 s); behind a dialog a command
+opened, a new command times out after 30 s; exec_python and the dialog tools keep running. The check also drops the
+recovery answer that `/dialog` returns, though the F-52 design said it would show it. The recovery line says neither
+that it happened at startup nor that the time is local.
+
+**F-60: describe_character build sentence** · bug. "no body-shape slider set: the template's own build" is printed
+whenever the three build sliders are below 0.15: false after a light preset (heavy 20% sets Body Fat A 0.14), with a
+negative slider (Body Fat A -0.8), and for create_avatar's base body; it also sits above "cc4 kevin_body: 100%", a
+shaping morph that reset_morphs zeroes (F-11). Fix the wording and warn in reset_morphs' description.
+
+### C2 review (2026-10-05, workflow: five angles, each finding verified adversarially)
+
+45 findings: 32 confirmed, 4 plausible, 9 refuted. Fixed before commit (C2b):
+- Queue guard (server.py `_modal_dialog_error`): it runs only while no MCP command runs, so no command waits on the
+  dialog it reports. C2 had invited the agent to answer it with answer_cc5_dialog (it may be the user's own): it now
+  says "probably the user's own or CC5's: ask the user". A progress window reads "CC5 is busy" (F-56 was only half
+  applied), and a dialog whose text could not be read goes to the user.
+- Redo guard: the slot is marked before the capture undoes its own step, so a failed undo still counts, and it
+  survives /reload. Known limit, now in the undo and redo descriptions: RLPy's Undo/Redo report nothing, so an undo
+  with nothing left to undo, or a new change after an undo, is not seen (redo then asks CC5 and says it succeeded).
+- Morph ID checks read the catalog once more before refusing (the per-avatar cache can be stale) and skip the check
+  when the catalog cannot be read; get_morph_value used to fail on a catalog read error.
+- set_skin_shader says when CC5 could not read the parameter (it blamed the value count).
+- check_cc5_connection: behind a dialog an MCP command waits on, new commands wait about 30 s and are cancelled;
+  behind any other, they fail after about 5 s and the user is asked first. A refused dialog check (a wrong token, an
+  old plugin) shows CC5's error instead of "CC5 is probably busy". get_cc5_dialog adds "No MCP command is waiting on
+  this dialog: it may be the user's own, so ask the user before answering it."; answer_cc5_dialog's description too.
+- describe_character grades whole percents (CC5 sends float32 weights: Muscular 0.4 / Fat 0.3 read "average"), names
+  both sliders when two lead together (Muscular 100% with Fat 100% read "average build"), and says "build not graded"
+  when no build slider is set (a template's own shape comes from its identity morph).
+- reset_morphs' warning no longer reads as "set the identity morphs to 0".
+- search_content stops at the first folder that fails because CC5 is down, timed out, waits on a dialog or is held
+  by the open-dialog guard (22 folders x 5 s), and passes CC5's text on.
+- Job tools (export_goz, import_fbx, export_textures, export_for_unity) show CC5's question instead of "still
+  running" (`pendingResult`); a client-side timeout is shown as it is, without "Is CC5 running".
+- capture_viewport: the desktop-screenshot fallback could never run (a capture without a file is a 400) and is gone;
+  the plugin already falls back to a screenshot of CC5's window.
+- README (dialog tools, undo/redo) and CLAUDE.md (the dev note said to restart CC5 with taskkill).
+- Tests for each, including a QProgressDialog fake, redo through capture_viewport, the large-capture reply, the log
+  filter's 304 and status-less lines, the job tools' error paths, exact hint texts and the corrected descriptions.
+
+Second review round (C2b, four angles plus a completeness critic): 26 findings, 9 confirmed, 17 refuted, plus one from
+the critic. Fixed:
+- The plugin's CC5-window screenshot fallback (`_capture_window_screenshot`) never wrote a file: its output path was
+  passed after `-Command`, where PowerShell appends it to the command text instead of binding it to `param()`
+  (checked with a harmless script: the path read back empty, exit code 1), and the no-window branch used Windows
+  Forms before loading it. The path now travels in the environment (`CC5_CAP_OUT`). Not yet verified live.
+- A job queued behind another command's dialog said "Still running" and a recipe's later steps waited 120 s each.
+  `/jobs/status` now reports the question for it too (`blocked_by`: it has not started and runs after the answer),
+  so job tools, recipe steps and `job_status` show it at once. check_cc5_connection no longer says every command
+  sent behind such a dialog is cancelled: direct calls are, jobs wait.
+- Redo's refusal said anything undone in CC5 could still be redone with Edit > Redo: only what was undone after the
+  capture can (Edit > Redo would otherwise replay the capture's own step).
+- describe_character named a runner-up below the 15% floor ("slightly muscular, heavy" for 20% / 12%).
+- Tests that would have passed on a revert: the stale-catalog read through the real cache, the morph setters' checks,
+  search_content's stop on 504/409/timeouts, and the batch export's dialog text.
+  Suites: 764 TypeScript, 364 Python, all passing.
+
+Left for Chad (Batch D's first question): batch_generate_patients carries on after a CC5 question, so with the queue
+stalled behind it every later variant times out after about 30 s (50 variants: about 25 minutes, no way to answer
+meanwhile). Recipes carry on the same way, now without the 120 s waits.
+
+For the C2 live check: probe `REventCallback.OnUndoRedoDone`. If CC5 fires it only when an undo or redo did
+something, undo can report "nothing to undo" and the redo guard can see a change made after an undo.
+
+### C2 live check (2026-10-06 07:40-08:45, workflow: seven sequential CC5 steps, two verifiers each, critic)
+
+CC5 launched with `CC5_RECOVERY_ANSWER=cancel CC5_ALLOW_EXEC=1`, up at the first try (Chad: the first-launch crash
+happens between the back end and the UI loading; once CC5's main window shows, it has started correctly, F-54). It
+opened Default.ccProject without a character (F-61 came from the first attempt), so CC4 Kevin was loaded and the
+check run again. 74 of 75 checks passed; all 14 verifier verdicts confirmed every check (0 refuted). The one failed
+check was the spec's: live CC5 lists three close matches for "Original Roughnes Strength" (Original Roughness
+Strength, Keep Original Roughness, Chin Roughness Scale; difflib n=3, cutoff 0.6), where the spec expected one.
+- L1: CC5 ran the new plugin; "connected and ready"; Kevin read "build not graded: the build sliders are not set
+  (a template's own shape comes from its identity morph)", Wearing: Boxers, Hair: none, Accessories: none.
+- L2 (F-60): heavy 20% "average build (build sliders below 15%)", heavy 50% "slightly heavy build", muscular 100%
+  "muscular build", Muscular 100 + Fat 100 "muscular, heavy build (...)", 20/12 "slightly muscular build", 20/15
+  "slightly muscular, heavy build (...)"; Oval Afro showed in the Hair line and came off with remove_scene_item.
+- L3 (F-21, C2): every refusal text exact, including set_morph_value / set_multiple_morphs ("Morph(s) not found:
+  nope_not_real ..." with nothing applied), set_item_visible, set_skin_shader (no match, wrong count), the named
+  delete, the .fbx hint, the plugin-side .png hint through a recipe asset and the subdivision refusal.
+- L4 (F-53, F-55, F-58, F-22, C2b): undo -> capture -> redo refused with the new text and the preset stayed off;
+  heavy -> capture -> undo reached the preset, and redo brought it back; with MAX_IMAGE_BYTES lowered the capture
+  came back as its path and "Image too large to embed (1265446 bytes)", no screenshot; 55 dummy files plus a capture
+  were pruned to the newest 50; `_capture_window_screenshot` wrote a 2575x1407 PNG through `CC5_CAP_OUT` (checked
+  by header only, not looked at).
+- L5 (F-56, F-59, C2 review): a probe QProgressDialog read "CC5 is busy" in get_cc5_dialog and check_cc5_connection,
+  answer_cc5_dialog refused its Cancel and, renamed, its Abort, and list_avatars failed with "CC5 is busy with ...";
+  a probe question no command waited on gave the "No MCP command is waiting on this dialog ... ask the user" lines,
+  list_avatars failed with the guard text, and search_content stopped at its first folder with that text.
+- L6 (F-59, C2b): an exec_python question returned the 409 text with job X; check_cc5_connection gave the
+  waiting-job lines; save_character came back at once with "Job Y has not started: it is queued behind job X ...
+  runs after that answer" (job_status the same); a direct list_avatars was cancelled after 30 s; after answering,
+  X finished ("answered OK") and Y saved the file. F-57 held: the successful requests made while X's stdout was
+  redirected were not printed into its output, but its own 409 and the cancelled 504 were (F-63).
+- L7: OnUndoRedoDone fires synchronously, once for each undo or redo that did something, and not for a redo with
+  nothing to redo (2 of 2); RGlobal.Undo/Redo return None either way. An undo with nothing to undo was not tried
+  (the history held other actions). If it is silent too, undo and redo can say "nothing to undo/redo" and keep the
+  redo guard honest: probe it at the start of a fresh session, before anything is loaded.
+
+**F-61: list tools with no character** (C2 live check L1, 2026-10-06) · minor. CC5 opened Default.ccProject with no
+character. `get_avatar_info` and `describe_character` said "No avatar in the scene.", but `list_clothes`,
+`list_hair` and `list_accessories` said "No clothes are applied." / "No hair is applied." / "No accessories are
+applied.": the TypeScript formatter (src/tools/content.ts) turns any empty list into that text, so "no character"
+reads like "a character wearing nothing". Fix: the list tools say "No avatar in the scene." when there is none.
+
+**F-62: get_avatar_info prints raw float32** (C2 live check L4) · minor. Heavy 50% read back as Body Fat A
+0.3499999940395355 and Muscular 0.10000000149011612. F-13's fix rounded get_morph_value and the expression reads
+only; cc5_api.get_avatar_info returns GetShapingMorphWeight unrounded. Round to 4 decimals there.
+
+**F-63: failed requests still printed from HTTP threads** (C2 live check L6) · minor. F-57's filter keeps successful
+requests out of the log, but every 4xx/5xx is still printed from an HTTP thread: live, a running exec_python's
+output held '"POST /exec/python HTTP/1.1" 409 -' and '"GET /avatars HTTP/1.1" 504 -' (exec_python's
+redirect_stdout swaps sys.stdout for the whole process). Printing from non-main threads into CC5's console stays a
+crash candidate (F-51, F-54). Fix: write the request log to a file, never to stdout.
+
+**F-64: the window screenshot may show a console window** (C2 live check critic) · minor. `_capture_window_screenshot`
+starts powershell.exe from CC5 (a GUI process) without `creationflags=CREATE_NO_WINDOW`, so a console window can open
+over CC5 while CopyFromScreen copies that area. Pass CREATE_NO_WINDOW. Also: set_skin_shader's third close match
+("Chin Roughness Scale", ratio about 0.61) is noise; a cutoff near 0.75 keeps only the real match.
 
 ## Ideas (not findings)
 
