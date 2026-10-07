@@ -1,5 +1,13 @@
+import fs from "node:fs";
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { registerPipelineTools, IMPORT_CHARACTER_DISABLED } from "../../src/tools/pipeline.js";
+import {
+  registerPipelineTools, IMPORT_CHARACTER_DISABLED, IMAGE_TYPES_TEXT, EXPORT_OBJ_DESCRIPTION, EXPORT_GOZ_DESCRIPTION,
+  REPLACE_MESH_DESCRIPTION, REPLACE_MESH_ANIMATION_RULE, OBJ_Y_UP,
+} from "../../src/tools/pipeline.js";
+import { RecipeSchema } from "../../src/recipe.js";
+import {
+  TIMELINE_LEFT_LINE, TIMELINE_NOT_RESTORED_PREFIX, TIMELINE_USABLE_LINE, UNDO_HISTORY_CLEARED,
+} from "../../src/tools/unity.js";
 import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -72,7 +80,56 @@ describe("save_character", () => {
     expect(started).toEqual([{ action: "save_character", params: { output_path: "C:/Bases/Male.ccAvatar" } }]);
     expect(r.content[0].text).toContain("Saved C:/Bases/Male.ccAvatar");
   });
+
+  // F-77: a .ccAvatar keeps neither the facial expression nor the pose (the pose is not read back: static text).
+  const NOT_KEPT = "A .ccAvatar keeps neither the facial expression nor the pose: after loading it the face is neutral and " +
+    "the body is back in its default pose; re-apply them with set_expression and apply_pose, or with expression and " +
+    "pose_file steps in each batch variant.";
+
+  it("says nothing more for a neutral face", async () => {
+    mockJobs(bridge, { save_character: { success: true, path: "C:/Bases/Male.ccAvatar", expression_not_saved: [] } });
+    const r = await server.getRegisteredTool("save_character")({ output_path: "C:/Bases/Male.ccAvatar" });
+    expect(r.content[0].text).toBe("Saved C:/Bases/Male.ccAvatar");
+  });
+
+  it("lists the expression the .ccAvatar did not keep, as an expression step a batch variant can use", async () => {
+    const sliders = [{ name: "Brow_Raise_Inner_L", weight: 0.6 }, { name: "Mouth_Frown_L", weight: 0.4 }];
+    mockJobs(bridge, { save_character: { success: true, path: "C:/Bases/Male.ccAvatar", expression_not_saved: sliders } });
+    const r = await server.getRegisteredTool("save_character")({ output_path: "C:/Bases/Male.ccAvatar" });
+    const text = r.content[0].text;
+    expect(r.isError).toBeUndefined();
+    expect(text).toBe("Saved C:/Bases/Male.ccAvatar\nNot saved: the facial expression (2 sliders: Brow_Raise_Inner_L 0.6, "
+      + "Mouth_Frown_L 0.4). A .ccAvatar keeps neither the facial expression nor the pose: to keep this expression, give each "
+      + `batch variant this expression step: ${JSON.stringify(sliders)}`);
+    const step = JSON.parse(text.slice(text.indexOf("expression step: ") + "expression step: ".length));
+    expect(RecipeSchema.shape.expression.parse(step)).toEqual(sliders);
+  });
+
+  it("says one slider, not one sliders", async () => {
+    mockJobs(bridge, { save_character: { success: true, path: "C:/a.ccAvatar", expression_not_saved: [{ name: "A", weight: 1 }] } });
+    const r = await server.getRegisteredTool("save_character")({ output_path: "C:/a.ccAvatar" });
+    expect(r.content[0].text).toContain("(1 slider: A 1)");
+  });
+
+  it("says what a .ccAvatar does not keep when the plugin could not read the expression (or is older)", async () => {
+    mockJobs(bridge, { save_character: { success: true, path: "C:/Bases/Male.ccAvatar",
+      notes: ["Could not read the facial expression; a .ccAvatar keeps neither the facial expression nor the pose in any case."] } });
+    const r = await server.getRegisteredTool("save_character")({ output_path: "C:/Bases/Male.ccAvatar" });
+    expect(r.content[0].text).toBe(`Saved C:/Bases/Male.ccAvatar\n${NOT_KEPT}`);
+  });
+
+  it("says in its description that a .ccAvatar keeps neither the expression nor the pose", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "save_character")?.[1] as string;
+    expect(description).toContain(NOT_KEPT);
+  });
 });
+
+// F-83 (live CC5 5.13): CC5 reads an OBJ as the mesh in the character's current pose, and export_obj writes the T-pose.
+const TPOSE_NOTE = "The OBJ is in CC5's T-pose (arms horizontal). Sculpt it without changing the pose; " +
+  "replace_mesh_from_obj removes the character's pose to read it back.";
+const POSE_REMOVED = "The character's pose was removed so that CC5 reads the OBJ in the T-pose; it stands in a T-pose " +
+  "now. Apply a pose again with apply_pose if needed.";
+const description = (tool: string) => server.tool.mock.calls.find((c) => c[0] === tool)?.[1] as string;
 
 describe("export_obj", () => {
   it("requires .obj", async () => {
@@ -87,17 +144,59 @@ describe("export_obj", () => {
     expect(r.isError).toBeUndefined();
   });
 
+  it("passes on the plugin's note that the OBJ is in CC5's T-pose", async () => {
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)", notes: [TPOSE_NOTE] });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe(`Exported C:/x/a.obj\n${TPOSE_NOTE}`);
+  });
+
+  it("says the OBJ is in CC5's T-pose, that the pose stays while sculpting, and that the round trip needs Y-up", () => {
+    expect(description("export_obj")).toBe(EXPORT_OBJ_DESCRIPTION);
+    expect(EXPORT_OBJ_DESCRIPTION).toBe("Export the current character as OBJ in CC5's T-pose (arms horizontal), for " +
+      "sculpting in ZBrush or Blender. Keep the pose while sculpting, then bring the mesh back with replace_mesh_from_obj, " +
+      "which needs a Y-up OBJ (export with y_up true, and save Y-up from the sculpting tool).");
+  });
+
+  it("passes on the plugin's note that a Z-up OBJ cannot come back, as a result: the axis was asked for", async () => {
+    const zUpNote = "The OBJ is Z-up (y_up false), in CC5's T-pose. replace_mesh_from_obj cannot bring it back, as it " +
+      "reads only Y-up OBJs: for the round trip, export again with y_up true (the default).";
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)", notes: [zUpNote] });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj", y_up: false });
+    expect(bridge.exportObj).toHaveBeenCalledWith("C:/x/a.obj", false);
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe(`Exported C:/x/a.obj\n${zUpNote}`);
+  });
+
+  // TS-8 (DT-3): replace_mesh_from_obj checks the OBJ against a Y-up T-pose export and refuses a Z-up OBJ.
+  it("says in the y_up description that replace_mesh_from_obj needs a Y-up OBJ and refuses a Z-up one", () => {
+    expect(OBJ_Y_UP).toBe("a Y-up OBJ (export with y_up true, and save Y-up from the sculpting tool)");
+    const shape = server.tool.mock.calls.find((c) => c[0] === "export_obj")?.[2] as Record<string, { description?: string }>;
+    expect(shape.y_up.description).toBe("Y-up axis. Keep true for ZBrush, Maya and Blender (Blender's OBJ importer " +
+      "converts Y-up to Z-up); replace_mesh_from_obj needs a Y-up OBJ (export with y_up true, and save Y-up from the " +
+      "sculpting tool). false only for a tool that expects Z-up OBJ: replace_mesh_from_obj refuses that OBJ");
+  });
+
   it("flags an OBJ written with the weaker call form, naming the form and what was dropped", async () => {
     bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path)",
-      notes: ["WARNING: CC5 rejected (avatar, path, option) and (avatar, path) was used instead, so the OBJ options (bind pose, Y-up axis, body and clothing parts) were NOT applied"] });
+      notes: ["WARNING: CC5 rejected (avatar, path, option) and (avatar, path) was used instead, so the OBJ options (Y-up axis, body and clothing parts, materials) were NOT applied, and the OBJ may not be in CC5's T-pose"] });
     const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain("with (avatar, path)");
-    expect(r.content[0].text).toContain("bind pose, Y-up axis");
+    expect(r.content[0].text).toContain("Y-up axis, body and clothing parts");
+    expect(r.content[0].text).toContain("Do not sculpt on this OBJ or bring it back with replace_mesh_from_obj.");
   });
 });
 
 describe("export_goz", () => {
+  it("says replace_mesh_from_obj needs CC5's T-pose and that ZBrush's GoZ T-pose is untested", () => {
+    expect(description("export_goz")).toBe(EXPORT_GOZ_DESCRIPTION);
+    expect(EXPORT_GOZ_DESCRIPTION).toContain("replace_mesh_from_obj needs the mesh in CC5's T-pose: export with pose " +
+      "'tpose' (the default) and export the OBJ from ZBrush without changing the pose.");
+    expect(EXPORT_GOZ_DESCRIPTION).toContain("Whether ZBrush's GoZ T-pose matches CC5's is untested: " +
+      "replace_mesh_from_obj refuses a mismatch.");
+  });
+
   it("runs as a job and reports the folder", async () => {
     bridge.startJob.mockResolvedValue({ job_id: "cmd_2" });
     bridge.getJob.mockResolvedValue({ job_id: "cmd_2", action: "export_goz", status: "done",
@@ -208,11 +307,75 @@ describe("import_fbx", () => {
 });
 
 describe("replace_mesh_from_obj", () => {
+  const replace = () => server.getRegisteredTool("replace_mesh_from_obj")({ mesh_name: "CC_Base_Body", obj_path: "C:/s/body.obj" });
+
   it("passes mesh and path to a job", async () => {
     const started = mockJobs(bridge, { replace_mesh_from_obj: { success: true, mesh: "CC_Base_Body" } });
-    const r = await server.getRegisteredTool("replace_mesh_from_obj")({ mesh_name: "CC_Base_Body", obj_path: "C:/s/body.obj" });
+    const r = await replace();
     expect(started).toEqual([{ action: "replace_mesh_from_obj", params: { mesh_name: "CC_Base_Body", obj_path: "C:/s/body.obj" } }]);
     expect(r.content[0].text).toBe("Replaced CC_Base_Body with body.obj");
+  });
+
+  it("shows the check against the OBJ and that the pose was removed", async () => {
+    mockJobs(bridge, { replace_mesh_from_obj: { success: true, mesh: "CC_Base_Body", pose_removed: true, check_max_cm: 0,
+      notes: [POSE_REMOVED] } });
+    const r = await replace();
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe(`Replaced CC_Base_Body with body.obj\nChecked: the mesh matches the OBJ (max 0.00 cm).\n${POSE_REMOVED}`);
+  });
+
+  it("shows the warning when the replace could not be checked", async () => {
+    const warning = "WARNING: the new CC_Base_Body was not checked against body.obj: the T-pose export after the replace " +
+      "failed (disk full). Look at the character in Character Creator 5; one undo takes the replace back.";
+    mockJobs(bridge, { replace_mesh_from_obj: { success: true, mesh: "CC_Base_Body", pose_removed: false, check_max_cm: null,
+      notes: [warning] } });
+    const r = await replace();
+    expect(r.content[0].text).toBe(`Replaced CC_Base_Body with body.obj\n${warning}`);
+    expect(r.content[0].text).not.toContain("Checked:");
+  });
+
+  it("is an error naming why it refused or undid the replace", async () => {
+    const error = "CC5 did not read body.obj as expected (the mesh differs by up to 2.00 cm from the OBJ); the replace was undone.";
+    mockJobs(bridge, { replace_mesh_from_obj: { success: false, error } });
+    const r = await replace();
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(`Failed: ${error}`);
+  });
+
+  it("says it needs a Y-up OBJ from export_obj, removes the pose, refuses an animation, a topology, pose or axis mismatch, and checks the result", () => {
+    expect(description("replace_mesh_from_obj")).toBe(REPLACE_MESH_DESCRIPTION);
+    expect(REPLACE_MESH_DESCRIPTION).toContain("an edited OBJ from export_obj (same topology, in CC5's T-pose)");
+    // TS-8 (DT-3): the plugin refuses a Z-up OBJ naming the axis; the description says so before the call.
+    expect(REPLACE_MESH_DESCRIPTION).toContain(`It needs ${OBJ_Y_UP}.`);
+    expect(REPLACE_MESH_DESCRIPTION).toContain("CC5 reads the OBJ in the character's current pose, so the tool first " +
+      "removes the character's pose");
+    expect(REPLACE_MESH_DESCRIPTION).toContain(REPLACE_MESH_ANIMATION_RULE);
+    expect(REPLACE_MESH_DESCRIPTION).toContain("an OBJ whose mesh has a different vertex count, another pose (an OBJ " +
+      "from an older export_obj is in the bind pose) or another vertex order, and a Z-up OBJ (an export_obj with y_up false)");
+    // P-3: a replace CC5 reported but did not apply is undone too.
+    expect(REPLACE_MESH_DESCRIPTION).toContain("undoes the replace if CC5 read it differently or did not apply it");
+    const shape = server.tool.mock.calls.find((c) => c[0] === "replace_mesh_from_obj")?.[2] as Record<string, { description?: string }>;
+    expect(shape.obj_path.description).toBe("Absolute path to the edited .obj (from export_obj, sculpted in the same pose, saved Y-up)");
+  });
+
+  it("passes on the plugin's refusals of a Z-up OBJ and of a replace CC5 did not apply", async () => {
+    for (const error of [
+      "body.obj is a Z-up OBJ (export_obj with y_up false); replace_mesh_from_obj reads only Y-up OBJs: export it with " +
+        "y_up true (the default), sculpt, then replace.",
+      "CC5 did not apply body.obj to CC_Base_Body; nothing was changed (the replace was undone)",
+    ]) {
+      mockJobs(bridge, { replace_mesh_from_obj: { success: false, error } });
+      const r = await replace();
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe(`Failed: ${error}`);
+    }
+  });
+
+  it("refuses an animation longer than the plugin's pose clip (DEC-9, cc5_pipeline.py)", () => {
+    // The description says "longer than one frame": the plugin's POSE_CLIP_MAX_FRAMES must stay 1.
+    const plugin = fs.readFileSync(new URL("../../cc5-plugin/cc5_pipeline.py", import.meta.url), "utf-8");
+    expect(/^POSE_CLIP_MAX_FRAMES = (\d+)/m.exec(plugin)?.[1]).toBe("1");
+    expect(REPLACE_MESH_ANIMATION_RULE).toContain("(a motion clip longer than one frame)");
   });
 });
 
@@ -226,6 +389,66 @@ describe("load_texture", () => {
     bridge.loadTexture.mockResolvedValue({ success: true });
     await server.getRegisteredTool("load_texture")({ mesh_name: "CC_Base_Body", material_name: "Std_Skin_Body", channel: "normal", image_path: "C:/t/n.png" });
     expect(bridge.loadTexture).toHaveBeenCalledWith("CC_Base_Body", "Std_Skin_Body", "normal", "C:/t/n.png");
+  });
+
+  // F-66: CC5 shows a Diffuse Blend image only above 0, so diffuse_blend also sets the layer's strength.
+  const blend = { mesh_name: "CC_Base_Body", material_name: "Std_Skin_Leg", channel: "diffuse_blend", image_path: "C:/t/overlay.png" };
+
+  it("says other channels' loads as before", async () => {
+    bridge.loadTexture.mockResolvedValue({ success: true });
+    const r = await server.getRegisteredTool("load_texture")({ ...blend, channel: "normal" });
+    expect(r.content[0].text).toBe("Loaded overlay.png into Std_Skin_Leg (normal)");
+    expect(r.isError).toBeUndefined();
+  });
+
+  it("sends a diffuse_blend strength as the fifth argument and reports the strength set", async () => {
+    bridge.loadTexture.mockResolvedValue({ success: true, strength: 0.3, read: 0.3, stale: false });
+    const r = await server.getRegisteredTool("load_texture")({ ...blend, strength: 30 });
+    expect(bridge.loadTexture).toHaveBeenCalledWith("CC_Base_Body", "Std_Skin_Leg", "diffuse_blend", "C:/t/overlay.png", 30);
+    expect(r.content[0].text).toBe("Loaded overlay.png into Std_Skin_Leg (diffuse_blend) at 30%");
+  });
+
+  it("loads diffuse_blend at 100% by default, and says when CC5 reads the strength back only after it renders", async () => {
+    bridge.loadTexture.mockResolvedValue({ success: true, strength: 1, read: 0, stale: true });
+    const r = await server.getRegisteredTool("load_texture")(blend);
+    expect(bridge.loadTexture).toHaveBeenCalledWith("CC_Base_Body", "Std_Skin_Leg", "diffuse_blend", "C:/t/overlay.png");
+    expect(r.content[0].text).toBe("Loaded overlay.png into Std_Skin_Leg (diffuse_blend) at 100% "
+      + "(CC5 reads the strength back only after it renders)");
+  });
+
+  // TS-7 (X-4): a plugin installed before F-66 sets no strength and reports none, so the layer may still be at 0.
+  it("is an error that names no percentage when the installed plugin does not report the strength it set", async () => {
+    bridge.loadTexture.mockResolvedValue({ success: true });
+    const expected = "Loaded overlay.png into Std_Skin_Leg (diffuse_blend), but the installed CC5 plugin predates the " +
+      "strength fix and did not set the layer's strength, so the image may not show (CC5 shows a Diffuse Blend image " +
+      "only above 0). Reinstall the plugin with install-plugin.ps1.";
+    for (const args of [{ ...blend, strength: 45 }, blend]) {
+      const r = await server.getRegisteredTool("load_texture")(args);
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe(expected);
+      expect(r.content[0].text).not.toMatch(/\d%/);
+    }
+  });
+
+  it("refuses a strength for another channel without calling CC5", async () => {
+    const r = await server.getRegisteredTool("load_texture")({ ...blend, channel: "normal", strength: 30 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("strength is only for channel 'diffuse_blend'");
+    expect(bridge.loadTexture).not.toHaveBeenCalled();
+  });
+
+  it("says what diffuse_blend does and points skin overlays to apply_skin_overlay", () => {
+    const call = server.tool.mock.calls.find((c) => c[0] === "load_texture");
+    expect(call?.[1]).toContain("For diffuse_blend (a layer blended over the diffuse) the tool also sets the layer's strength, "
+      + "default 100: CC5 shows a Diffuse Blend image only above 0. For skin overlays use apply_skin_overlay.");
+    const shape = call?.[2] as Record<string, { description?: string }>;
+    expect(shape.strength.description).toBe("diffuse_blend only: blend strength 0-100 (default 100). CC5 shows a Diffuse Blend image only above 0");
+  });
+});
+
+describe("IMAGE_TYPES_TEXT (F-68)", () => {
+  it("names the image types from IMAGE_EXTENSIONS", () => {
+    expect(IMAGE_TYPES_TEXT).toBe("PNG, JPG, JPEG, TGA, BMP, TIF or TIFF");
   });
 });
 
@@ -253,6 +476,28 @@ describe("export_textures", () => {
     const r = await server.getRegisteredTool("export_textures")({ output_dir: "C:/SP", character_name: "P1" });
     expect(bridge.startJob).toHaveBeenCalledWith("export_textures", { output_dir: "C:/SP", character_name: "P1" });
     expect(r.content[0].text).toContain("C:/SP/P1");
+    expect(r.content[0].text).not.toContain("undo history");
+  });
+
+  // F-86 (live CC5 5.13): an FBX export clears CC5's undo history, and this tool exports an FBX.
+  it("ends with the undo-history line when the plugin says the export cleared it", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_5" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_5", action: "export_textures", status: "done",
+      result: { success: true, folder: "C:/SP/P1", files: [], undo_history_cleared: true } });
+    const r = await server.getRegisteredTool("export_textures")({ output_dir: "C:/SP", character_name: "P1" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe(`Exported mesh and 0 files to C:/SP/P1\n${UNDO_HISTORY_CLEARED}`);
+  });
+
+  it("keeps the undo-history line on an export that ran and then failed a check", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_5" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_5", action: "export_textures", status: "done",
+      result: { success: false, error: "CC5 reported success but did not write C:/SP/P1/P1.fbx",
+        undo_history_cleared: true } });
+    const r = await server.getRegisteredTool("export_textures")({ output_dir: "C:/SP", character_name: "P1" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("Texture export failed: CC5 reported success but did not write C:/SP/P1/P1.fbx\n" +
+      UNDO_HISTORY_CLEARED);
   });
 
   it("flags an export CC5 made without some of its settings", async () => {
@@ -262,6 +507,49 @@ describe("export_textures", () => {
     const r = await server.getRegisteredTool("export_textures")({ output_dir: "C:/SP", character_name: "P1" });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain("WARNING: EnableExportMotion failed: x");
+  });
+
+  // X-2: the F-82 guard set CC5's timeline to one frame for the export and could not set it back. The FBX is right;
+  // only the scene's timeline is wrong, so that note is no export setting CC5 failed to apply.
+  describe("a timeline CC5 could not set back after the export (X-2)", () => {
+    const TIMELINE_NOTE = `${TIMELINE_NOT_RESTORED_PREFIX}it was set to one frame for this export and could not be set ` +
+      "back (end time: boom); the FBX is usable: set the timeline's length in Character Creator 5";
+    const exportWith = async (result: Record<string, unknown>) => {
+      bridge.startJob.mockResolvedValue({ job_id: "cmd_5" });
+      bridge.getJob.mockResolvedValue({ job_id: "cmd_5", action: "export_textures", status: "done", result });
+      return server.getRegisteredTool("export_textures")({ output_dir: "C:/SP", character_name: "P1" });
+    };
+
+    it("is a line of its own after an export that worked, not an error", async () => {
+      const r = await exportWith({ success: true, folder: "C:/SP/P1", files: [], notes: [TIMELINE_NOTE],
+        undo_history_cleared: true });
+      expect(r.isError).toBeUndefined();
+      expect(r.content[0].text).toBe("Exported mesh and 0 files to C:/SP/P1\nThe FBX is usable; CC5's timeline was left " +
+        `at one frame: set its length in Character Creator 5.\n${UNDO_HISTORY_CLEARED}`);
+      expect(r.content[0].text).toContain(TIMELINE_USABLE_LINE);
+      expect(r.content[0].text).not.toContain("did not apply every export setting");
+    });
+
+    it("stays out of the export settings CC5 did not apply, and does not call that FBX usable", async () => {
+      const r = await exportWith({ success: true, folder: "C:/SP/P1", files: [], undo_history_cleared: true,
+        notes: [TIMELINE_NOTE, "WARNING: EnableExportMotion failed: x"] });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe("Exported mesh and 0 files to C:/SP/P1, but CC5 did not apply every export setting:\n" +
+        "WARNING: EnableExportMotion failed: x\nCC5's timeline was left at one frame: set its length in Character " +
+        `Creator 5.\n${UNDO_HISTORY_CLEARED}`);
+      expect(r.content[0].text).toContain(TIMELINE_LEFT_LINE);
+      expect(r.content[0].text).not.toContain(TIMELINE_NOT_RESTORED_PREFIX);
+      expect(r.content[0].text).not.toContain("usable");
+    });
+
+    it("is the plain timeline line beside a failed export, which it does not call usable", async () => {
+      const r = await exportWith({ success: false, error: "ExportFbxFile reported an error status", undo_history_cleared: true,
+        notes: [TIMELINE_NOTE, "WARNING: SetTextureSize failed: y"] });
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe("Texture export failed: ExportFbxFile reported an error status\n" +
+        `WARNING: SetTextureSize failed: y\n${TIMELINE_LEFT_LINE}\n${UNDO_HISTORY_CLEARED}`);
+      expect(r.content[0].text).not.toContain("usable");
+    });
   });
 
   it("rejects a network (UNC) folder without starting a job", async () => {

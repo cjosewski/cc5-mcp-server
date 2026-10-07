@@ -59,7 +59,7 @@ class PoseTest(unittest.TestCase):
         self.rl.RFileIO.SaveFile.side_effect = lambda obj, setting, path: open(path, "wb").close()
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
             r = self.pipe.save_character(out)
-        self.assertEqual(r, {"success": True, "path": out})
+        self.assertEqual(r, {"success": True, "path": out, "expression_not_saved": []})
         setting = self.rl.RSaveFileSetting.return_value
         setting.SetSaveType.assert_called_once_with(self.rl.ESaveFileType_Character)
         self.rl.RFileIO.SaveFile.assert_called_once_with(self.avatar, setting, out)
@@ -91,3 +91,53 @@ class BrowsePoseTest(unittest.TestCase):
 
     def test_other_folders_keep_cc_i_filter(self):
         self.assertEqual(self.api.browse_content("shoes"), ["C:/c/Old.iMotion", "C:/c/New.ccPose"])
+
+
+class SaveExpressionTest(unittest.TestCase):
+    """F-77: a .ccAvatar keeps neither the facial expression nor the pose, so the save says which sliders it lost."""
+
+    def setUp(self):
+        self.rl = _support.install_fake_rlpy()
+        self.pipe = _support.fresh_import("cc5_pipeline")
+        self.avatar = mock.MagicMock()
+        self.dir = tempfile.mkdtemp()
+
+    def _face(self, weights):
+        face = self.avatar.GetFaceComponent.return_value
+        face.GetExpressionGroups.return_value = ["Brow", "Mouth"]
+        face.GetExpressionNames.side_effect = lambda group: {"Brow": ["C", "A"], "Mouth": ["B"]}[group]
+        face.GetExpressionWeights.side_effect = weights
+        return face
+
+    def _save(self):
+        out = os.path.join(self.dir, "bases", "Posed.ccAvatar")
+        self.rl.RFileIO.SaveFile.side_effect = lambda obj, setting, path: open(path, "wb").close()
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
+            return self.pipe.save_character(out), out
+
+    def test_save_character_lists_the_expression_it_did_not_keep(self):
+        # CC5 keeps float32 weights (0.6 reads back as 0.6000000238); B is at 0. Names are read sorted: A, B, C.
+        face = self._face(lambda time, names: [0.6000000238, 0.0, 0.4])
+        self.rl.RGlobal.GetTime.return_value = "now"
+        r, out = self._save()
+        self.assertEqual(r, {"success": True, "path": out,
+                             "expression_not_saved": [{"name": "A", "weight": 0.6}, {"name": "C", "weight": 0.4}]})
+        face.GetExpressionWeights.assert_called_once_with("now", ["A", "B", "C"])
+        self.rl.RFileIO.SaveFile.assert_called_once()
+        self.rl.RGlobal.BeginAction.assert_not_called()  # read only: no undo step
+
+    def test_save_character_still_saves_when_the_expression_cannot_be_read(self):
+        def unreadable(time, names):
+            raise RuntimeError("no weights")
+        self._face(unreadable)
+        r, out = self._save()
+        self.assertEqual(r, {"success": True, "path": out, "notes": [
+            "Could not read the facial expression; a .ccAvatar keeps neither the facial expression nor the pose in any "
+            "case."]})
+        self.assertTrue(os.path.isfile(out))
+
+    def test_save_character_without_a_face_component_adds_the_note(self):
+        self.avatar.GetFaceComponent.return_value = None
+        r, _out = self._save()
+        self.assertNotIn("expression_not_saved", r)
+        self.assertEqual(r["notes"], [self.pipe.EXPRESSION_NOT_READ])

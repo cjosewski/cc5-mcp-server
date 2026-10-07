@@ -8,17 +8,57 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, errorResult, warningNotes } from "../util.js";
-import { checkFile, IMAGE_EXTENSIONS } from "./pipeline.js";
+import { checkFile, IMAGE_EXTENSIONS, IMAGE_TYPES_TEXT } from "./pipeline.js";
 
 export const SKIN_REGIONS = ["all", "head", "body", "arms", "legs"] as const;
 export const SKIN_CONDITIONS = ["normal", "pale", "cyanotic", "flushed", "jaundiced"] as const;
 
+/** A 0-1 strength as a percentage: 0.6 -> "60", 0.333 -> "33.3". */
+const percent = (weight: number) => String(Math.round(weight * 1000) / 10);
+
+/**
+ * apply_skin_overlay's reply. CC5 reads a new strength back only after it renders (F-65), so a read that differs from
+ * the strength set is reported as such, never as the strength.
+ */
+function overlayApplied(file: string, strength: number,
+  r: { applied_to?: string[]; strengths?: Record<string, number>; stale?: string[] }): string {
+  const applied = `Applied ${file} at ${strength}% to: ${(r.applied_to ?? []).join(", ")}`;
+  const reads = Object.entries(r.strengths ?? {});
+  if (!reads.length) return applied;  // an older plugin, or CC5 could not read any material back
+  const stale = r.stale ?? [];
+  if (!stale.length) return `${applied} (CC5 reads back ${percent(reads[0][1])}%)`;
+  const differing = stale.map((mat) => `${mat} (${percent(r.strengths?.[mat] ?? 0)}%)`).join(", ");
+  return `${applied}. CC5 still reads a different strength on ${differing} until it next renders: capture_viewport shows the overlay.`;
+}
+
+type RemoveOverlayResult = {
+  success: boolean; error?: string; removed_from?: string[]; no_overlay?: string[]; reset?: string[]; notes?: string[];
+};
+
+/**
+ * remove_skin_overlay's reply. The plugin also sets the Diffuse Blend strength to 0 on materials without an image
+ * (F-66) and lists them in `reset` (X-5): that is a change, one CC5 undo step, so a call that removed no image but
+ * reset a strength says so instead of "No skin overlay to remove". A failure from the real bridge never gets here: it
+ * comes back as HTTP 400, and the tool shows CC5's error text, into which the plugin writes what was removed and the
+ * WARNING lines (TS-2).
+ */
+function overlayRemoved(region: string, r: RemoveOverlayResult): string {
+  const removed = r.removed_from ?? [];
+  const reset = r.reset ?? [];
+  const head = !r.success ? `Failed: ${r.error}`
+    : removed.length ? `Removed overlays from: ${removed.join(", ")}`
+    : reset.length ? `No overlay image in region '${region}'; the Diffuse Blend strength was set to 0 on: ` +
+      `${reset.join(", ")} (one CC5 undo step).`
+    : `No skin overlay to remove in region '${region}'`;
+  return [head, ...warningNotes(r)].join("\n");
+}
+
 export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "apply_skin_overlay",
-    "Blend an image over the character's skin (bruising, abrasions, dirt, dried blood). The overlay is a PNG/JPG/TGA file the user provides, laid out on the CC skin UVs (author it in Substance Painter or Photoshop). Strength 0-100.",
+    "Blend an image over the character's skin (bruising, abrasions, dirt, dried blood). The overlay is an image file the user provides (" + IMAGE_TYPES_TEXT + "; BMP and TIFF are not yet tested in CC5 5.13), laid out on the CC skin UVs (author it in Substance Painter or Photoshop). Strength 0-100.",
     {
-      image_path: z.string().describe("Absolute path to a PNG/JPG/TGA overlay"),
+      image_path: z.string().describe("Absolute path to the overlay image (" + IMAGE_TYPES_TEXT + ")"),
       region: z.enum(SKIN_REGIONS).default("all"),
       strength: z.number().min(0).max(100).default(100),
     },
@@ -26,7 +66,7 @@ export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
       const err = checkFile(image_path, IMAGE_EXTENSIONS);
       if (err) return errorResult(err);
       return bridgeCall(() => bridge.applySkinOverlay(image_path, region, strength),
-        (r) => r.success ? `Applied ${path.basename(image_path)} at ${strength}% to: ${(r.applied_to ?? []).join(", ")}` : `Failed: ${r.error}`);
+        (r) => r.success ? overlayApplied(path.basename(image_path), strength, r) : `Failed: ${r.error}`);
     }
   );
 
@@ -35,9 +75,7 @@ export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
     "Remove skin overlays previously added with apply_skin_overlay.",
     { region: z.enum(SKIN_REGIONS).default("all") },
     async ({ region }) => bridgeCall(() => bridge.removeSkinOverlay(region),
-      (r) => !r.success ? `Failed: ${r.error}`
-        : (r.removed_from ?? []).length ? `Removed overlays from: ${(r.removed_from ?? []).join(", ")}`
-        : `No skin overlay to remove in region '${region}'`)
+      (r: RemoveOverlayResult) => overlayRemoved(region, r))
   );
 
   server.tool(
@@ -56,12 +94,15 @@ export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
         : `Failed: ${r.error}`)
   );
 
+  // F-70: live, a neutral face did not change: the strength scales the creases of an active expression only.
   server.tool(
     "set_wrinkle_strength",
-    "Set facial wrinkle detail strength (0 = smooth, 1 = full). Useful for aging a patient.",
+    "Set the strength of CC5's expression wrinkles (0 = none, 1 = full): the creases that show while an expression is active (brow raise, squint, smile...). It does not age a resting face: at a neutral expression nothing changes. CC5 cannot read the value back, so check it with set_expression and capture_viewport. To make a face look older, use morphs (search_morphs) or a SkinGen preset (browse_content('skingen'), load_asset).",
     { strength: z.number().min(0).max(1) },
     async ({ strength }) => bridgeCall(() => bridge.setWrinkleStrength(strength),
-      (r) => r.success ? `Wrinkle strength set to ${strength}` : `Failed: ${r.error}`)
+      (r) => r.success
+        ? `Expression wrinkle strength set to ${strength} (it shows only while an expression is active; CC5 cannot read it back)`
+        : `Failed: ${r.error}`)
   );
 
   server.tool(

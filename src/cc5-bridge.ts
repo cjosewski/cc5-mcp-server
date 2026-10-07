@@ -672,20 +672,31 @@ export class CC5Bridge {
     return this.request<OperationResult>("/pipeline/replace_mesh", "POST", { mesh_name: meshName, obj_path: objPath });
   }
 
-  async loadTexture(meshName: string, materialName: string, channel: string, imagePath: string): Promise<OperationResult> {
-    return this.request("/pipeline/load_texture", "POST",
-      { mesh_name: meshName, material_name: materialName, channel, image_path: imagePath });
+  /**
+   * strength (0-100) is for channel 'diffuse_blend' only and is sent only when given. For diffuse_blend the result has
+   * the strength set (0-1), what CC5 reads back (`read`), and `stale` when that read differs (CC5's read lags until it
+   * renders).
+   */
+  async loadTexture(meshName: string, materialName: string, channel: string, imagePath: string, strength?: number):
+    Promise<OperationResult & { strength?: number; read?: number | null; stale?: boolean }> {
+    return this.request("/pipeline/load_texture", "POST", {
+      mesh_name: meshName, material_name: materialName, channel, image_path: imagePath,
+      ...(strength !== undefined ? { strength } : {}),
+    });
   }
 
   async loadSubstanceTextures(folder: string): Promise<OperationResult> {
     return this.request("/pipeline/substance_import", "POST", { folder });
   }
 
-  async applySkinOverlay(imagePath: string, region: string, strength: number): Promise<OperationResult & { applied_to?: string[] }> {
+  /** strengths: what CC5 reads back per material (0-1); stale: the materials whose read differs from the strength set. */
+  async applySkinOverlay(imagePath: string, region: string, strength: number):
+    Promise<OperationResult & { applied_to?: string[]; strengths?: Record<string, number>; stale?: string[] }> {
     return this.request("/skin/overlay", "POST", { image_path: imagePath, region, strength });
   }
 
-  async removeSkinOverlay(region: string): Promise<OperationResult & { removed_from?: string[]; no_overlay?: string[] }> {
+  async removeSkinOverlay(region: string):
+    Promise<OperationResult & { removed_from?: string[]; no_overlay?: string[]; notes?: string[] }> {
     return this.request("/skin/overlay/remove", "POST", { region });
   }
 

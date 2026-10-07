@@ -175,5 +175,22 @@ class UnityProjectGuardTest(unittest.TestCase):
         self.assertIsNone(self.e2e.unity_project_error(self.dir))
 
 
+class StandInUnityProjectTest(unittest.TestCase):
+    """export_for_unity refuses an Assets folder with no Unity project around it (F-76), so the CC5 leg marks its
+    export root as one."""
+
+    def test_writes_the_project_version_marker_and_says_it_is_a_stand_in(self):
+        e2e = load_e2e()
+        root = os.path.join(tempfile.mkdtemp(), "cc5", "Unity")
+        marker = e2e.stand_in_unity_project(root)
+        self.assertEqual(marker, os.path.join(root, "ProjectSettings", "ProjectVersion.txt"))
+        with open(marker, encoding="utf-8") as f:
+            text = f.read()
+        self.assertTrue(text.startswith("m_EditorVersion: 6000.2.10f1\n"))
+        self.assertIn("run_e2e.py", text)
+        self.assertIn("not a real Unity project", text)
+        self.assertEqual(e2e.stand_in_unity_project(root), marker)  # a second run rewrites it
+
+
 if __name__ == "__main__":
     unittest.main()

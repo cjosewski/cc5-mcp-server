@@ -352,7 +352,14 @@ pairs = [(m.get("object"), m.get("mesh")) for m in ms.get("meshes", [])] if isin
 ok("get_mesh_stats counts each (object, mesh) once", s == 200 and ms.get("success") and len(pairs) == len(set(pairs)), len(pairs))
 print("  mesh names (are names unique across worn items?):", sorted(m for _, m in pairs))
 
-r = job("export_for_unity", {"unity_dir": scratch, "character_name": "LiveTest", "sub_d_level": 0, "texture_size": 1024})
+# export_for_unity refuses an Assets folder with no Unity project around it: mark %TEMP%\cc5_live as a stand-in project.
+project_marker = os.path.join(tempfile.gettempdir(), "cc5_live", "ProjectSettings", "ProjectVersion.txt")
+os.makedirs(os.path.dirname(project_marker), exist_ok=True)
+with open(project_marker, "w", encoding="utf-8") as f:
+    f.write("m_EditorVersion: 6000.2.10f1\n# Written by scripts/live_smoke_test.py; not a real Unity project.\n")
+# injuries 'omit': an FBX carries no skin overlay or skin condition, and export_for_unity needs a choice once they exist.
+r = job("export_for_unity", {"unity_dir": scratch, "character_name": "LiveTest", "sub_d_level": 0, "texture_size": 1024,
+                             "injuries": "omit"})
 r = r if isinstance(r, dict) else {}
 ok("export_for_unity", bool(r.get("success") and os.path.exists(r.get("fbx", ""))), r.get("error") or r.get("fbx"))
 ok("export_for_unity applied every setting (no WARNING notes)", bool(r.get("success")) and not warnings_in(r), warnings_in(r) or r.get("notes"))
@@ -370,7 +377,8 @@ ok("/jobs/status answers within 5 s while a job runs", bool(STATUS_TIMES) and ma
 obj_out = os.path.join(scratch, "obj", "live.obj")
 s, r = call("POST", "/pipeline/export_obj", {"output_path": obj_out}); eo = res(r)
 ok("export_obj (preferred call form, no WARNING notes)", eo.get("success") and not warnings_in(eo), eo)
-# LIVE-VERIFY: the OBJ must hold the body mesh (part bits set). Also open live.obj once and confirm it is in bind pose (ResetToBindPose).
+# LIVE-VERIFY: the OBJ must hold the body mesh (part bits set). Also open live.obj once and confirm it is in CC5's
+# T-pose, arms horizontal (F-83: no ResetToBindPose; replace_mesh_from_obj reads it back in that pose).
 ok("export_obj has CC_Base_Body", os.path.exists(obj_out) and "CC_Base_Body" in file_text(obj_out), obj_out)
 goz_dir = os.path.join(scratch, "goz")
 r = job("export_goz", {"output_dir": goz_dir, "pose": "tpose"})
@@ -410,7 +418,11 @@ else:
     skip("load_texture", "no skin material")
 body = next((m for m in meshes if "body" in str(m).lower()), meshes[0] if meshes else None)
 if body and os.path.exists(obj_out):  # unedited OBJ back onto the same mesh: proves ReplaceMesh(name, path, False, False)
-    r = job("replace_mesh_from_obj", {"mesh_name": body, "obj_path": obj_out}); ok("replace_mesh_from_obj", bool(r and r.get("success")), r)
+    # F-83: the round trip must be checked (check_max_cm, 0.00 cm when CC5 read the OBJ as written); one undo takes
+    # back the replace and the pose it removed.
+    r = job("replace_mesh_from_obj", {"mesh_name": body, "obj_path": obj_out})
+    ok("replace_mesh_from_obj (round trip checked)",
+       bool(r and r.get("success")) and isinstance(r.get("check_max_cm"), (int, float)), r)
     call("POST", "/undo")
 else:
     skip("replace_mesh_from_obj", "no mesh or export_obj failed")
@@ -430,8 +442,9 @@ if pose:
     r = job("apply_pose", {"file_path": pose}); ok("apply_pose", bool(r and r.get("success")), r)
     if r and r.get("success"):
         # Requirement 3: the pose must reach Unity. Step 4 opens LivePosed.fbx in Unity to check the mesh is posed.
+        # pale 0.8 from set_skin_condition above is still on: without injuries the export would not run.
         r = job("export_for_unity", {"unity_dir": scratch, "character_name": "LivePosed", "sub_d_level": 0,
-                                     "texture_size": 1024, "include_current_pose": True})
+                                     "texture_size": 1024, "include_current_pose": True, "injuries": "omit"})
         ok("export_for_unity include_current_pose (Step 4: is LivePosed.fbx posed in Unity?)",
            bool(r and r.get("success")) and not warnings_in(r), r)
 elif poses:
@@ -481,9 +494,14 @@ ok("import_fbx character is switched off (do it by hand in CC5)", bool(r) and r.
 r = job("headshot_from_photo", {"photo_path": missing + ".jpg"}, timeout=30)
 ok("headshot_from_photo is switched off (do it by hand in CC5)", bool(r) and r.get("success") is False and
    "switched off" in str(r.get("error")) and "Headshot plugin inside Character Creator 5" in str(r.get("error")), r)
-# Last: on live CC5 5.13 bake_skin_textures triggers SkinGen's "About" action, and its modal About box blocks every
-# later command (the bridge fails them with the dialog's text) until someone closes it in CC5.
-s, r = call("POST", "/skin/bake", {}, timeout=120); ok("bake_skin_textures (responds)", answered(s, r), s)
+# Last: CC5 5.13 has no Bake / Apply Skin / Skin Editor command (SkinGen's menu holds About, Online Manual, Video
+# Tutorial and Remove SkinGen Data), so bake_skin_textures must answer with the manual steps and open nothing. It used to
+# trigger SkinGen's About box, a window with no buttons that blocked every later command until it was closed (F-84).
+s, r = call("POST", "/skin/bake", {}, timeout=120); bk = res(r)
+bk = bk if isinstance(bk, dict) else {}
+ok("bake_skin_textures answers without opening a window",
+   answered(s, r) and bk.get("manual_step_required") is True and not bk.get("triggered_action"), bk.get("error") or s)
+print("  skin commands bake_skin_textures looked at:", bk.get("candidates_inspected"))
 time.sleep(1)
 s, r = call("GET", "/avatars")
 ok("bake_skin_textures leaves no modal dialog open", s == 200, "" if s == 200 else (r or {}).get("error"))

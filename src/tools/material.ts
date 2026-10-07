@@ -5,7 +5,32 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
+import type { ShaderParameters } from "../types.js";
 import { bridgeCall } from "../util.js";
+
+/** Said in both shader tools' descriptions (F-69). */
+const NOT_SETTINGS =
+  "Parameters CC5 returns no value for and the shader's padding entries are listed apart: they are not settings.";
+
+/**
+ * get_shader_parameters' line naming the entries that are not settings (F-69), or null when there are none or the
+ * plugin is older than the lists.
+ */
+function leftOutLine(result: ShaderParameters): string | null {
+  const noValue = result.no_value ?? [];
+  const filler = result.filler ?? [];
+  const unreadable = result.unreadable ?? [];
+  const parts: string[] = [];
+  if (noValue.length > 0) {
+    const why = noValue.length === 1 ? "it, so it cannot" : "them, so they cannot";
+    parts.push(`${noValue.join(", ")} (CC5 returns no value for ${why} be set)`);
+  }
+  if (filler.length > 0) parts.push(`${filler.join(", ")} (shader padding)`);
+  if (unreadable.length > 0) {
+    parts.push(`${unreadable.join(", ")} (CC5 could not read ${unreadable.length === 1 ? "it" : "them"})`);
+  }
+  return parts.length > 0 ? `Left out (not settings): ${parts.join("; ")}` : null;
+}
 
 export function registerMaterialTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
@@ -135,7 +160,7 @@ export function registerMaterialTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "get_shader_parameters",
-    "Get the Digital Human Shader parameters for a material (skin roughness scales, SSS radius/falloff/IOR, micronormal strength, specular, etc.). Each value is a list of floats. Use get_material_info first for valid mesh/material names, then set_shader_parameter to change one.",
+    `Get the Digital Human Shader parameters for a material (skin roughness scales, SSS radius/falloff/IOR, micronormal strength, specular, etc.). Each value is a list of floats. ${NOT_SETTINGS} Use get_material_info first for valid mesh/material names, then set_shader_parameter to change one.`,
     {
       mesh_name: z.string().max(256).describe("Mesh name (from get_material_info)"),
       material_name: z.string().max(256).describe("Material name (from get_material_info)"),
@@ -146,16 +171,18 @@ export function registerMaterialTools(server: McpServer, bridge: CC5Bridge) {
         if (!result.success) return `Failed: ${result.error}`;
         const params = result.parameters ?? {};
         const names = Object.keys(params);
-        if (names.length === 0) return `${result.material ?? material_name}: no shader parameters (shader: ${result.shader ?? "unknown"}).`;
+        const leftOut = leftOutLine(result);
+        const tail = leftOut ? `\n${leftOut}` : "";
+        if (names.length === 0) return `${result.material ?? material_name}: no shader parameters (shader: ${result.shader ?? "unknown"}).${tail}`;
         const lines = names.map(n => `  - ${n} = [${params[n].map(v => v.toFixed(3)).join(", ")}]`);
-        return `Shader '${result.shader ?? "?"}' on ${result.mesh ?? mesh_name}/${result.material ?? material_name} (${names.length} params):\n${lines.join("\n")}`;
+        return `Shader '${result.shader ?? "?"}' on ${result.mesh ?? mesh_name}/${result.material ?? material_name} (${names.length} params):\n${lines.join("\n")}${tail}`;
       },
     )
   );
 
   server.tool(
     "set_shader_parameter",
-    "Set one Digital Human Shader parameter on a material. Examples: 'Micro Roughness Scale' (skin shininess), 'SSS Radius'/'SSS Falloff' (subsurface scatter), 'MicroNormal Strength' (pore detail), '_Specular'. Discover names + current values with get_shader_parameters; the value list length must match the parameter.",
+    `Set one Digital Human Shader parameter on a material. Examples: 'Micro Roughness Scale' (skin shininess), 'SSS Radius'/'SSS Falloff' (subsurface scatter), 'MicroNormal Strength' (pore detail), '_Specular'. Discover names + current values with get_shader_parameters; the value list length must match the parameter. ${NOT_SETTINGS}`,
     {
       mesh_name: z.string().max(256).describe("Mesh name (from get_material_info)"),
       material_name: z.string().max(256).describe("Material name (from get_material_info)"),

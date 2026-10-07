@@ -131,7 +131,7 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "capture_viewport",
-    "Capture a screenshot of the CC5 3D viewport. Returns the image file path. Use this to see the current character appearance.",
+    "Capture a screenshot of the CC5 3D viewport. Returns the image file path. Use this to see the current character appearance. One view only: to check that clothing, hats or hair fit, use check_fit.",
     {
       output_path: z.string().optional().describe("Output PNG file path. Omitted: a new file in the temp folder's cc5_captures; only the newest 50 are kept, so older capture paths stop existing."),
       width: z.number().int().min(16).max(7680).optional().describe("Image width in px (default 1280)."),

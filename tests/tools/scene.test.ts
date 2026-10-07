@@ -441,6 +441,12 @@ describe("capture_viewport handler", () => {
     expect(result.content[0].type).toBe("image");
     expect(result.content[1].type).toBe("text");
   });
+
+  it("says it captures one view only and points fit checks to check_fit (F-44)", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "capture_viewport")?.[1] as string;
+    expect(description).toContain("One view only");
+    expect(description).toContain("check_fit");
+  });
 });
 
 // ── set_subdivision_level ─────────────────────────────────────────────────────

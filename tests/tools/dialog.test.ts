@@ -83,6 +83,20 @@ describe("dialog tools", () => {
     expect(description).toContain("real choice");
     expect(description).toContain("Unsaved project data found");
   });
+
+  it("says how a stopped recipe or batch goes on after the answer (D1, D3), keeping the earlier rules", () => {
+    const description = server.tool.mock.calls.find((c: unknown[]) => c[0] === "answer_cc5_dialog")?.[1] as string;
+    expect(description).toContain("When a recipe or batch stopped on the question, go on with the call its report gives; " +
+      "for Replace / Material Only pass the user's button as layer_answer (it then answers that question for the rest of " +
+      "that run only).");
+    // RB-6: layer_answer accepts only Replace and Material Only, so a Cancel goes on without it.
+    expect(description).toContain("If the user picked Cancel, go on with continue_after and no layer_answer: a Cancel " +
+      "is not carried, and the next identical question goes to the user again.");
+    expect(description).toContain("progress window");
+    expect(description).toContain("A dialog no MCP command is waiting on");
+    expect(description).toContain("After answering, read the waiting command's result with job_status.");
+    for (const call of server.tool.mock.calls) expect((call[1] as string).length).toBeLessThan(2000);
+  });
 });
 
 describe("recovery prompt answered by the plugin (F-52)", () => {

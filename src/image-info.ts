@@ -4,6 +4,16 @@
 
 import fs from "node:fs";
 
+/**
+ * A PNG's size from its first bytes: the 8-byte signature, then the IHDR chunk with the width (u32 big endian) at
+ * offset 16 and the height at offset 20. Null when `buf` is shorter than that or not a PNG. check_fit reads its
+ * captures with it.
+ */
+export function pngSize(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 24 || buf.readUInt32BE(0) !== 0x89504e47) return null;
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
 /** Up to `length` bytes of the file starting at `position` (fewer at the end of the file). */
 function readAt(fd: number, position: number, length: number): Buffer {
   const buf = Buffer.alloc(length);
@@ -56,9 +66,8 @@ export function readImageSize(file: string): { width: number; height: number } |
   }
   try {
     const buf = readAt(fd, 0, 65_536);
-    if (buf.length >= 24 && buf.readUInt32BE(0) === 0x89504e47) {
-      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
-    }
+    const png = pngSize(buf);
+    if (png) return png;
     if (buf.length >= 4 && buf[0] === 0xff && buf[1] === 0xd8) {
       let i = 2;
       while (i + 9 < buf.length) {

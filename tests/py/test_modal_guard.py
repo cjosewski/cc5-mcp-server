@@ -53,16 +53,55 @@ class ModalGuardTest(BridgeTestCase):
 
     def test_other_dialogs_get_no_recovery_hint(self):
         self.srv.MODAL_WAIT_SECONDS = 0.2
-        self.dialog = ("CCSkinGen", "")  # live: bake_skin_textures opens SkinGen's About box
+        self.dialog = ("Character Creator 5", "Do you want to delete the selected light?")
         status, body = self.srv._execute_sync("mark", {}, timeout=5)
         self.assertEqual(status, 400)
         # The guard runs only while no MCP command runs, so no command waits on this dialog: it may be the user's own,
         # and answering it is not a confirmation of something the user asked for (C2 review).
-        self.assertEqual(body["error"], 'CC5 is waiting for an answer to "CCSkinGen" - no MCP command is waiting on it, '
-                                        "so it is probably the user's own or CC5's: ask the user to answer or close it "
-                                        "in CC5, then try again.")
+        self.assertEqual(body["error"], 'CC5 is waiting for an answer to "Do you want to delete the selected light?" (the '
+                                        '"Character Creator 5" window) - no MCP command is waiting on it, so it is '
+                                        "probably the user's own or CC5's: ask the user to answer or close it in CC5, "
+                                        "then try again.")
         self.assertNotIn("Unsaved", body["error"])
         self.assertNotIn("answer_cc5_dialog", body["error"])
+
+    # Live CC5 5.13 (F-84, F-85): SkinGen's About box has no buttons, and one of its labels shows the licence serial.
+    # Made-up serial; the real one is never written anywhere. The labels are given unredacted here, the worst case.
+    ABOUT_BOX = {"title": "CCSkinGen", "text": "S/N : ABCDE-12345-FGHIJ-67890\nProduct Version : 1.0.0824.1\n"
+                                               "www.reallusion.com", "buttons": [], "text_read": True, "progress": False}
+
+    def test_a_window_with_no_buttons_is_named_by_its_title_never_by_its_text(self):
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        self.dialog = dict(self.ABOUT_BOX)
+        status, body = self.srv._execute_sync("mark", {}, timeout=5)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], 'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character '
+                                        "Creator 5 (no MCP tool can close it), then try again.")
+        self.assertNotIn("ABCDE-12345-FGHIJ-67890", body["error"])
+        self.assertNotIn("Product Version", body["error"])
+        self.assertEqual(self.ran, [])
+
+    def test_an_untitled_window_with_no_buttons_is_named_by_its_first_line(self):
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        self.dialog = {**self.ABOUT_BOX, "title": "", "text": "Preparing SkinGen layers\nStep 2 of 5"}
+        status, body = self.srv._execute_sync("mark", {}, timeout=5)
+        self.assertEqual(body["error"], 'CC5 has a window open with no buttons: "Preparing SkinGen layers" - close it '
+                                        "in Character Creator 5 (no MCP tool can close it), then try again.")
+        self.dialog = {**self.ABOUT_BOX, "title": "T" * 200}
+        status, body = self.srv._execute_sync("mark", {}, timeout=5)
+        self.assertIn(f'"{"T" * 117}..."', body["error"])  # a long title is cut, as the questions are
+
+    def test_a_window_with_no_buttons_keeps_the_other_branches(self):
+        # A window whose text could not be read, a recovery prompt whose buttons could not be read, and a progress
+        # window without buttons keep their own messages.
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        self.dialog = {**self.ABOUT_BOX, "text": "", "text_read": False}
+        self.assertIn("its text could not be read", self.srv._execute_sync("mark", {}, timeout=5)[1]["error"])
+        self.dialog = {"title": RECOVERY[0], "text": RECOVERY[1], "buttons": [], "text_read": True, "progress": False}
+        self.assertIn("OK restores your last unsaved work", self.srv._execute_sync("mark", {}, timeout=5)[1]["error"])
+        self.dialog = {**self.ABOUT_BOX, "progress": True}
+        self.assertTrue(self.srv._execute_sync("mark", {}, timeout=5)[1]["error"].startswith('CC5 is busy with "CCSkinGen"'))
+        self.assertEqual(self.ran, [])
 
     def test_a_progress_window_is_reported_as_busy_not_as_a_question(self):
         # F-56: a command's progress window (an export's) is not a question, and its Cancel aborts that command.
@@ -163,12 +202,15 @@ class _Dialog(_Widget):
 
 
 class _MessageBox(_Dialog):
-    def __init__(self, title, text, **kw):
+    def __init__(self, title, text, informative="", **kw):
         super().__init__(title, **kw)
-        self._text = text
+        self._text, self._informative = text, informative
 
     def text(self):
         return self._text
+
+    def informativeText(self):
+        return self._informative
 
 
 class ActiveModalDialogTest(unittest.TestCase):
@@ -237,6 +279,69 @@ class ActiveModalDialogTest(unittest.TestCase):
     def test_qt_errors_mean_no_dialog(self):
         self.app.modal = mock.Mock(windowTitle=mock.Mock(side_effect=RuntimeError("deleted")))
         self.assertIsNone(self.srv._active_modal_dialog())
+
+    def test_a_serial_in_the_title_or_the_text_is_redacted(self):
+        # F-85: _describe_modal is where every message about a dialog gets its text from. Made-up serials.
+        self.app.modal = _MessageBox("SN: QX7-ABCDE-12345-FGHIJ", "Licence Key: ABCDE-12345-FGHIJ-67890")
+        self.assertEqual(self.srv._active_modal_dialog(), ("SN: (serial)", "Licence Key: (serial)"))
+
+    def test_a_serial_in_the_informative_text_after_its_label_is_redacted(self):
+        # P-4: the label ends the message box's text and the value is its informative text. Made-up keys.
+        self.app.modal = _MessageBox("Activation", "Thank you for registering.\nSerial Number:", "XK29QZ7731ABCD")
+        self.assertEqual(self.srv._active_modal_dialog(),
+                         ("Activation", "Thank you for registering.\nSerial Number:\n(serial)"))
+        self.app.modal = _MessageBox("Activation", "License Key", "QWERTYUIOPASDF")
+        self.assertEqual(self.srv._active_modal_dialog(), ("Activation", "License Key\n(serial)"))
+        self.app.modal = _MessageBox("Character Creator 5", RECOVERY[1], "Your changes were saved automatically.")
+        self.assertEqual(self.srv._active_modal_dialog(),
+                         ("Character Creator 5", f"{RECOVERY[1]}\nYour changes were saved automatically."))
+
+
+class RedactSecretsTest(unittest.TestCase):
+    """F-85: a licence serial in a dialog never reaches a message. Made-up serials only."""
+
+    LABELS = ("S/N", "SN", "Serial", "Serial No", "Serial Number", "Licence", "License", "Licence Key", "License Key",
+              "Product Key", "Activation Code", "Registration Code")
+
+    def setUp(self):
+        self.redact = _support.fresh_import("server")._redact_secrets
+
+    def test_the_value_after_each_serial_or_licence_label_is_replaced(self):
+        for label in self.LABELS:
+            for separator in (" : ", ": ", " # ", "#"):
+                with self.subTest(label=label, separator=separator):
+                    self.assertEqual(self.redact(f"{label}{separator}XK29QZ7731"), f"{label}{separator}(serial)")
+
+    def test_labels_match_in_any_case_and_without_a_separator_when_the_value_holds_a_digit(self):
+        self.assertEqual(self.redact("serial number: XK29QZ"), "serial number: (serial)")
+        self.assertEqual(self.redact("S/N XK29QZ7731"), "S/N (serial)")
+        self.assertEqual(self.redact("LICENSE KEY 7731-ab and more"), "LICENSE KEY (serial) and more")
+
+    def test_a_key_of_dash_joined_groups_is_replaced_anywhere(self):
+        self.assertEqual(self.redact("Your key ABCDE-12345-FGHIJ-67890 is active."), "Your key (serial) is active.")
+        self.assertEqual(self.redact("abcd-1234-efgh"), "(serial)")
+
+    def test_the_value_on_the_line_after_its_label_is_replaced(self):
+        # P-4: a dialog's text is its labels joined by newlines, so the value can sit on the next line.
+        self.assertEqual(self.redact("Serial Number:\nXK29QZ7731ABCD\nProduct Version : 1.0.0824.1"),
+                         "Serial Number:\n(serial)\nProduct Version : 1.0.0824.1")
+        self.assertEqual(self.redact("S/N\nXK29QZ7731"), "S/N\n(serial)")
+        self.assertEqual(self.redact("Your license\nhas expired."), "Your license\nhas expired.")  # no digit, no ':'
+
+    def test_the_live_about_box_keeps_everything_but_the_serial(self):
+        self.assertEqual(self.redact("S/N : ABCDE-12345-FGHIJ-67890"), "S/N : (serial)")
+        for text in ("CCSkinGen", "Product Version : 1.0.0824.1", "www.reallusion.com",
+                     "Copyright © 2022-2026 Reallusion, Inc. All rights reserved."):
+            with self.subTest(text=text):
+                self.assertEqual(self.redact(text), text)
+
+    def test_text_without_a_secret_is_unchanged(self):
+        for text in ("The target object layer already exists.\nDo you want to replace the object, or the material only?",
+                     "Your license has expired. Renew it in the Reallusion Hub.", RECOVERY[1],
+                     "Exported on 2026-10-06 at 15:02", "Mesh-to-MetaHuman", "Licensed to the studio", "Snap to grid",
+                     "Serial", ""):
+            with self.subTest(text=text):
+                self.assertEqual(self.redact(text), text)
 
 
 if __name__ == "__main__":

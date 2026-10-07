@@ -1,7 +1,12 @@
 """A command that opens a CC5 dialog: the caller hears about it at once, can read it, answer it, then read the job."""
 from __future__ import annotations
 
+import contextlib
+import io
+import os
+import re
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -429,6 +434,111 @@ class DialogTest(BridgeTestCase):
         self.assertEqual(self.srv.get_dialog(), {"success": True, "dialog": None, "waiting_job": None,
                                                   "recovery_policy": "ask"})
 
+    # Live CC5 5.13 (F-84, F-85): SkinGen's About box ("CCSkinGen") has no buttons, and one label shows the licence
+    # serial. A made-up serial here; the real one is never written anywhere.
+    SERIAL = "ABCDE-12345-FGHIJ-67890"
+    ABOUT_TEXT = "S/N : (serial)\nProduct Version : 1.0.0824.1\nwww.reallusion.com"
+
+    def _about_box(self):
+        return _CC5Dialog("CCSkinGen", [_Label(f"S/N : {self.SERIAL}"), _Label("Product Version : 1.0.0824.1"),
+                                        _Label("www.reallusion.com")], [])
+
+    def test_get_dialog_shows_the_about_box_with_its_serial_redacted(self):
+        self.dialog = self._about_box()
+        r = self.srv.get_dialog()
+        self.assertEqual(r["dialog"], {"title": "CCSkinGen", "text": self.ABOUT_TEXT, "buttons": [], "progress": False})
+        self.assertNotIn(self.SERIAL, repr(r))
+
+    def test_the_queue_guard_names_the_about_box_and_never_its_text(self):
+        self.dialog = self._about_box()
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        status, body = self.srv._execute_sync("ping", {}, timeout=5)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], 'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character '
+                                        "Creator 5 (no MCP tool can close it), then try again.")
+
+    def test_a_command_that_opens_the_about_box_reports_it_redacted(self):
+        # The dialog lane still reports a command's own window with no buttons (_is_question is unchanged); its
+        # text is redacted in the 409 reply and in job_status.
+        about = self._about_box()
+
+        def opens_about(p):
+            self.dialog = about
+            end = time.monotonic() + 10
+            while self.dialog is not None and time.monotonic() < end:
+                self.srv.process_dialog_lane()
+                time.sleep(0.01)
+            return {"success": True}
+
+        self.srv.ACTION_MAP["opens_about"] = opens_about
+        status, body = self.srv._execute_sync("opens_about", {}, timeout=30)
+        self.assertEqual(status, 409)
+        self.assertEqual(body["dialog"], {"title": "CCSkinGen", "text": self.ABOUT_TEXT, "buttons": []})
+        self.assertNotIn(self.SERIAL, body["error"])
+        job = self.srv._job_status(body["job_id"])[1]["result"]
+        self.assertEqual(job["dialog"]["text"], self.ABOUT_TEXT)
+        self.assertNotIn(self.SERIAL, job["dialog_message"])
+        self.dialog = None  # closed in CC5: the command finishes
+        end = time.monotonic() + 5
+        while time.monotonic() < end and job["status"] != "done":
+            job = self.srv._job_status(body["job_id"])[1]["result"]
+            time.sleep(0.02)
+        self.assertEqual(job["status"], "done")
+
+    # P-4 / DT-4: a form shows the label and the serial in two labels, and a QMessageBox can end its text with the
+    # label and hold the serial in its informative text. Made-up keys only.
+
+    def test_a_serial_in_the_label_after_its_label_is_redacted(self):
+        for labels, text in (
+                (["Serial Number:", "XK29QZ7731ABCD"], "Serial Number:\n(serial)"),
+                (["S/N", "XK29QZ7731"], "S/N\n(serial)"),
+                # No digit and no ':': only a label line on its own marks the next label as the value.
+                (["Licence Key", "QWERTYUIOPASDF", "Product Version : 1.0.0824.1"],
+                 "Licence Key\n(serial)\nProduct Version : 1.0.0824.1"),
+                # The label ends a longer label: the joined text is redacted again.
+                (["Enter your Serial Number:", "XK29QZ7731ABCD"], "Enter your Serial Number:\n(serial)"),
+                (["Your S/N", "XK29QZ7731"], "Your S/N\n(serial)")):
+            with self.subTest(labels=labels):
+                self.dialog = _CC5Dialog("Activation", [_Label(t) for t in labels], [_Button("OK")])
+                self.assertEqual(self.srv._describe_modal()["text"], text)
+                r = self.srv.get_dialog()
+                self.assertEqual(r["dialog"]["text"], text)
+                self.assertNotIn(labels[1], repr(r))
+
+    def test_a_message_box_with_the_serial_in_its_informative_text_is_redacted(self):
+        qt = sys.modules["PySide2.QtWidgets"]
+
+        class MessageBox(qt.QMessageBox, _CC5Dialog):
+            def __init__(self, text, info):
+                _CC5Dialog.__init__(self, "Activation", [], [_Button("OK")])
+                self._text, self._info = text, info
+
+            def text(self):
+                return self._text
+
+            def informativeText(self):
+                return self._info
+
+        for text, info, shown in (
+                ("Character Creator 5 is activated.\nSerial Number:", "XK29QZ7731ABCD",
+                 "Character Creator 5 is activated.\nSerial Number:\n(serial)"),
+                ("Character Creator 5 is activated with this S/N", "XK29QZ7731",
+                 "Character Creator 5 is activated with this S/N\n(serial)")):
+            with self.subTest(text=text):
+                self.dialog = MessageBox(text, info)
+                described = self.srv._describe_modal()
+                self.assertEqual((described["text"], described["buttons"]), (shown, ["OK"]))
+                r = self.srv.get_dialog()
+                self.assertEqual(r["dialog"]["text"], shown)
+                self.assertNotIn(info, repr(r))
+
+    def test_text_without_a_serial_keeps_every_label(self):
+        self.dialog = _CC5Dialog("Character Creator 5", [_Label("This content requires a license."),
+                                                         _Label("Do you want to buy it now?")],
+                                 [_Button("Yes"), _Button("No")])
+        self.assertEqual(self.srv.get_dialog()["dialog"]["text"],
+                         "This content requires a license.\nDo you want to buy it now?")
+
     def test_bad_button_argument(self):
         for bad in (None, "", "   ", 5, "x" * 101):
             self.assertFalse(self.srv.answer_dialog(bad)["success"], bad)
@@ -504,31 +614,79 @@ class MainTimersTest(unittest.TestCase):
 
 
 class RequestLogTest(unittest.TestCase):
-    """Only failed requests are printed (F-57: every request was printed from an HTTP thread)."""
+    """Failed requests are written to requests.log, never printed (F-57: every request was printed from an HTTP
+    thread; F-63: the failed ones still were, into CC5's console and a running exec_python's output)."""
+
+    STAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
 
     def setUp(self):
         _support.install_fake_rlpy()
         self.srv = _support.fresh_import("server")
+        self.unpatched_path = self.srv._request_log_path
+        self.log = os.path.join(tempfile.mkdtemp(), "requests.log")
+        p = mock.patch.object(self.srv, "_request_log_path", return_value=self.log)
+        p.start()
+        self.addCleanup(p.stop)
 
-    def _logged(self, fmt, *args):
+    def _log(self, fmt, *args):
         with mock.patch("builtins.print") as printed:
             self.srv.BridgeHandler.log_message(mock.Mock(), fmt, *args)
-        return printed.call_count
+        printed.assert_not_called()
 
-    def test_successful_requests_are_not_printed(self):
-        self.assertEqual(self._logged('"%s" %s %s', "GET /health HTTP/1.1", "200", "-"), 0)
-        self.assertEqual(self._logged('"%s" %s %s', "POST /dialog HTTP/1.1", "200", "-"), 0)
+    def _lines(self, path=None):
+        path = path or self.log
+        if not os.path.exists(path):
+            return []
+        with open(path, encoding="utf-8") as f:
+            return f.read().splitlines()
 
-    def test_failed_requests_and_errors_are_printed(self):
-        self.assertEqual(self._logged('"%s" %s %s', "POST /scene/delete HTTP/1.1", "400", "-"), 1)
-        self.assertEqual(self._logged("code %d, message %s", 404, "Not Found"), 1)
+    def _texts(self, path=None):
+        """The logged lines without their timestamps (each line must start with one)."""
+        lines = self._lines(path)
+        for line in lines:
+            self.assertRegex(line, self.STAMP)
+        return [line[len("YYYY-mm-dd HH:MM:SS "):] for line in lines]
 
-    def test_redirects_are_not_printed(self):
-        self.assertEqual(self._logged('"%s" %s %s', "GET /x HTTP/1.1", "304", "-"), 0)
+    def test_successful_requests_and_redirects_write_nothing(self):
+        self._log('"%s" %s %s', "GET /health HTTP/1.1", "200", "-")
+        self._log('"%s" %s %s', "POST /dialog HTTP/1.1", "200", "-")
+        self._log('"%s" %s %s', "GET /x HTTP/1.1", "304", "-")
+        self.assertEqual(self._lines(), [])
 
-    def test_errors_without_a_status_are_printed(self):
+    def test_failed_requests_and_errors_are_written_with_a_timestamp(self):
+        self._log('"%s" %s %s', "POST /scene/delete HTTP/1.1", "400", "-")
+        self._log("code %d, message %s", 404, "Not Found")
+        self.assertEqual(self._texts(), ['"POST /scene/delete HTTP/1.1" 400 -', "code 404, message Not Found"])
+
+    def test_errors_without_a_status_are_written(self):
         # BaseHTTPRequestHandler.log_error("Request timed out: %r", e) carries no status.
-        self.assertEqual(self._logged("Request timed out: %r", TimeoutError()), 1)
+        self._log("Request timed out: %r", TimeoutError())
+        self.assertEqual(self._texts(), ["Request timed out: TimeoutError()"])
+
+    def test_nothing_reaches_a_redirected_stdout(self):
+        # Live (F-63): a running exec_python's output held '"POST /exec/python HTTP/1.1" 409 -'.
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.srv.BridgeHandler.log_message(mock.Mock(), '"%s" %s %s', "GET /avatars HTTP/1.1", "400", "-")
+        self.assertEqual(buf.getvalue(), "")
+        self.assertEqual(self._texts(), ['"GET /avatars HTTP/1.1" 400 -'])
+
+    def test_a_log_that_cannot_be_written_raises_nothing(self):
+        blocker = os.path.join(tempfile.mkdtemp(), "a_file")
+        open(blocker, "wb").close()
+        with mock.patch.object(self.srv, "_request_log_path", return_value=os.path.join(blocker, "requests.log")):
+            self._log('"%s" %s %s', "GET /avatars HTTP/1.1", "401", "-")  # no exception, nothing printed
+
+    def test_the_log_moves_to_requests_log_1_past_its_size_limit(self):
+        with mock.patch.object(self.srv, "REQUEST_LOG_MAX_BYTES", 10):
+            self._log('"%s" %s %s', "GET /a HTTP/1.1", "404", "-")
+            self._log('"%s" %s %s', "GET /b HTTP/1.1", "404", "-")
+        self.assertEqual(self._texts(self.log + ".1"), ['"GET /a HTTP/1.1" 404 -'])
+        self.assertEqual(self._texts(), ['"GET /b HTTP/1.1" 404 -'])
+
+    def test_the_log_sits_next_to_the_token(self):
+        self.assertEqual(self.unpatched_path(),
+                         os.path.join(os.path.dirname(self.srv._token_path()), "requests.log"))
 
 
 if __name__ == "__main__":

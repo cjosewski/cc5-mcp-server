@@ -3,6 +3,7 @@
  * error text when a call fails, and the tool descriptions C2 corrected.
  */
 
+import path from "node:path";
 import { describe, it, expect, beforeEach } from "vitest";
 import { BridgeHttpError, BridgeUnreachableError } from "../../src/cc5-bridge.js";
 import { pendingResult } from "../../src/jobs.js";
@@ -16,6 +17,10 @@ import { registerCharacterTools, BODY_PRESETS } from "../../src/tools/character.
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
+import { makeUnityProject } from "../helpers/unity-project.js";
+
+// export_for_unity refuses an Assets folder with no Unity project around it (F-76), so its tests export into one.
+const UNITY_ASSETS = path.join(makeUnityProject(), "Assets", "C");
 
 let bridge: MockBridge;
 let server: ReturnType<typeof createMockServer>;
@@ -34,7 +39,7 @@ const JOB_TOOLS: Array<[string, Record<string, unknown>]> = [
   ["export_goz", { output_dir: "C:/GoZ/P1", pose: "tpose" }],
   ["import_fbx", { file_path: "C:/a/jacket.fbx", kind: "clothing" }],
   ["export_textures", { output_dir: "C:/SP", character_name: "P1" }],
-  ["export_for_unity", { unity_dir: "D:/P/Assets/C", character_name: "P1", wait_seconds: 25 }],
+  ["export_for_unity", { unity_dir: UNITY_ASSETS, character_name: "P1", wait_seconds: 25 }],
 ];
 
 describe("pendingResult", () => {

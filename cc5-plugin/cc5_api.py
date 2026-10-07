@@ -10,12 +10,18 @@ from __future__ import annotations
 import os
 import sys
 import base64
+import contextlib
+import math
 import tempfile
 import time as _time
 import urllib.parse
 from typing import Any
 
 import RLPy
+
+# F-34: /reload re-imports cc5_api but not the helper modules it imports lazily. Dropping cc5_changes here makes
+# load_asset's next `import cc5_changes` read the installed file again.
+sys.modules.pop("cc5_changes", None)
 
 # --- Path validation (defense-in-depth, mirrors TypeScript validation) ---
 
@@ -483,23 +489,77 @@ def load_asset(file_path: str, target: str | None = None) -> dict[str, Any]:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    # The target's name is read before the load, so the pre-load handle is never touched after LoadFile (F-34).
     try:
         avatar, error = _pick_target_avatar(target, ext)
+        target_name = avatar.GetName() if avatar is not None else None
     except Exception as e:
         return {"success": False, "error": f"Could not read the scene: {e}"}
     if error:
         return {"success": False, "error": error}
+    # F-34: read the character just before and just after the load, in this same command. The import sits inside
+    # the try: a hand copy of the plugin without cc5_changes.py still loads, with a WARNING note.
+    notes: list[str] = []
+    changes_mod = state = None
+    try:
+        import cc5_changes as changes_mod
+        state = changes_mod.begin(avatar, target_name)
+    except Exception as e:
+        notes.append(f"WARNING: the before/after comparison could not start: {e}")
     RLPy.RGlobal.BeginAction("Load Asset")
     try:
         RLPy.RScene.SelectObject(avatar)
         # Live signature: LoadFile(path, bRecordStep=True, spObject=0, ...): spObject aims the content at the avatar.
         _raise_on_error(RLPy.RFileIO.LoadFile(file_path, True, avatar), "LoadFile")
         _invalidate_caches()
-        return {"success": True, "path": file_path, "target": avatar.GetName()}
+        result: dict[str, Any] = {"success": True, "path": file_path, "target": target_name}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        result = {"success": False, "error": str(e)}
     finally:
         RLPy.RGlobal.EndAction()
+    return _attach_load_changes(result, changes_mod, state, target_name, notes, file_path)
+
+
+def _attach_load_changes(result: dict[str, Any], changes_mod: Any, state: Any, target_name: Any,
+                         notes: list[str], file_path: str) -> dict[str, Any]:
+    """load_asset's result with the F-34 comparison (`changes`, see cc5_changes) and its WARNING notes.
+
+    A successful load always carries `changes`. A failed load carries them only when CC5 changed something anyway,
+    with the file's `path` and the `target` character's name, as a successful load does (X-3: job_status words the
+    report by the kind of file loaded); otherwise the result stays exactly {success: False, error}.
+    """
+    notes = list(notes)
+    changes: Any = None
+    if changes_mod is not None and state is not None:
+        try:
+            changes, more = changes_mod.finish(state)
+            notes += list(more)
+        except Exception as e:
+            changes = None
+            notes.append(f"WARNING: the before/after comparison failed after the load: {e}")
+    if not isinstance(changes, dict):
+        # Built here, not taken from cc5_changes: the module may be missing.
+        changes = {"complete": False, "target": target_name, "target_is_first": False, "elapsed_ms": 0,
+                   "compared": {"worn": 0, "morphs": 0, "materials": 0}, "skipped": 0, "truncated": False,
+                   "facts": []}
+    if result.get("success"):
+        result["changes"] = changes
+        if notes:
+            result["notes"] = notes
+        return result
+    facts = changes.get("facts") or []
+    if not facts:
+        return {"success": False, "error": result.get("error")}
+    if changes.get("truncated"):
+        count = f"more than {getattr(changes_mod, 'MAX_FACTS', 300)} things"
+    else:
+        count = "1 thing" if len(facts) == 1 else f"{len(facts)} things"
+    failed: dict[str, Any] = {"success": False,
+                              "error": f"{result.get('error')} (CC5 reported an error, but it changed {count})",
+                              "path": file_path, "target": target_name, "changes": changes}
+    if notes:
+        failed["notes"] = notes
+    return failed
 
 
 # Live CC5 5.13 (Task 18): every scripted export with "Convert Image Format" (EExportFbxOptions_ConvertTifToPNG), with
@@ -517,6 +577,80 @@ def _highest_subdiv_level(avatar: Any) -> int | None:
         return int(avatar.GetMaxSubdivMeshLevel())
     except Exception:
         return None
+
+
+# F-82 (live CC5 5.13): applying a pose file (apply_pose) sets the character's motion clip, the project length and the
+# end time to 0, and a mesh-only FBX export writes a take named "Default" spanning the project range: zero frames
+# then, which Unity reports ("contains animation clip 'Default' which has length of 0 frames"). A standing character's
+# range is one frame (100 time units: CC5 counts 6,000 per second, one frame at 60 fps), and Unity accepts that take.
+# Neither motion_range [0, 0] nor clearing EExportFbxOptions_TPoseOnMotionFirstFrame changed the zero-length take; a
+# project length and end time of one frame during the export did.
+TIMELINE_LENGTHENED_NOTE = ("CC5's timeline was 0 frames long (applying a pose file sets it so); it was set to one "
+                            "frame for this export and restored afterwards, so the FBX's animation take is not empty "
+                            "(F-82)")
+# X-2: the note for a timeline that could not be set back after the export starts with this. The FBX itself is fine
+# (it was exported with the one-frame timeline), so the tools show the note apart from the export settings CC5 did not
+# apply (TIMELINE_NOT_RESTORED_PREFIX in src/tools/unity.ts). The note is written whether or not the export worked, so
+# it never calls the FBX usable: the tools say so only after an export that did (TIMELINE_USABLE_LINE), and a failed
+# export_for_unity or job_status shows the note as it is.
+TIMELINE_NOT_RESTORED_PREFIX = "WARNING: CC5 timeline not restored: "
+
+
+@contextlib.contextmanager
+def _one_frame_timeline_for_export(notes: list[str], history: dict[str, bool] | None = None):
+    """Around a mesh-only ExportFbxFile: a timeline shorter than one frame is set to one frame for the export and
+    restored after it, also when the export raises (F-82).
+
+    Never fails the export: a read or a setter that fails becomes a WARNING note and the export runs anyway. The two
+    setters clear CC5's undo history, as every FBX export does anyway (F-86), so inside an export they cost nothing;
+    `history["cleared"]` is set as soon as SetProjectLength has changed the timeline, so a failed export still says
+    that the history is gone.
+    No BeginAction/EndAction: the change is undone within this call, so there is no step to keep, and the sequence
+    verified live (probe E5: set, export, set back) ran without one; an FBX export inside an action is untested.
+    """
+    g = RLPy.RGlobal
+    old_length: Any = None
+    old_end: Any = None
+    length_set = end_set = False
+    try:
+        one = g.GetFps().IndexedFrameTime(1)
+        if float(g.GetEndTime().ToFloat()) < float(one.ToFloat()):
+            old_length, old_end = g.GetProjectLength(), g.GetEndTime()
+            g.SetProjectLength(one)
+            length_set = True
+            if history is not None:
+                history["cleared"] = True  # F-86: this setter cleared CC5's undo history, whatever the export does
+            g.SetEndTime(one)
+            end_set = True
+    except Exception as e:
+        notes.append(f"WARNING: could not lengthen the 0-frame timeline ({e}); the FBX may carry an empty "
+                     "animation take: set the timeline's length to at least one frame in Character Creator 5, then "
+                     "re-export")
+    try:
+        yield
+    finally:
+        restore_errors: list[str] = []
+        if end_set:
+            try:
+                g.SetEndTime(old_end)
+            except Exception as e:
+                restore_errors.append(f"end time: {e}")
+        if length_set:
+            try:
+                g.SetProjectLength(old_length)
+            except Exception as e:
+                restore_errors.append(f"project length: {e}")
+        if restore_errors:
+            notes.append(f"{TIMELINE_NOT_RESTORED_PREFIX}it was set to one frame for this export and could not be "
+                         f"set back ({'; '.join(restore_errors)}); set the timeline's length in Character Creator 5")
+        elif end_set and TIMELINE_LENGTHENED_NOTE not in notes:  # once, also when the flags fallback runs too
+            notes.append(TIMELINE_LENGTHENED_NOTE)
+
+
+def _timeline_guard(export_motion: Any, notes: list[str], history: dict[str, bool] | None = None) -> Any:
+    """The F-82 guard for a mesh-only export. An export with motion is left alone: its take is the motion range
+    (include_current_pose exports a one-frame take)."""
+    return contextlib.nullcontext() if export_motion else _one_frame_timeline_for_export(notes, history)
 
 
 def export_fbx(
@@ -568,6 +702,14 @@ def export_fbx(
             ExportFbxFile(obj, path, flags, flags2, flags3) instead: the option flags still apply, the
             RExportFbxSetting-only options do not (notes say which). Pass False when the settings are
             the point of the export (export_for_unity): the call then fails instead.
+
+    A mesh-only export (export_motion False) of a posed character runs with a one-frame timeline, restored
+    afterwards, so its animation take is not empty (F-82: _one_frame_timeline_for_export). A successful export
+    reports undo_history_cleared: live CC5 5.13 clears its undo history on every FBX export (F-86). A failure reports
+    it too once CC5's undo history may be gone: the F-82 guard changed the timeline (its setters clear it), or
+    ExportFbxFile was called, whether it then raised or returned an error status (the cautious choice: a false
+    warning costs a save_character, a missed one the user's work). The text for the export_fbx tool is added by
+    its action (with_undo_history_sentence), not here: export_for_unity and export_textures print it from the flag.
     """
     # Defense-in-depth path validation
     _decoded_out = urllib.parse.unquote(output_path)
@@ -577,6 +719,16 @@ def export_fbx(
         return {"success": False, "error": "Path traversal ('..') is not allowed"}
 
     notes: list[str] = []
+    # F-86: whether CC5's undo history may be gone (see the docstring). Set by the F-82 guard and before each
+    # ExportFbxFile call.
+    history: dict[str, bool] = {"cleared": False}
+
+    def _failed(error: str) -> dict[str, Any]:
+        """A failure result, with undo_history_cleared when CC5's undo history may be gone (F-86)."""
+        failure: dict[str, Any] = {"success": False, "error": error, "notes": notes}
+        if history["cleared"]:
+            failure["undo_history_cleared"] = True
+        return failure
 
     # Resolve a bare filename (no directory component) under CC5_EXPORT_DIR.
     if os.path.dirname(output_path) == "":
@@ -766,7 +918,9 @@ def export_fbx(
                         except Exception as e:
                             notes.append(f"WARNING: SetTextureSize failed: {e}")
 
-                status = RLPy.RFileIO.ExportFbxFile(avatar, output_path, setting)
+                with _timeline_guard(export_motion, notes, history):
+                    history["cleared"] = True  # before the call: one that raises may have cleared it as well
+                    status = RLPy.RFileIO.ExportFbxFile(avatar, output_path, setting)
                 used_setting_object = True
             except Exception as e:
                 setting_error = str(e)
@@ -780,8 +934,7 @@ def export_fbx(
             setting_error = "RExportFbxSetting is not available in this CC5 build"
 
         if not used_setting_object and not allow_fallback:
-            return {"success": False, "notes": notes,
-                    "error": f"CC5 could not export with the requested FBX settings: {setting_error}"}
+            return _failed(f"CC5 could not export with the requested FBX settings: {setting_error}")
 
         if not used_setting_object:
             if export_motion is False:
@@ -823,7 +976,10 @@ def export_fbx(
             # Live CC5 5.13 has no 2-argument ExportFbxFile(obj, path) (TypeError). Its overloads are
             # (obj, path, RExportFbxSetting) and (obj, path, EExportFbxOptions, EExportFbxOptions2,
             # EExportFbxOptions3[, texture size, texture format, motion path]).
-            _raise_on_error(RLPy.RFileIO.ExportFbxFile(avatar, output_path, flags, flags2, flags3), "ExportFbxFile")
+            with _timeline_guard(export_motion, notes, history):
+                history["cleared"] = True  # before the call: one that raises may have cleared it as well
+                status = RLPy.RFileIO.ExportFbxFile(avatar, output_path, flags, flags2, flags3)
+            _raise_on_error(status, "ExportFbxFile")
             applied_flags2 = applied_flags3 = True
 
         # Honest reporting: echo flags/options only when actually applied.
@@ -836,6 +992,9 @@ def export_fbx(
             "flags3": flags3 if applied_flags3 else 0,
             "notes": notes,
             "target_tool": target_tool or "default",
+            # F-86 (live CC5 5.13): an FBX export clears CC5's undo history; afterwards undo cannot take back anything
+            # done before it and still reports success. The tools say so in their replies.
+            "undo_history_cleared": True,
         }
         if applied_export_level is not None:
             result["export_level"] = applied_export_level
@@ -858,7 +1017,28 @@ def export_fbx(
                 notes.append(f"restored sub_d_level to {_orig_subd} after export failure")
             except Exception:
                 pass
-        return {"success": False, "error": str(e), "notes": notes}
+        return _failed(str(e))
+
+
+# F-86: the same text as UNDO_HISTORY_CLEARED in src/tools/unity.ts.
+UNDO_HISTORY_CLEARED = ("CC5 cleared its undo history with this export: changes made before it can no longer be "
+                        "undone (save_character first to keep a way back).")
+
+
+def with_undo_history_sentence(result: Any) -> Any:
+    """The export_fbx action's result: a failure that may have cleared CC5's undo history says so in `error` too.
+
+    A {success: false} result reaches the MCP server as HTTP 400, and only its `error` is read, so the flag alone
+    never reaches the export_fbx tool's reply. Only the export_fbx action wrappers (server.ACTION_MAP and
+    _auto_patch_server) call this: export_for_unity and export_textures print the sentence from the flag, and would
+    print it twice.
+    """
+    if not isinstance(result, dict) or result.get("success") is not False or not result.get("undo_history_cleared"):
+        return result
+    error = str(result.get("error") or "FBX export failed")
+    if UNDO_HISTORY_CLEARED in error:
+        return result
+    return {**result, "error": f"{error}\n{UNDO_HISTORY_CLEARED}"}
 
 
 def get_avatar_info() -> dict[str, Any] | None:
@@ -876,8 +1056,13 @@ def get_avatar_info() -> dict[str, Any] | None:
             ids = shaping_comp.GetShapingMorphIDs(cat)
             for morph_id in ids:
                 weight = shaping_comp.GetShapingMorphWeight(morph_id)
-                if abs(weight) > 1e-6:
-                    current_morphs[morph_id] = weight
+                # CC5 returns float32 weights (live F-62: Heavy 50% read 0.3499999940395355); F-13 rounded
+                # get_morph_value the same way. A weight that rounds to 0 is not active. A weight that is not a
+                # finite number is left out (P-8): round(nan, 4) is nan, bool(nan) is True, and the bridge would send
+                # NaN, which the MCP server cannot parse.
+                value = round(float(weight), 4)
+                if math.isfinite(value) and value:
+                    current_morphs[morph_id] = value
 
     return {
         "name": avatar.GetName(),
@@ -931,6 +1116,9 @@ $bitmap.Dispose()
     result = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
         capture_output=True, timeout=10, env={**os.environ, "CC5_CAP_OUT": output_path},
+        # F-64: CC5 is a GUI process, so without this a console window could open over CC5 while CopyFromScreen
+        # copies that area.
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if result.returncode != 0:
         stderr_text = result.stderr.decode("utf-8", errors="replace").strip()
@@ -1210,10 +1398,25 @@ REDO_HOLDS_CAPTURE = ("Nothing of yours to redo: a viewport capture taken after 
                       "before it was dropped (Edit > Redo would replay the capture's own step).")
 
 
+def _mark_overlay_records_stale() -> None:
+    """After an undo or a redo, the bridge's overlay records (cc5_pipeline.BLEND_SOURCES) may no longer match what CC5
+    shows (P-1), so they are marked stale. cc5_pipeline is looked up when this runs, never imported here: it imports
+    this module. Never raises, so an undo or a redo never fails because of it; a plugin copy without the module or the
+    function marks nothing."""
+    try:
+        pipe = sys.modules.get("cc5_pipeline")
+        mark = getattr(pipe, "mark_blend_sources_stale", None) if pipe else None
+        if mark:
+            mark()
+    except Exception:
+        pass  # the undo or redo itself happened; only the records keep their state
+
+
 def undo() -> dict[str, Any]:
     """Undo the last action in CC5."""
     try:
         RLPy.RGlobal.Undo()
+        _mark_overlay_records_stale()
         _redo_slots.append("user")
         avatar = get_first_avatar()
         if avatar:
@@ -1231,6 +1434,7 @@ def redo() -> dict[str, Any]:
         return {"success": False, "error": REDO_HOLDS_CAPTURE}
     try:
         RLPy.RGlobal.Redo()
+        _mark_overlay_records_stale()
         if _redo_slots:
             _redo_slots.pop()
         avatar = get_first_avatar()
@@ -2038,12 +2242,34 @@ def set_material_specular(mesh_name: str, material_name: str, specular: float) -
 
 # --- PBR Shader Parameters (Digital Human Shader: roughness, SSS, micronormal) ---
 
+# The difflib ratio a "Close matches" suggestion needs (F-64). Live, 'Original Roughnes Strength' at difflib's default
+# 0.6 also offered Keep Original Roughness (ratio 0.69) and Chin Roughness Scale (0.61) next to Original Roughness
+# Strength (0.98); 0.75 keeps only the real match.
+_CLOSE_MATCH_CUTOFF = 0.75
+
+
+def _is_shader_padding(name: Any) -> bool:
+    """A shader's padding entry ('padding1', 'padding Last4' on CC4 Kevin's skin, F-69): filler, not a setting."""
+    return str(name).lower().startswith("padding")
+
+
+def _shader_padding_refusal(parameter_name: str) -> dict[str, Any]:
+    return {"success": False,
+            "error": f"'{parameter_name}' is shader padding (filler), not a setting, so it is not set."}
+
+
 def get_shader_parameters(mesh_name: str, material_name: str) -> dict[str, Any]:
-    """Get the shader name and all numeric shader parameters for a material.
+    """Get the shader name and the settable numeric shader parameters for a material.
 
     Exposes the Digital Human Shader controls (skin roughness scales, SSS radius/
     falloff/IOR, micronormal strength, specular, etc.). Each value is a list of
     floats (most are length 1). Use set_shader_parameter to change one.
+
+    F-69: `parameters` holds only the settable parameters. Live, CC4 Kevin's Std_Skin_Head lists 56 names, among them
+    'SSS Metallic Threshold' (CC5 returns [] for it) and the shader's padding entries 'padding1' (3 values) and
+    'padding Last4' (1 value). The entries that are not settings are listed apart, by name, in CC5's order:
+    `no_value` (CC5 returns no value), `filler` (padding entries, never read) and `unreadable` (a read that raised,
+    or a value that is not a list of finite numbers, such as a NaN).
     """
     error = _validate_material_names(mesh_name, material_name)
     if error:
@@ -2061,19 +2287,34 @@ def get_shader_parameters(mesh_name: str, material_name: str) -> dict[str, Any]:
         shader = mat_comp.GetShader(mesh_name, material_name) if hasattr(mat_comp, "GetShader") else None
         names = mat_comp.GetShaderParameterNames(mesh_name, material_name)
         params: dict[str, list[float]] = {}
+        no_value: list[str] = []
+        filler: list[str] = []
+        unreadable: list[str] = []
         for name in (names or []):
-            try:
-                value = mat_comp.GetShaderParameter(mesh_name, material_name, name)
-                params[name] = [float(v) for v in value]
-            except Exception:
-                # skip non-numeric / unreadable params rather than failing the whole call
+            if _is_shader_padding(name):
+                filler.append(name)
                 continue
+            try:
+                value = [float(v) for v in mat_comp.GetShaderParameter(mesh_name, material_name, name)]
+            except Exception:
+                # a failed read, or a value that is not a list of numbers: listed apart rather than failing the call
+                unreadable.append(name)
+                continue
+            if not all(math.isfinite(v) for v in value):
+                unreadable.append(name)  # a NaN would also break the bridge's JSON reply
+            elif not value:
+                no_value.append(name)
+            else:
+                params[name] = value
         return {
             "success": True,
             "mesh": mesh_name,
             "material": material_name,
             "shader": shader,
             "parameters": params,
+            "no_value": no_value,
+            "filler": filler,
+            "unreadable": unreadable,
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -2088,12 +2329,15 @@ def set_shader_parameter(
     The parameter name is validated against the material's actual shader parameters
     (use get_shader_parameters to discover them), and the value count must match the
     parameter's existing length — both guard against passing bad data to the SWIG layer.
+    A padding entry (shader filler) and a parameter CC5 returns no value for are refused (F-69).
     """
     error = _validate_material_names(mesh_name, material_name)
     if error:
         return {"success": False, "error": error}
     if not parameter_name or not isinstance(parameter_name, str):
         return {"success": False, "error": "parameter_name is required"}
+    if _is_shader_padding(parameter_name):
+        return _shader_padding_refusal(parameter_name)  # F-69: refused before any RLPy call
     if not isinstance(values, list) or not values:
         return {"success": False, "error": "values must be a non-empty list of numbers"}
     try:
@@ -2116,7 +2360,9 @@ def set_shader_parameter(
         return {"success": False, "error": f"Failed to read shader parameters: {e}"}
     if parameter_name not in valid_names:
         import difflib
-        close = difflib.get_close_matches(parameter_name, valid_names, n=3, cutoff=0.6)
+        # Padding entries are filler, never a suggestion (F-69).
+        candidates = [n for n in valid_names if not _is_shader_padding(n)]
+        close = difflib.get_close_matches(parameter_name, candidates, n=3, cutoff=_CLOSE_MATCH_CUTOFF)
         hint = f" Close matches: {', '.join(close)}." if close else ""
         return {"success": False,
                 "error": f"Shader parameter not found: {parameter_name} on {mesh_name} / {material_name}.{hint} "
@@ -2127,6 +2373,11 @@ def set_shader_parameter(
         current = list(mat_comp.GetShaderParameter(mesh_name, material_name, parameter_name))
     except Exception as e:
         return {"success": False, "error": f"Failed to read current value: {e}"}
+    if not current:
+        # F-69: CC5 returns [] for some names (CC4 Kevin's 'SSS Metallic Threshold'); "expects 0 value(s)" confused.
+        return {"success": False,
+                "error": f"'{parameter_name}' has no value CC5 can read on {mesh_name} / {material_name}, "
+                         "so it cannot be set."}
     if len(values) != len(current):
         return {
             "success": False,
@@ -2293,17 +2544,95 @@ def _disk_images(folder: str) -> list[str]:
             if n.lower().endswith(_BROWSE_IMAGE_EXTENSIONS) and os.path.isfile(os.path.join(path, n))]
 
 
+# F-72: files that match the .i* content filter but are never content (Reallusion Templates/Others/Profile/Face Puppet
+# holds 467 of them).
+_BROWSE_SKIP_EXTENSIONS = (".ini", ".ico")
+# Siblings of "Reallusion Custom" (C:/Users/Public/Documents/Reallusion) that hold content at the same relative paths.
+_SHARED_CONTENT_ROOTS = ("Shared Custom", "Shared Templates")
+
+
+def _is_disk_folder(f: Any) -> bool:
+    """A plain filesystem path (what GetCustomContentFolder returns), not a CC5 '$/...' content string."""
+    return isinstance(f, str) and not f.startswith("$") and os.path.isabs(f)
+
+
+def _folder_key(f: Any) -> Any:
+    """One spelling per folder for browse_content's walk: slash direction, a trailing slash and case are ignored."""
+    if isinstance(f, str):
+        return f.replace("\\", "/").rstrip("/").lower()
+    return f  # anything else (a test fake) as it is
+
+
+def _disk_listing(folder: str) -> tuple[list[str], list[str]]:
+    """(files, subfolders) directly in `folder`, read from disk: absolute paths with forward slashes, sorted by name
+    with case ignored. ([], []) when the folder cannot be read (missing, no access); an entry whose type cannot be read
+    is skipped."""
+    try:
+        with os.scandir(folder) as it:
+            entries = sorted(it, key=lambda e: e.name.lower())
+    except OSError:
+        return [], []
+    files: list[str] = []
+    subfolders: list[str] = []
+    for entry in entries:
+        path = os.path.join(folder, entry.name).replace("\\", "/")
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                subfolders.append(path)
+            elif entry.is_file():
+                files.append(path)
+        except OSError:
+            continue
+    return files, subfolders
+
+
+def _shared_content_folders(custom: str) -> list[str]:
+    """The Shared Custom / Shared Templates folders at the same place as a Reallusion Custom folder, where they exist."""
+    import re
+    path = custom.replace("\\", "/").rstrip("/")
+    match = re.search(r"/reallusion custom/", path, re.IGNORECASE)
+    if match is None:
+        return []
+    found: list[str] = []
+    for root in _SHARED_CONTENT_ROOTS:
+        mirror = f"{path[:match.start()]}/{root}/{path[match.end():]}"
+        if os.path.isdir(mirror):
+            found.append(mirror)
+    return found
+
+
+def _is_custom_root(f: Any) -> bool:
+    """Whether `f` is CC5's whole Custom folder, which holds every category (and stray files at its root)."""
+    if not isinstance(f, str):
+        return False
+    try:
+        getter = getattr(RLPy.RApplication, "GetCustomDataPath", None)
+        root = getter() if getter is not None else None
+        if isinstance(root, str) and root and (
+                os.path.normcase(os.path.normpath(f)) == os.path.normcase(os.path.normpath(root))):
+            return True
+    except Exception:
+        pass
+    return f.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower() == "reallusion custom"
+
+
 def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[str]:
     """Browse available content files by category. Returns file paths.
 
     CC5.1 API: RContentManager is gone. We resolve a '$/...' folder string via
-    RApplication.GetDefaultContentFolder(enum) (falling back to
-    GetCustomContentFolder) and then list files with
+    RApplication.GetDefaultContentFolder(enum) and then list files with
     RApplication.GetContentFilesInFolder(folderString). The enum is NEVER passed
     to GetContentFilesInFolder (that raises a SWIG std::wstring TypeError).
     GetContentFilesInFolder does not recurse (live CC5: $/Animation/Pose holds only
     subfolders), so subfolders from GetContentFoldersInFolder are read too, breadth
     first, up to MAX_BROWSE_FOLDERS folders.
+
+    F-72: the user's own content (CC5's Custom tab) comes first. Live, GetCustomContentFolder(enum) returns a plain
+    path (C:/Users/Public/Documents/Reallusion/Reallusion Custom/Cloth/Shirts) for which GetContentFilesInFolder lists
+    nothing, so the custom folders are read from disk, each with its subfolders (depth first, like os.walk), followed
+    by their Shared Custom / Shared Templates mirrors (the same path under those sibling folders, where it exists).
+    Every user folder is read before any template folder, so neither cap hides the user's content. The Custom root
+    itself (GetCustomDataPath, or a folder named Reallusion Custom) is never walked: it holds every category.
 
     query: keep only files whose name contains every word (case-insensitive). Filtering here,
     before the MAX_BROWSE_RESULTS cap, lets a keyword search find files past the first 200.
@@ -2369,20 +2698,32 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
         return [f"Content browsing not available for '{folder_type}' in this CC5 version"]
 
     try:
-        # Collect candidate '$/...' folder STRINGS: bundled templates + user custom, for each enum.
-        # (Never pass the enum to GetContentFilesInFolder — it expects the string.)
-        folder_strs: list[str] = []
-        for root_folder in folder_map[folder_type]:
-            for getter in ("GetDefaultContentFolder", "GetCustomContentFolder"):
-                if hasattr(RLPy.RApplication, getter):
-                    try:
-                        fs = getattr(RLPy.RApplication, getter)(root_folder)
-                        if fs and fs not in folder_strs:
-                            folder_strs.append(fs)
-                    except Exception:
-                        pass
+        # Collect the candidate folders for each enum: the user's custom folders first, then CC5's template ('$/...')
+        # folders (F-72). (Never pass the enum to GetContentFilesInFolder — it expects the string.)
+        custom: list[Any] = []
+        default: list[Any] = []
+        for getter, found in (("GetCustomContentFolder", custom), ("GetDefaultContentFolder", default)):
+            if not hasattr(RLPy.RApplication, getter):
+                continue
+            for root_folder in folder_map[folder_type]:
+                try:
+                    fs = getattr(RLPy.RApplication, getter)(root_folder)
+                except Exception:
+                    continue
+                if fs and not _is_custom_root(fs):
+                    found.append(fs)
+        user = custom + [mirror for f in custom if _is_disk_folder(f) for mirror in _shared_content_folders(f)]
+        # Two queues: every user folder (subfolders included) is read before any template folder.
+        user_queue: list[Any] = []
+        template_queue: list[Any] = []
+        queued: set[Any] = set()
+        for lane, folders in ((user_queue, user), (template_queue, default)):
+            for f in folders:
+                if _folder_key(f) not in queued:
+                    queued.add(_folder_key(f))
+                    lane.append(f)
 
-        if not folder_strs:
+        if not user_queue and not template_queue:
             return [f"No content folder resolved for '{folder_type}'"]
 
         # CC5.1 content files use .cc* extensions (e.g. .ccShoes, .ccCloth, .ccUpper);
@@ -2393,38 +2734,49 @@ def browse_content(folder_type: str = "cloth_upper", query: str = "") -> list[st
         # Literal tuple, not cc5_pipeline.IMAGE_EXTENSIONS: cc5_pipeline imports this module.
         results: list[str] = []
         seen: set[str] = set()
-        pending = list(folder_strs)
-        visited: set[str] = set()
-        while pending and len(visited) < MAX_BROWSE_FOLDERS:
-            fs = pending.pop(0)
-            if fs in visited:
+        visited: set[Any] = set()
+        while (user_queue or template_queue) and len(visited) < MAX_BROWSE_FOLDERS:
+            lane = user_queue if user_queue else template_queue
+            fs = lane.pop(0)
+            key = _folder_key(fs)
+            if key in visited:
                 continue
-            visited.add(fs)
-            try:
-                files = RLPy.RApplication.GetContentFilesInFolder(fs)
-            except Exception:
-                files = None
-            if not files and folder_type in _BROWSE_DISK_IMAGE_FALLBACK:
-                files = _disk_images(fs)
-            try:
-                pending += [s for s in (RLPy.RApplication.GetContentFoldersInFolder(fs) or []) if s]
-            except Exception:
-                pass
+            visited.add(key)
+            if _is_disk_folder(fs):
+                # F-72: GetContentFilesInFolder lists nothing for a plain path, so a custom folder is read from disk,
+                # and its subfolders next (depth first, like os.walk).
+                files, subfolders = _disk_listing(fs)
+                lane[0:0] = subfolders
+            else:
+                try:
+                    files = RLPy.RApplication.GetContentFilesInFolder(fs)
+                except Exception:
+                    files = None
+                if not files and folder_type in _BROWSE_DISK_IMAGE_FALLBACK:
+                    files = _disk_images(fs)
+                try:
+                    lane.extend([s for s in (RLPy.RApplication.GetContentFoldersInFolder(fs) or []) if s])
+                except Exception:
+                    pass
             for f in (files or []):
                 ext = os.path.splitext(f)[1].lower()
+                if ext in _BROWSE_SKIP_EXTENSIONS:
+                    continue
                 is_image = folder_type in ("image_layer", "texture", "wrinkle_mask") and ext in (".png", ".jpg", ".jpeg", ".tga", ".bmp", ".tif", ".tiff")
                 is_hair = folder_type == "hair" and ext == ".rlhair"
+                # One entry per file, whatever the slash direction or case it was listed with.
+                seen_key = str(f).replace("\\", "/").lower()
                 if (ext.startswith((".cc", ".i")) or (folder_type in ("pose", "motion") and ext.startswith(".rl"))
-                        or is_image or is_hair) and f not in seen:
+                        or is_image or is_hair) and seen_key not in seen:
                     name = os.path.basename(f).lower()
                     if words and not all(w in name for w in words):
                         continue
-                    seen.add(f)
+                    seen.add(seen_key)
                     if len(results) >= MAX_BROWSE_RESULTS:
                         return results + [BROWSE_TRUNCATED]
                     results.append(f)
         # MAX_BROWSE_FOLDERS stopped the walk with folders still unread, so the list may be incomplete.
-        if any(s not in visited for s in pending):
+        if any(_folder_key(s) not in visited for s in user_queue + template_queue):
             return results + [BROWSE_TRUNCATED]
         return results
     except Exception as e:
@@ -2511,6 +2863,10 @@ def _set_shader_values(avatar: Any, mat_comp: Any, targets: list[tuple[str, str]
             except Exception as e:
                 skipped.append(f"{mesh}/{material}: '{parameter}' unreadable ({e})")
                 continue
+            if not current:
+                # F-69: CC5 returns [] for some names; there is nothing to set.
+                skipped.append(f"{mesh}/{material}: '{parameter}' has no value")
+                continue
             if len(current) != len(values):
                 skipped.append(f"{mesh}/{material}: '{parameter}' expects {len(current)} value(s)")
                 continue
@@ -2577,6 +2933,8 @@ def set_skin_shader(parameter_name: str, values: list[float]) -> dict[str, Any]:
     """
     if not parameter_name or not isinstance(parameter_name, str) or len(parameter_name) > 200:
         return {"success": False, "error": "parameter_name is required"}
+    if _is_shader_padding(parameter_name):
+        return _shader_padding_refusal(parameter_name)  # F-69: refused before any RLPy call
     if not isinstance(values, list) or not values or len(values) > 16:
         return {"success": False, "error": "values must be a non-empty list of numbers"}
     try:
@@ -2608,13 +2966,19 @@ def set_skin_shader(parameter_name: str, values: list[float]) -> dict[str, Any]:
                 pass
         how = " get_shader_parameters on CC_Base_Body / Std_Skin_Head shows the names and how many values each takes."
         unreadable = [s for s in skipped if "unreadable" in s]
-        if parameter_name in names and unreadable:
+        # The skips of the materials that have the parameter (F-69: each may hold no value for it).
+        holding = [s for s in skipped if not s.endswith(f": no '{parameter_name}'")]
+        if holding and all(s.endswith(f": '{parameter_name}' has no value") for s in holding):
+            error = f"'{parameter_name}' has no value CC5 can read on the skin materials, so it cannot be set.{how}"
+        elif parameter_name in names and unreadable:
             error = f"CC5 could not read '{parameter_name}' on the skin materials: {'; '.join(unreadable)}.{how}"
         elif parameter_name in names:
             error = f"'{parameter_name}' does not take {len(values)} value(s) on the skin materials.{how}"
         else:
             import difflib
-            close = difflib.get_close_matches(parameter_name, sorted(names), n=3, cutoff=0.6)
+            # Padding entries are filler, never a suggestion (F-69).
+            candidates = sorted(n for n in names if not _is_shader_padding(n))
+            close = difflib.get_close_matches(parameter_name, candidates, n=3, cutoff=_CLOSE_MATCH_CUTOFF)
             hint = f" Close matches: {', '.join(close)}." if close else ""
             error = f"Shader parameter not found on the skin materials: {parameter_name}.{hint}{how}"
         return {"success": False, "error": error, "skipped": skipped}
@@ -3072,153 +3436,103 @@ def _texture_size_enum(texture_size: int) -> Any:
     return _resolution_to_enum(texture_size)
 
 
+# F-84 (live CC5 5.13 with SkinGen Premium): no QAction bakes, applies or edits the skin. The SkinGen menu holds About
+# (objectName qtSkinGenAboutAction), Online Manual, Video Tutorial and "Remove SkinGen Data"; the old bare "skin gen" /
+# "skingen" keywords matched About, a buttonless modal window that blocked every later command until it was closed by
+# hand. An action qualifies only when its text or objectName names one of these ("apply skin" covers "apply skingen"
+# and "apply skin gen"), and never when it names a word in _BAKE_ACTION_SKIP_WORDS.
+_BAKE_ACTION_KEYWORDS = ("bake skin", "bake texture", "apply skin", "skin editor")
+_BAKE_ACTION_SKIP_WORDS = ("about", "manual", "tutorial", "help", "online", "remove", "delete")
+_BAKE_RESOLUTIONS = (256, 512, 1024, 2048, 4096)
+# How many skin-related actions a result lists in candidates_inspected.
+MAX_INSPECTED_BAKE_ACTIONS = 20
+BAKE_COMMAND_MISSING = "CC5 has no Bake / Apply Skin / Skin Editor command the plugin can run, so nothing was opened"
+
+
+def _manual_bake_steps(resolution: int) -> str:
+    """The bake by hand. It names no menu path: none has been verified on CC5 5.13 (F-84)."""
+    return ("Bake the skin by hand in Character Creator 5: open the character's skin editor (SkinGen), set the texture "
+            f"size to {resolution} and bake.")
+
+
+def _bake_rank(blob: str) -> int:
+    """Bake before Apply before Skin Editor."""
+    if "bake" in blob:
+        return 0
+    if "apply" in blob:
+        return 1
+    return 2
+
+
 def bake_skin_textures(resolution: int = 4096) -> dict[str, Any]:
-    """Trigger CC5's Skin editor -> Bake Textures workflow.
+    """Open CC5's skin bake command (Bake / Apply Skin / Skin Editor) if CC5 has one; the bake itself is done by hand.
 
-    The Skin Editor / SkinGen "Bake" button is a UI-only operation in CC5.
-    There is no direct stable RLPy entry point in this CC5 build, so this
-    function does its best to drive the Qt UI:
-      1. Find CC5 main window via QApplication
-      2. Search QActions for "Bake" / "Skin Gen" related entries
-      3. trigger() the action
-
-    If automation fails, returns a structured response telling the caller
-    to bake manually.
+    CC5 has no bake API. This looks through CC5's QActions for an enabled one whose text or objectName names a bake,
+    applying the skin or the skin editor (_BAKE_ACTION_KEYWORDS) and no help-type or destructive word
+    (_BAKE_ACTION_SKIP_WORDS), and triggers the best one (Bake > Apply > Skin Editor) directly, so the result says
+    what ran; a modal window it opens keeps this command waiting, and the dialog lane reports it like any command's
+    question. CC5 5.13 has no such action (F-84): nothing is opened, and the result (success False,
+    manual_step_required) carries the manual steps. Every result lists the skin-related actions looked at, qualifying
+    or not (candidates_inspected, at most MAX_INSPECTED_BAKE_ACTIONS).
     """
-    notes: list[str] = []
-    res_enum = _resolution_to_enum(resolution)
-    if res_enum is None:
-        return {
-            "success": False,
-            "error": f"Unsupported resolution: {resolution}. Allowed: 256, 512, 1024, 2048, 4096",
-        }
-    notes.append(f"requested resolution={resolution} (enum={res_enum})")
+    inspected: list[dict[str, str]] = []
+    if isinstance(resolution, bool) or resolution not in _BAKE_RESOLUTIONS:
+        return {"success": False, "candidates_inspected": inspected,
+                "error": f"Unsupported resolution: {resolution}. Allowed: 256, 512, 1024, 2048, 4096"}
+    manual = _manual_bake_steps(resolution)
 
-    # --- Step 1: Try to set export texture size on default export settings ---
-    try:
-        if hasattr(RLPy, "RExportFbxSetting"):
-            setting = RLPy.RExportFbxSetting()
-            if hasattr(setting, "SetTextureSize"):
-                setting.SetTextureSize(res_enum)
-                notes.append("RExportFbxSetting.SetTextureSize succeeded (affects future FBX exports)")
-    except Exception as e:
-        notes.append(f"RExportFbxSetting.SetTextureSize failed: {e}")
+    def no_bake(error: str) -> dict[str, Any]:
+        return {"success": False, "manual_step_required": True, "error": error, "instructions": manual,
+                "notes": [], "candidates_inspected": inspected}
 
-    # --- Step 2: Drive the Qt UI to trigger Skin Editor Bake ---
     try:
         from PySide2 import QtWidgets  # type: ignore
+    except ImportError as e:
+        return no_bake(f"PySide2 not available: {e}")
+    try:
         app = QtWidgets.QApplication.instance()
         if app is None:
-            return {
-                "success": False,
-                "manual_step_required": True,
-                "error": "QApplication.instance() returned None",
-                "instructions": (
-                    "Open CC5 -> Modify panel -> Skin Editor -> set Texture Size = "
-                    f"{resolution} -> click Apply / Bake."
-                ),
-                "notes": notes,
-            }
-
-        candidates: list[QtWidgets.QAction] = []
-        # Search all QActions in any widget
-        for w in app.allWidgets():
+            return no_bake("QApplication.instance() returned None")
+        candidates: list[tuple[int, int, Any, str, str]] = []  # (rank, order found, action, text, objectName)
+        seen: set[tuple[str, str]] = set()
+        for widget in app.allWidgets():
             try:
-                for action in w.actions():
-                    text = (action.text() or "").strip()
-                    obj = (action.objectName() or "").strip()
-                    blob = f"{text} {obj}".lower()
-                    # Reject destructive opposites
-                    if any(neg in blob for neg in ["remove skingen", "remove skin gen", "delete skin"]):
-                        continue
-                    if any(k in blob for k in [
-                        "bake skin", "bake texture", "bake textures",
-                        "apply skin", "apply skingen", "apply skin gen",
-                        "skin editor", "skin gen", "skingen",
-                    ]):
-                        candidates.append(action)
+                actions = list(widget.actions())
             except Exception:
                 continue
-
-        # Prefer "Bake" > "Apply" > "Skin Editor" > "Skin Gen"
-        def _bake_score(a: QtWidgets.QAction) -> int:
-            t = (a.text() or "").lower()
-            o = (a.objectName() or "").lower()
-            b = f"{t} {o}"
-            if "bake" in b:
-                return 0
-            if "apply" in b:
-                return 1
-            if "skin editor" in b:
-                return 2
-            return 3
-
+            for action in actions:
+                try:
+                    text = (action.text() or "").strip()
+                    name = (action.objectName() or "").strip()
+                except Exception:
+                    continue
+                blob = f"{text} {name}".lower()
+                if "skin" in blob and (text, name) not in seen and len(inspected) < MAX_INSPECTED_BAKE_ACTIONS:
+                    seen.add((text, name))
+                    inspected.append({"text": text, "objectName": name})
+                # A disabled action's trigger() does nothing, so the reply would claim a window that never opened.
+                try:
+                    enabled = bool(action.isEnabled())
+                except Exception:
+                    enabled = False
+                if not enabled or any(word in blob for word in _BAKE_ACTION_SKIP_WORDS):
+                    continue
+                if any(key in blob for key in _BAKE_ACTION_KEYWORDS):
+                    candidates.append((_bake_rank(blob), len(candidates), action, text, name))
         if not candidates:
-            return {
-                "success": False,
-                "manual_step_required": True,
-                "error": "Could not locate Skin Editor / Bake QAction in CC5 UI",
-                "instructions": (
-                    "Open CC5 -> Modify panel -> Skin Editor -> set Texture Size = "
-                    f"{resolution} -> click Apply / Bake."
-                ),
-                "notes": notes,
-                "candidates_inspected": [
-                    {"text": (a.text() or ""), "objectName": (a.objectName() or "")}
-                    for a in candidates[:20]
-                ],
-            }
-
-        candidates.sort(key=_bake_score)
-        chosen = candidates[0]
-        notes.append(
-            "candidates considered: " + ", ".join(
-                f"'{(a.text() or '').strip()}'" for a in candidates[:10]
-            )
-        )
-        # Async trigger to avoid bridge deadlock if a modal opens
-        try:
-            from PySide2 import QtCore  # type: ignore
-            QtCore.QTimer.singleShot(50, chosen.trigger)
-            notes.append("Scheduled trigger() via QTimer.singleShot(50ms)")
-        except Exception:
-            chosen.trigger()
-        notes.append(f"Triggered QAction: text='{chosen.text()}' objectName='{chosen.objectName()}'")
-
-        return {
-            "success": True,
-            "resolution": resolution,
-            "triggered_action": chosen.text(),
-            "manual_step_required": True,
-            "instructions": (
-                "Skin Editor / Skin Gen panel was opened. CC5 does not expose a "
-                f"one-shot Bake API — set Texture Size = {resolution} and click "
-                "Apply / Bake in the Skin Editor panel."
-            ),
-            "notes": notes,
-        }
-    except ImportError as e:
-        return {
-            "success": False,
-            "manual_step_required": True,
-            "error": f"PySide2 not available: {e}",
-            "instructions": (
-                "Open CC5 -> Modify panel -> Skin Editor -> set Texture Size = "
-                f"{resolution} -> click Apply / Bake."
-            ),
-            "notes": notes,
-        }
+            return no_bake(BAKE_COMMAND_MISSING)
+        _rank, _order, chosen, text, name = min(candidates, key=lambda c: (c[0], c[1]))
+        label = text or name
+        # Directly, not QTimer.singleShot: the deferred trigger let the reply go out before the action ran, so it
+        # could not say what opened, and the bridge then took the window for the user's own (F-84).
+        chosen.trigger()
+        return {"success": True, "resolution": resolution, "triggered_action": label, "manual_step_required": True,
+                "instructions": f"CC5 opened '{label}'. Set the texture size to {resolution} there and run the bake: "
+                                "the plugin cannot press it.",
+                "notes": [f"Triggered QAction: text='{text}' objectName='{name}'"],
+                "candidates_inspected": inspected}
     except Exception as e:
-        return {
-            "success": False,
-            "manual_step_required": True,
-            "error": str(e),
-            "instructions": (
-                "Open CC5 -> Modify panel -> Skin Editor -> set Texture Size = "
-                f"{resolution} -> click Apply / Bake."
-            ),
-            "notes": notes,
-        }
+        return no_bake(str(e))
 
 
 # --- Mesh-to-MetaHuman Head Export ---
@@ -3685,6 +3999,9 @@ def silent_install_filter(output_dir: str, character_name: str) -> dict[str, Any
             r = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq CharacterCreator.exe", "/FO", "CSV", "/NH"],
                 capture_output=True, text=True, timeout=5,
+                # F-64: CC5 is a GUI process, so without this a console window could open over CC5 (and over the
+                # save dialog this handler is about to type into).
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
             line = r.stdout.strip().splitlines()[0] if r.stdout else ""
             cc_pid = int(line.split(",")[1].strip('"')) if "," in line else 0
@@ -4510,7 +4827,9 @@ def _auto_patch_server() -> None:
         "create_default_avatar": lambda p: _self.create_default_avatar(),
         "delete_avatar":         lambda p: _self.delete_avatar(p.get("name", "")),
         "load_asset":            lambda p: _self.load_asset(p["file_path"], p.get("target")),
-        "export_fbx":            lambda p: _self.export_fbx(
+        # F-86: a failed export that may have cleared CC5's undo history says so in its error text (HTTP 400 keeps
+        # only that); the same wrapper as server.ACTION_MAP's.
+        "export_fbx":            lambda p: _self.with_undo_history_sentence(_self.export_fbx(
             p["output_path"],
             int(p.get("options", 0)),
             target_tool=p.get("target_tool", ""),
@@ -4526,7 +4845,7 @@ def _auto_patch_server() -> None:
             motion_range=p.get("motion_range"),
             convert_image_format=bool(p.get("convert_image_format", False)),
             texture_size=(int(p["texture_size"]) if p.get("texture_size") is not None else None),
-        ),
+        )),
         "capture_viewport":      lambda p: _self.capture_viewport(p.get("output_path", ""), int(p.get("width", 1280)), int(p.get("height", 720))),
         "set_subdivision_level": lambda p: _self.set_subdivision_level(int(p["level"])),
         "undo":                  lambda p: _self.undo(),

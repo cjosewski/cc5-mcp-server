@@ -8,10 +8,20 @@ from unittest import mock
 import _support
 
 
+def mark_unity_project(project: str) -> str:
+    """Write <project>/ProjectSettings/ProjectVersion.txt, the file that makes a folder a Unity project."""
+    marker = os.path.join(project, "ProjectSettings", "ProjectVersion.txt")
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("m_EditorVersion: 6000.2.10f1\n")
+    return marker
+
+
 class ExportForUnityTest(unittest.TestCase):
     def setUp(self):
         self.pipe = _support.fresh_import("cc5_pipeline")
         self.root = tempfile.mkdtemp()
+        mark_unity_project(os.path.join(self.root, "MyGame"))
         self.assets = os.path.join(self.root, "MyGame", "Assets", "Characters")
 
     def test_rejects_folder_outside_assets(self):
@@ -139,3 +149,66 @@ class ExportForUnityTest(unittest.TestCase):
         r = self._export_with(lambda path, flags, **kw: {
             "success": False, "error": "ExportFbxFile reported an error status", "notes": ["n"]})
         self.assertEqual(r, {"success": False, "error": "ExportFbxFile reported an error status", "notes": ["n"]})
+
+    # F-76: an Assets folder with no Unity project around it is refused; the export never creates that folder.
+
+    def test_refuses_an_assets_folder_without_a_unity_project(self):
+        project = os.path.join(self.root, "NotAProject")
+        folder = os.path.join(project, "Assets", "Patients")
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()), \
+                mock.patch.object(self.pipe.cc5_api, "export_fbx") as exp:
+            r = self.pipe.export_for_unity(folder, "Patient_01")
+        marker = os.path.join(project, "ProjectSettings", "ProjectVersion.txt")
+        self.assertEqual(r, {"success": False, "error": (
+            f"Folder is not inside a Unity project: {folder}. {marker} does not exist (a Unity project has "
+            "ProjectSettings\\ProjectVersion.txt beside its Assets folder)")})
+        exp.assert_not_called()
+        self.assertFalse(os.path.exists(project))
+
+    def test_accepts_a_project_nested_in_another_folders_assets(self):
+        inner = os.path.join(self.root, "Outer", "Assets", "Inner")
+        mark_unity_project(inner)
+        self.assertIsNone(self.pipe.unity_folder_error(os.path.join(inner, "Assets", "Patients")))
+        self.assertIsNone(self.pipe.unity_folder_error(self.assets))
+        self.assertEqual(self.pipe.unity_folder_error(os.path.join(self.root, "Elsewhere")),
+                         f"Folder must be inside a Unity project's Assets folder: {os.path.join(self.root, 'Elsewhere')}")
+        # The plain segment check stays as it was (batch.ts and the TS tools still use it for their own checks).
+        self.assertTrue(self.pipe.is_in_unity_assets(os.path.join(self.root, "NotAProject", "Assets")))
+
+    def test_refusal_names_the_innermost_missing_marker(self):
+        folder = os.path.join(self.root, "A", "Assets", "B", "Assets", "C")
+        error = self.pipe.unity_folder_error(folder)
+        self.assertIn(os.path.join(self.root, "A", "Assets", "B", "ProjectSettings", "ProjectVersion.txt") + " does not "
+                      "exist", error)
+        # An enclosing project counts too.
+        mark_unity_project(os.path.join(self.root, "A"))
+        self.assertIsNone(self.pipe.unity_folder_error(folder))
+
+    def test_remove_tearline_occlusion_is_passed_only_when_asked(self):
+        def fake_export(path, flags, **kw):
+            open(path, "wb").close()
+            return {"success": True, "flags_applied": True, "notes": []}
+
+        for asked in (False, True):
+            with self.subTest(asked=asked), \
+                    mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()), \
+                    mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake_export) as exp:
+                r = self.pipe.export_for_unity(self.assets, "Patient_01", remove_tearline_occlusion=asked)
+            self.assertIs(exp.call_args.kwargs["remove_tearline_occlusion"], asked)
+            self.assertIs(r["remove_tearline_occlusion"], asked)
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()), \
+                mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake_export) as exp:
+            self.pipe.export_for_unity(self.assets, "Patient_02")
+        self.assertIs(exp.call_args.kwargs["remove_tearline_occlusion"], False)
+
+    def test_an_export_reports_injuries_even_when_there_are_none(self):
+        def fake_export(path, flags, **kw):
+            open(path, "wb").close()
+            return {"success": True, "flags_applied": True, "notes": []}
+
+        with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=mock.MagicMock()), \
+                mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake_export):
+            r = self.pipe.export_for_unity(self.assets, "Patient_01")
+        self.assertTrue(r["success"])
+        self.assertEqual({k: r["injuries"][k] for k in ("choice", "not_carried", "unverified", "done", "failed")},
+                         {"choice": None, "not_carried": [], "unverified": [], "done": [], "failed": []})

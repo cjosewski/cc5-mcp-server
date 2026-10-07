@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -89,6 +91,60 @@ class CaptureUndoTest(unittest.TestCase):
         with mock.patch.object(self.api, "_capture_window_screenshot"):
             self.api.capture_viewport(self.out, 1280, 720)
         self.rl.RGlobal.Undo.assert_not_called()
+
+
+class UndoMarksOverlayRecordsStaleTest(unittest.TestCase):
+    """P-1: after an undo or a redo, the bridge's overlay records (cc5_pipeline.BLEND_SOURCES) may no longer match what
+    CC5 shows, so both mark them stale (cc5_pipeline.mark_blend_sources_stale). cc5_pipeline is found in sys.modules
+    when they run: it imports cc5_api, so cc5_api never imports it."""
+
+    def setUp(self):
+        self.rl = _support.install_fake_rlpy()
+        self.api = _support.fresh_import("cc5_api")
+        p = mock.patch.object(self.api, "get_first_avatar", return_value=None)
+        p.start()
+        self.addCleanup(p.stop)
+        self.events: list = []
+        self.rl.RGlobal.Undo.side_effect = lambda: self.events.append("Undo")
+        self.rl.RGlobal.Redo.side_effect = lambda: self.events.append("Redo")
+        self.pipe = types.ModuleType("cc5_pipeline")
+        self.pipe.mark_blend_sources_stale = lambda: self.events.append("stale")
+        m = mock.patch.dict(sys.modules, {"cc5_pipeline": self.pipe})
+        m.start()
+        self.addCleanup(m.stop)
+
+    def test_undo_and_redo_mark_the_records_stale_after_the_rlpy_call(self):
+        self.assertTrue(self.api.undo()["success"])
+        self.assertTrue(self.api.redo()["success"])
+        self.assertEqual(self.events, ["Undo", "stale", "Redo", "stale"])
+
+    def test_a_capture_and_a_refused_redo_mark_nothing(self):
+        # A capture undoes only its own step; a redo refused for it calls nothing in CC5 (F-55).
+        self.api._drop_capture_undo_steps(1)
+        self.assertFalse(self.api.redo()["success"])
+        self.assertEqual(self.events, ["Undo"])
+
+    def test_a_failed_undo_marks_nothing(self):
+        self.rl.RGlobal.Undo.side_effect = RuntimeError("SWIG")
+        self.assertFalse(self.api.undo()["success"])
+        self.assertEqual(self.events, [])
+
+    def test_undo_and_redo_never_fail_because_of_the_records(self):
+        def broken():
+            raise RuntimeError("records")
+
+        self.pipe.mark_blend_sources_stale = broken
+        self.assertTrue(self.api.undo()["success"])
+        self.assertTrue(self.api.redo()["success"])
+        self.assertEqual(self.events, ["Undo", "Redo"])
+
+    def test_without_the_module_or_the_function_nothing_is_marked(self):
+        # An older plugin copy: cc5_pipeline without mark_blend_sources_stale, or not loaded at all.
+        del self.pipe.mark_blend_sources_stale
+        self.assertTrue(self.api.undo()["success"])
+        del sys.modules["cc5_pipeline"]
+        self.assertTrue(self.api.redo()["success"])
+        self.assertEqual(self.events, ["Undo", "Redo"])
 
 
 if __name__ == "__main__":

@@ -159,6 +159,10 @@ class LoadAssetTargetTest(unittest.TestCase):
         self.scene = FakeScene(self.rl, avatars=[self.kevin, self.amy])
         self.rl.RFileIO.LoadFile.return_value.IsError.return_value = False
         self.dir = tempfile.mkdtemp()
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("CC5_CHANGE_CHECK", None)  # the F-34 comparison is on, whatever the developer's shell says
 
     def _file(self, name):
         p = os.path.join(self.dir, name)
@@ -168,7 +172,10 @@ class LoadAssetTargetTest(unittest.TestCase):
     def test_character_content_is_aimed_at_the_first_avatar_and_selects_it(self):
         path = self._file("_Green CH1 Eyes.ccEye")
         r = self.api.load_asset(path)
-        self.assertEqual(r, {"success": True, "path": path, "target": "Kevin"})
+        self.assertEqual((r["success"], r["path"], r["target"]), (True, path, "Kevin"))
+        # F-34: every character-content load is compared before and after (tests/py/test_changes.py).
+        self.assertIn("changes", r)
+        self.assertIs(r["changes"]["complete"], True, r)
         self.rl.RFileIO.LoadFile.assert_called_once_with(path, True, self.kevin)
         self.assertEqual(self.scene.selection, [self.kevin])
 
@@ -228,7 +235,9 @@ class LoadAssetTargetTest(unittest.TestCase):
         # Live: every hairstyle CC5 5.13 ships is .rlHair, and load_asset refused it outright.
         path = self._file("Buzz Cut.rlHair")
         r = self.api.load_asset(path)
-        self.assertEqual(r, {"success": True, "path": path, "target": "Kevin"})
+        self.assertEqual((r["success"], r["path"], r["target"]), (True, path, "Kevin"))
+        self.assertIn("changes", r)
+        self.assertIs(r["changes"]["complete"], True, r)
         self.rl.RFileIO.LoadFile.assert_called_once_with(path, True, self.kevin)
 
     def test_other_rl_files_stay_refused(self):

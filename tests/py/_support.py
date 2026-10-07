@@ -11,7 +11,7 @@ from unittest import mock
 os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="cc5-pytest-")
 
 PLUGIN_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "cc5-plugin"))
-PLUGIN_MODULES = ("server", "cc5_api", "cc5_pipeline", "cc5_skin", "cc5_builder", "cc5_scene")
+PLUGIN_MODULES = ("server", "cc5_api", "cc5_pipeline", "cc5_skin", "cc5_builder", "cc5_scene", "cc5_changes")
 
 
 def assert_token_dir_is_temp() -> None:

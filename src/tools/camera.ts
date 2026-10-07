@@ -38,7 +38,7 @@ export function registerCameraTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "frame_camera",
-    "Move the viewport camera to a preset view of a character. Use 'face' to frame the head close-up (so eye/lip/skin color and facial morphs are actually visible in capture_viewport — a full-body shot is too small), 'home' for the whole character, 'all' for the whole scene, or front/back/left/right/top/bottom/focus (several views together check that clothing and hair fit). CC5 frames the selected object, so the character (target, else the selected character, else the first) is selected for the move and the previous selection is put back.",
+    "Move the viewport camera to a preset view of a character. Use 'face' to frame the head close-up (so eye/lip/skin color and facial morphs are actually visible in capture_viewport — a full-body shot is too small), 'home' for the whole character, 'all' for the whole scene, or front/back/left/right/top/bottom/focus (to check that clothing, hats and hair fit, use check_fit). CC5 frames the selected object, so the character (target, else the selected character, else the first) is selected for the move and the previous selection is put back.",
     {
       view: z.enum(["face", "front", "back", "left", "right", "top", "bottom", "home", "all", "focus"])
         .default("face").describe("Preset view. 'face' = head close-up, 'home' = whole character, 'all' = whole scene."),

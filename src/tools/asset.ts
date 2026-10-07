@@ -6,7 +6,20 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall, errorResult } from "../util.js";
+import { bridgeCall, bridgeErrorResult, errorResult } from "../util.js";
+import { pendingResult, runJob } from "../jobs.js";
+import { formatLoadResult, type LoadJobResult } from "../change-report.js";
+import { FIT_RULE, NOT_A_CHECK, PICK_RULE, PRESET_RULE } from "../prompts/content-rules.js";
+import { withUndoHistoryLine } from "./unity.js";
+
+const LOAD_ASSET_DESCRIPTION =
+  "Load a CC5 asset file into the scene. Supports .iAvatar, .ccm (character), .iClothes (clothing), .rlHair " +
+  "(hairstyles; find them with search_content or browse_content 'hair'), .ccSkinGenPreset (makeup and SkinGen " +
+  "presets), .iProp (prop), and other CC5 formats. Character content (.ccEye, .ccCloth, .ccShoes, .ccAcc, .ccSkin, " +
+  ".ccSkinGenPreset, .ccTeeth, .rlHair, .iClothes, .iHair, ...) is applied to one character: `target` by name, else " +
+  "the character selected in CC5, else the first; that character becomes selected. With several characters selected " +
+  "(or two sharing the target name) it is refused: pass a unique target. Runs as a background job; if CC5 asks a " +
+  "question (e.g. Replace / Material Only), the reply shows it. " + [PICK_RULE, PRESET_RULE, FIT_RULE, NOT_A_CHECK].join(" ");
 
 const ALLOWED_ASSET_EXTENSIONS = new Set([
   ".iavatar", ".ccavatar", ".ccproject", ".ccm",
@@ -55,23 +68,30 @@ function validateExportPath(filePath: string): string | null {
 export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "load_asset",
-    "Load a CC5 asset file into the scene. Supports .iAvatar, .ccm (character), .iClothes (clothing), .rlHair (hairstyles; find them with search_content or browse_content 'hair'), .iProp (prop), and other CC5 formats. Character content (.ccEye, .ccCloth, .ccShoes, .ccAcc, .ccSkin, .ccTeeth, .rlHair, .iClothes, .iHair, ...) is applied to one character: `target` by name, else the character selected in CC5, else the first; that character becomes selected. With several characters selected (or two sharing the target name) it is refused: pass a unique target.",
+    LOAD_ASSET_DESCRIPTION,
     {
       file_path: z.string().describe("Absolute path to the CC5 asset file (e.g., 'C:/Assets/MyChar.iAvatar')"),
       target: z.string().min(1).max(256).optional()
         .describe("Character to apply character content to (a list_avatars name). Only for character content; refused for scene content such as .ccCam or .iProp."),
     },
-    async ({ file_path, target }) => {
+    async ({ file_path, target }, extra) => {
       const pathError = validateAssetPath(file_path);
       if (pathError) {
         return errorResult(pathError);
       }
-      return bridgeCall(
-        () => (target === undefined ? bridge.loadAsset(file_path) : bridge.loadAsset(file_path, target)),
-        (result) => result.success
-          ? `Asset loaded: ${file_path}${result.target ? ` (applied to ${result.target})` : ""}`
-          : `Failed to load asset: ${result.error}`,
-      );
+      // A job, not the direct call: a dressed .ccAvatar can outlast the bridge's 30 s limit, and a question CC5 asks
+      // (Replace / Material Only) comes back as the job's dialog. A load still running returns its job id; job_status
+      // then shows the same report (F-34: what the load changed besides what it was for).
+      try {
+        const out = await runJob(bridge, "load_asset", target === undefined ? { file_path } : { file_path, target },
+          { signal: extra?.signal });
+        if (!out.done) return pendingResult(out);
+        const raw = out.result;
+        const result = (typeof raw === "object" && raw !== null ? raw : {}) as LoadJobResult;
+        return formatLoadResult(out.failed ? { ...result, success: false } : result, file_path);
+      } catch (err) {
+        return bridgeErrorResult(err);
+      }
     }
   );
 
@@ -120,7 +140,8 @@ export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
         (result) => {
           if (!result.success) return `Export failed: ${result.error}${result.notes ? `\nNotes: ${result.notes.join("; ")}` : ""}`;
           const notes = result.notes && result.notes.length ? `\nNotes: ${result.notes.join("; ")}` : "";
-          return `FBX exported to: ${output_path} (target=${result.target_tool ?? "default"})${notes}`;
+          // F-86: the last line says when CC5 cleared its undo history with this export.
+          return withUndoHistoryLine(`FBX exported to: ${output_path} (target=${result.target_tool ?? "default"})${notes}`, result);
         },
       );
     }

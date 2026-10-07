@@ -186,3 +186,12 @@ describe("frame_camera frames a character (F-45)", () => {
     expect(description).toContain("CC5 frames the selected object");
   });
 });
+
+describe("frame_camera points fit checks to check_fit (F-44)", () => {
+  it("names check_fit instead of suggesting several views by hand", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "frame_camera")?.[1] as string;
+    expect(description).toContain("check_fit");
+    expect(description).toContain("CC5 frames the selected object");
+    expect(description).not.toContain("several views together");
+  });
+});

@@ -2,8 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect } from "vitest";
-import { readImageSize } from "../src/image-info.js";
-import { tiff, bmp } from "./helpers/images.js";
+import { readImageSize, pngSize } from "../src/image-info.js";
+import { tiff, bmp, png } from "./helpers/images.js";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "img-"));
 
@@ -74,5 +74,23 @@ describe("readImageSize", () => {
 
   it("returns null for unknown data", () => {
     expect(readImageSize(write("a.bin", [1, 2, 3]))).toBeNull();
+  });
+});
+
+describe("pngSize", () => {
+  it("reads the width and height from a PNG's IHDR", () => {
+    expect(pngSize(png(1280, 720))).toEqual({ width: 1280, height: 720 });
+    expect(pngSize(png(2575, 1407, 3))).toEqual({ width: 2575, height: 1407 });
+  });
+
+  it("returns null for a buffer shorter than the IHDR, a JPEG and an empty buffer", () => {
+    expect(pngSize(png(1280, 720).subarray(0, 23))).toBeNull();
+    const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]), Buffer.alloc(26)]);
+    expect(pngSize(jpeg)).toBeNull();
+    expect(pngSize(Buffer.alloc(0))).toBeNull();
+  });
+
+  it("is how readImageSize reads a PNG file", () => {
+    expect(readImageSize(write("b.png", png(1280, 720)))).toEqual({ width: 1280, height: 720 });
   });
 });

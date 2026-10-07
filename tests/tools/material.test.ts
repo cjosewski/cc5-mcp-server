@@ -352,6 +352,72 @@ describe("get_shader_parameters handler", () => {
   });
 });
 
+// F-69 (P6-6): CC4 Kevin's Std_Skin_Head listed 'SSS Metallic Threshold = []' and the padding entries as settings.
+describe("get_shader_parameters: entries that are not settings are listed apart (F-69)", () => {
+  const shown = async (r: ShaderParameters): Promise<string> => {
+    bridge.getShaderParameters.mockResolvedValue(r);
+    const handler = server.getRegisteredTool("get_shader_parameters");
+    const result = await handler({ mesh_name: "CC_Base_Body", material_name: "Std_Skin_Head" });
+    return result.content[0].text;
+  };
+  const lastLine = (text: string): string => {
+    const lines = text.split("\n");
+    return lines[lines.length - 1];
+  };
+  const head: ShaderParameters = {
+    success: true, mesh: "CC_Base_Body", material: "Std_Skin_Head", shader: "Digital_Human Head",
+    parameters: { "SSS Radius": [1.5] },
+  };
+
+  it("names CC5's no-value entries and the shader padding on a 'Left out' line", async () => {
+    const text = await shown({
+      ...head, no_value: ["SSS Metallic Threshold"], filler: ["padding1", "padding Last4"], unreadable: [],
+    });
+    expect(lastLine(text)).toBe("Left out (not settings): SSS Metallic Threshold (CC5 returns no value for it, " +
+      "so it cannot be set); padding1, padding Last4 (shader padding)");
+  });
+
+  it("words several no-value entries in the plural", async () => {
+    const text = await shown({ ...head, no_value: ["A", "B"], filler: [], unreadable: [] });
+    expect(lastLine(text)).toBe("Left out (not settings): A, B (CC5 returns no value for them, so they cannot be set)");
+  });
+
+  it("names entries CC5 could not read", async () => {
+    expect(lastLine(await shown({ ...head, no_value: [], filler: [], unreadable: ["Broken"] })))
+      .toBe("Left out (not settings): Broken (CC5 could not read it)");
+    expect(lastLine(await shown({ ...head, no_value: [], filler: [], unreadable: ["Bad", "Broken"] })))
+      .toBe("Left out (not settings): Bad, Broken (CC5 could not read them)");
+  });
+
+  it("counts only the settable parameters", async () => {
+    const text = await shown({ ...head, no_value: ["SSS Metallic Threshold"], filler: ["padding1"], unreadable: [] });
+    expect(text).toContain("(1 params):");
+    expect(text).toContain("  - SSS Radius = [1.500]");
+    expect(text).not.toContain("- padding1");
+  });
+
+  it("adds the line after the zero-parameter text too", async () => {
+    const text = await shown({
+      success: true, material: "Std_Tongue", shader: "Pbr", parameters: {}, no_value: [], filler: ["padding1"],
+      unreadable: [],
+    });
+    expect(text).toBe("Std_Tongue: no shader parameters (shader: Pbr).\nLeft out (not settings): padding1 (shader padding)");
+  });
+
+  it("prints no line for a result without the lists (an older plugin) or with empty lists", async () => {
+    expect(await shown(head)).not.toContain("Left out");
+    expect(await shown({ ...head, no_value: [], filler: [], unreadable: [] })).not.toContain("Left out");
+  });
+
+  it("both shader tools say the left-out entries are not settings", () => {
+    for (const name of ["get_shader_parameters", "set_shader_parameter"]) {
+      const description = server.tool.mock.calls.find((c) => c[0] === name)?.[1] as string;
+      expect(description).toContain(
+        "Parameters CC5 returns no value for and the shader's padding entries are listed apart: they are not settings.");
+    }
+  });
+});
+
 // ── set_shader_parameter ──────────────────────────────────────────────────────
 
 describe("set_shader_parameter handler", () => {

@@ -449,6 +449,36 @@ describe("CC5Bridge.loadAsset", () => {
   });
 });
 
+// ── loadTexture ───────────────────────────────────────────────────────────────
+
+describe("CC5Bridge.loadTexture", () => {
+  it("sends no strength key when none is given", async () => {
+    mockFetch<OperationResult>({ result: { success: true } });
+    await bridge.loadTexture("CC_Base_Body", "Std_Skin_Body", "normal", "C:/t/n.png");
+    const call = vi.mocked(fetch).mock.calls[0];
+    expect(call[0]).toBe("http://localhost:5101/pipeline/load_texture");
+    const body = JSON.parse((call[1] as RequestInit).body as string);
+    expect(body).toEqual({ mesh_name: "CC_Base_Body", material_name: "Std_Skin_Body", channel: "normal", image_path: "C:/t/n.png" });
+    expect(body).not.toHaveProperty("strength");
+  });
+
+  it("sends the diffuse_blend strength when given, and returns the read-back", async () => {
+    mockFetch({ result: { success: true, strength: 0.3, read: 0, stale: true } });
+    const r = await bridge.loadTexture("CC_Base_Body", "Std_Skin_Leg", "diffuse_blend", "C:/t/o.png", 30);
+    const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+    expect(body).toEqual({ mesh_name: "CC_Base_Body", material_name: "Std_Skin_Leg", channel: "diffuse_blend",
+      image_path: "C:/t/o.png", strength: 30 });
+    expect(r).toEqual({ success: true, strength: 0.3, read: 0, stale: true });
+  });
+
+  it("sends a strength of 0, which hides the layer", async () => {
+    mockFetch<OperationResult>({ result: { success: true } });
+    await bridge.loadTexture("CC_Base_Body", "Std_Skin_Leg", "diffuse_blend", "C:/t/o.png", 0);
+    const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string);
+    expect(body.strength).toBe(0);
+  });
+});
+
 // ── selection ─────────────────────────────────────────────────────────────────
 
 describe("CC5Bridge selection", () => {

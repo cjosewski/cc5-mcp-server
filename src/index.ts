@@ -19,6 +19,7 @@ import { registerAssetTools } from "./tools/asset.js";
 import { registerCharacterTools } from "./tools/character.js";
 import { registerEditTools } from "./tools/edit.js";
 import { registerCameraTools } from "./tools/camera.js";
+import { registerFitTools } from "./tools/fit.js";
 import { registerLightTools } from "./tools/light.js";
 import { registerExpressionTools } from "./tools/expression.js";
 import { registerMaterialTools } from "./tools/material.js";
@@ -38,12 +39,13 @@ import { registerDialogTools } from "./tools/dialog.js";
 import { registerBatchTools } from "./tools/batch.js";
 import { registerMorphResources } from "./resources/morphs.js";
 import { registerCreateCharacterPrompt } from "./prompts/create-character.js";
+import { SERVER_INSTRUCTIONS } from "./prompts/content-rules.js";
 
 async function main() {
-  const server = new McpServer({
-    name: "cc5-mcp-server",
-    version: "1.1.0",
-  });
+  // The protocol rules (src/prompts/content-rules.ts) reach the agent as the MCP server instructions when the session
+  // starts. Claude Code cuts server instructions at about 2,000 characters, so content-rules.test.ts keeps them below
+  // that.
+  const server = new McpServer({ name: "cc5-mcp-server", version: "1.1.0" }, { instructions: SERVER_INSTRUCTIONS });
 
   // Bridge to CC5's Python plugin HTTP server
   const bridge = new CC5Bridge(process.env.CC5_BRIDGE_URL);
@@ -55,6 +57,7 @@ async function main() {
   registerCharacterTools(server, bridge);
   registerEditTools(server, bridge);
   registerCameraTools(server, bridge);
+  registerFitTools(server, bridge);
   registerLightTools(server, bridge);
   registerExpressionTools(server, bridge);
   registerMaterialTools(server, bridge);

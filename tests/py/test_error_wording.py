@@ -35,6 +35,31 @@ class ErrorWordingTest(unittest.TestCase):
         self.assertIn("Close matches: Original Roughness Strength", r["error"])
         self.assertIn("get_shader_parameters", r["error"])
 
+    def _set_unknown(self, names, parameter_name):
+        avatar = mock.MagicMock()
+        mat = avatar.GetMaterialComponent.return_value
+        mat.GetShaderParameterNames.return_value = names
+        with mock.patch.object(self.api, "get_first_avatar", return_value=avatar), \
+                mock.patch.object(self.api, "_get_valid_mesh_material", return_value=(mat, None)):
+            r = self.api.set_shader_parameter("CC_Base_Body", "Std_Skin_Head", parameter_name, [0.4])
+        mat.SetShaderParameter.assert_not_called()
+        return r["error"]
+
+    def test_close_matches_keep_only_the_real_match(self):
+        # F-64 (live): at difflib's default cutoff the typo also offered Keep Original Roughness (ratio 0.69) and
+        # Chin Roughness Scale (0.61) next to Original Roughness Strength (0.98).
+        error = self._set_unknown(["Original Roughness Strength", "Keep Original Roughness", "Chin Roughness Scale",
+                                   "_Specular"], "Original Roughnes Strength")
+        self.assertEqual(error, "Shader parameter not found: Original Roughnes Strength on CC_Base_Body / "
+                                "Std_Skin_Head. Close matches: Original Roughness Strength. get_shader_parameters "
+                                "shows the parameter names.")
+
+    def test_padding_is_never_suggested(self):
+        # F-69: padding entries are shader filler, not settings ('paddin1' is 0.93 like 'padding1').
+        error = self._set_unknown(["padding1", "padding Last4", "SSS Radius"], "paddin1")
+        self.assertNotIn("Close matches", error)
+        self.assertNotIn("padding", error)
+
     def test_remove_scene_item_says_what_is_worn(self):
         # Live P5-70: "Item not found: nope" alone.
         boxers = mock.MagicMock()

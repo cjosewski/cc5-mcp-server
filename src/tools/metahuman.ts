@@ -2,7 +2,7 @@
  * Mesh-to-MetaHuman pipeline helpers for CC5.
  *
  * Automates the Solomon Jagwe workflow chapters 3-1/3-2/4:
- *  - bake_skin_textures: Skin Editor -> Bake at given resolution
+ *  - bake_skin_textures: opens CC5's skin bake command if it has one (CC5 5.13 has none), else the manual steps
  *  - export_head_metahuman: File -> Export -> Export Head -> Mesh to MetaHuman
  */
 
@@ -10,9 +10,37 @@ import path from "node:path";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall, errorResult } from "../util.js";
+import type { BakeSkinResult } from "../types.js";
+import { bridgeCall, bridgeErrorResult, errorResult } from "../util.js";
+import { pendingResult, runJob } from "../jobs.js";
 
 const ALLOWED_RESOLUTIONS = [256, 512, 1024, 2048, 4096] as const;
+
+// F-84 (live CC5 5.13): no CC5 command bakes, applies or edits the skin (SkinGen's menu holds About, Online Manual,
+// Video Tutorial and Remove SkinGen Data), so on 5.13 the tool opens nothing and returns the manual steps.
+export const BAKE_SKIN_DESCRIPTION =
+  "Open CC5's skin bake command (Bake / Apply Skin / Skin Editor) if CC5 has one; CC5 has no bake API, so the bake " +
+  "itself is done by hand in CC5. CC5 5.13 has no such command: the tool then opens nothing and returns the manual steps.";
+
+/**
+ * bake_skin_textures' reply (F-84): what CC5 opened, or why nothing was; the manual step; the commands looked at.
+ * A failure that is not the plugin's bake answer (no manual step and no commands looked at, e.g. the open-window guard
+ * failed the job before it ran) is not "no bake command found": its text is shown as CC5 wrote it.
+ */
+export function bakeSkinReply(res: BakeSkinResult): string {
+  const bakeAnswer = res.manual_step_required === true || res.candidates_inspected !== undefined;
+  if (!res.success && !bakeAnswer) return res.error ?? "unknown error";
+  const parts = [res.success
+    ? `Opened in CC5: ${res.triggered_action ?? "(a command without a name)"}`
+    : `No skin bake command found: ${res.error ?? "unknown error"}`];
+  if (res.instructions) parts.push(`Manual step: ${res.instructions}`);
+  const looked = res.candidates_inspected ?? [];
+  if (looked.length) {
+    parts.push(`Commands looked at: ${looked.map((c) => (c.objectName ? `${c.text} (${c.objectName})` : c.text)).join(", ")}`);
+  }
+  if (res.notes && res.notes.length) parts.push(`Notes: ${res.notes.join("; ")}`);
+  return parts.join("\n");
+}
 
 const NULL_BYTE = String.fromCharCode(0);
 
@@ -36,29 +64,26 @@ function validateCharacterName(name: string): string | null {
 export function registerMetaHumanTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "bake_skin_textures",
-    "Trigger CC5's Skin Editor / SkinGen 'Bake Textures' workflow. CC5 does not expose a one-shot bake API, so this tool opens the Skin Editor panel and reports whether manual confirmation is required. Used in Mesh-to-MetaHuman prep (Chapter 3-1).",
+    BAKE_SKIN_DESCRIPTION,
     {
       resolution: z.union([
         z.literal(256), z.literal(512), z.literal(1024), z.literal(2048), z.literal(4096),
       ]).default(4096).describe("Texture resolution to bake at. 4096 (4K) is recommended for MetaHuman."),
     },
-    async ({ resolution }) => bridgeCall(
-      () => bridge.bakeSkinTextures(resolution),
-      (res) => {
-        const parts: string[] = [];
-        if (res.success) {
-          parts.push(`Skin bake initiated at ${res.resolution}px`);
-          if (res.triggered_action) parts.push(`Triggered: ${res.triggered_action}`);
-        } else {
-          parts.push(`Bake automation failed: ${res.error}`);
-        }
-        if (res.manual_step_required && res.instructions) {
-          parts.push(`Manual step: ${res.instructions}`);
-        }
-        if (res.notes && res.notes.length) parts.push(`Notes: ${res.notes.join("; ")}`);
-        return parts.join("\n");
-      },
-    ),
+    async ({ resolution }) => {
+      // A job, not a direct call: a direct call that fails reaches this server as its error text alone, which would
+      // drop the manual steps and the commands looked at (F-84). A window the command opens comes back as its question.
+      try {
+        const out = await runJob(bridge, "bake_skin_textures", { resolution });
+        if (!out.done) return pendingResult(out);
+        const res = (typeof out.result === "object" && out.result !== null ? out.result : {}) as BakeSkinResult;
+        const failed = out.failed || res.success !== true;
+        const text = bakeSkinReply({ ...res, success: !failed });
+        return failed ? errorResult(text) : { content: [{ type: "text" as const, text }] };
+      } catch (e) {
+        return bridgeErrorResult(e);
+      }
+    },
   );
 
   server.tool(

@@ -1,8 +1,10 @@
 """Batch C follow-ups (C2): redo after a capture (F-55), and the F-21 refusals the live check found left."""
 from __future__ import annotations
 
+import ast
 import importlib
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -139,6 +141,8 @@ class RedoThroughCaptureViewportTest(unittest.TestCase):
         self.assertIn("$OutputPath = $env:CC5_CAP_OUT", argv[4])
         self.assertNotIn(self.out, argv[4])  # the path is data, never script text
         self.assertEqual(kwargs["env"]["CC5_CAP_OUT"], self.out)
+        # F-64: no console window may open over CC5 while CopyFromScreen copies that area.
+        self.assertEqual(kwargs["creationflags"], getattr(subprocess, "CREATE_NO_WINDOW", 0))
         script = argv[4]
         self.assertLess(script.index("Add-Type -AssemblyName System.Windows.Forms"),
                         script.index("[System.Windows.Forms.Screen]"))
@@ -273,6 +277,56 @@ class RefusalWordingTest(unittest.TestCase):
                                      "get_shader_parameters on CC_Base_Body / Std_Skin_Head shows the names and how "
                                      "many values each takes.")
 
+    def test_set_skin_shader_suggests_only_the_real_close_match(self):
+        # F-64 (live): at difflib's default cutoff (0.6) the typo also offered Keep Original Roughness (ratio 0.69)
+        # and Chin Roughness Scale (0.61).
+        mat = self._skin({"Original Roughness Strength": [0.85], "Keep Original Roughness": [1.0],
+                          "Chin Roughness Scale": [1.0], "_Specular": [0.45]})
+        r = self.api.set_skin_shader("Original Roughnes Strength", [0.4])
+        self.assertIn("Close matches: Original Roughness Strength.", r["error"])
+        self.assertNotIn("Keep Original Roughness", r["error"])
+        self.assertNotIn("Chin Roughness Scale", r["error"])
+        mat.SetShaderParameter.assert_not_called()
+
+    SKIN_HINT = " get_shader_parameters on CC_Base_Body / Std_Skin_Head shows the names and how many values each takes."
+
+    def test_set_skin_shader_says_when_the_parameter_has_no_value(self):
+        # F-69: CC5 returns [] for some names (CC4 Kevin's 'SSS Metallic Threshold'); "does not take 1 value(s)" misled.
+        no_value = ("'SSS Metallic Threshold' has no value CC5 can read on the skin materials, so it cannot be set."
+                    + self.SKIN_HINT)
+        mat = self._skin({"SSS Metallic Threshold": [], "Original Roughness Strength": [0.85]})
+        r = self.api.set_skin_shader("SSS Metallic Threshold", [0.5])
+        self.assertEqual(r["error"], no_value)
+        # One skin material lacks it and the other holds no value: the same answer.
+        mat.GetShaderParameterNames.side_effect = lambda mesh, m: (
+            ["Original Roughness Strength"] if m == "Std_Skin_Body" else ["SSS Metallic Threshold"])
+        r = self.api.set_skin_shader("SSS Metallic Threshold", [0.5])
+        self.assertEqual(r["error"], no_value)
+        self.assertIn("CC_Base_Body/Std_Skin_Body: no 'SSS Metallic Threshold'", r["skipped"])
+        self.assertIn("CC_Base_Body/Std_Skin_Head: 'SSS Metallic Threshold' has no value", r["skipped"])
+        mat.SetShaderParameter.assert_not_called()
+        self.rl.RGlobal.BeginAction.assert_not_called()
+
+    def test_set_skin_shader_refuses_padding_before_reading_cc5(self):
+        mat = self._skin({"padding1": [0.0, 0.0, 0.0]})
+        r = self.api.set_skin_shader("padding1", [0, 0, 0])
+        self.assertEqual(r, {"success": False,
+                             "error": "'padding1' is shader padding (filler), not a setting, so it is not set."})
+        mat.GetMaterialNames.assert_not_called()
+        mat.SetShaderParameter.assert_not_called()
+
+    def test_set_eye_color_refuses_corneas_whose_iris_colour_has_no_value(self):
+        mat = self.avatar.GetMaterialComponent.return_value
+        params = {"Iris Color": [], "Iris Depth Scale": [0.743]}
+        mat.GetShaderParameterNames.side_effect = lambda mesh, m: list(params)
+        mat.GetShaderParameter.side_effect = lambda mesh, m, n: list(params[n])
+        r = self.api.set_eye_color(0.1, 0.5, 0.2)
+        self.assertFalse(r["success"])
+        self.assertTrue(r["error"].startswith("This character's eyes have no 'Iris Color' shader parameter"), r)
+        self.assertIn("CC_Base_Eye/Std_Cornea_R: 'Iris Color' has no value", r["skipped"])
+        mat.SetShaderParameter.assert_not_called()
+        self.rl.RGlobal.BeginAction.assert_not_called()
+
     def test_set_item_visible_says_what_is_worn(self):
         # Live: "Item not found: nope" alone.
         self.rl.RScene.FindObject.return_value = None
@@ -299,6 +353,36 @@ class RefusalWordingTest(unittest.TestCase):
         r = self.api.load_asset(os.path.join(tempfile.gettempdir(), "box.fbx"))
         self.assertEqual(r["error"], "Disallowed file extension: .fbx (a prop or clothing FBX goes in with import_fbx; "
                                      "save first, CC5 can crash on an FBX import early in a session)")
+
+
+class NoConsoleWindowTest(unittest.TestCase):
+    """F-64: CC5 is a GUI process, so every process the plugin starts must ask for no console window."""
+
+    def _trees(self):
+        for name in sorted(os.listdir(_support.PLUGIN_DIR)):
+            if name.endswith(".py"):
+                # utf-8-sig: Python imports a source file that starts with a UTF-8 BOM; ast.parse of the text does not.
+                with open(os.path.join(_support.PLUGIN_DIR, name), encoding="utf-8-sig") as f:
+                    yield name, ast.parse(f.read(), filename=name)
+
+    def test_every_subprocess_call_passes_creationflags(self):
+        calls: dict[str, int] = {}
+        for name, tree in self._trees():
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+                    self.fail(f"{name}:{node.lineno}: 'from subprocess import' hides calls from this check")
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name == "subprocess" and alias.asname:
+                            self.fail(f"{name}:{node.lineno}: 'import subprocess as {alias.asname}' hides calls "
+                                      "from this check")
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess"):
+                    calls[name] = calls.get(name, 0) + 1
+                    self.assertIn("creationflags", [k.arg for k in node.keywords],
+                                  f"{name}:{node.lineno}: subprocess.{node.func.attr} without creationflags")
+        # The window screenshot fallback and the silent export's tasklist lookup.
+        self.assertGreaterEqual(calls.get("cc5_api.py", 0), 2)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { registerSkinTools } from "../../src/tools/skin.js";
+import { IMAGE_TYPES_TEXT } from "../../src/tools/pipeline.js";
 import { CC5Bridge } from "../../src/cc5-bridge.js";
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
@@ -24,9 +25,14 @@ describe("apply_skin_overlay", () => {
 
   it("says overlays are image files the user provides, not CC5 image_layer content", () => {
     // Live CC5: browse_content('image_layer') lists .iImgLayer stage items, never PNG/JPG/TGA overlays.
-    const description = server.tool.mock.calls.find((c) => c[0] === "apply_skin_overlay")?.[1] as string;
-    expect(description).toContain("PNG/JPG/TGA");
+    const call = server.tool.mock.calls.find((c) => c[0] === "apply_skin_overlay");
+    const description = call?.[1] as string;
+    // F-68: every type the tools accept, and that BMP and TIFF are not yet tested live.
+    expect(description).toContain(`(${IMAGE_TYPES_TEXT}; BMP and TIFF are not yet tested in CC5 5.13)`);
+    expect(description).toContain("not yet tested");
     expect(description).not.toContain("image_layer");
+    const shape = call?.[2] as Record<string, { description?: string }>;
+    expect(shape.image_path.description).toBe(`Absolute path to the overlay image (${IMAGE_TYPES_TEXT})`);
   });
 
   it("applies and lists materials", async () => {
@@ -34,6 +40,30 @@ describe("apply_skin_overlay", () => {
     const r = await server.getRegisteredTool("apply_skin_overlay")({ image_path: "C:/o/bruise.png", region: "head", strength: 70 });
     expect(bridge.applySkinOverlay).toHaveBeenCalledWith("C:/o/bruise.png", "head", 70);
     expect(r.content[0].text).toContain("Std_Skin_Head");
+  });
+
+  // F-65: CC5 reads a new strength back only after it renders.
+  it("keeps today's reply when the plugin sends no read-back", async () => {
+    bridge.applySkinOverlay.mockResolvedValue({ success: true, applied_to: ["Std_Skin_Head"], strengths: {}, stale: [] });
+    const r = await server.getRegisteredTool("apply_skin_overlay")({ image_path: "C:/o/bruise.png", region: "head", strength: 60 });
+    expect(r.content[0].text).toBe("Applied bruise.png at 60% to: Std_Skin_Head");
+  });
+
+  it("says what CC5 reads back when it agrees", async () => {
+    bridge.applySkinOverlay.mockResolvedValue({ success: true, applied_to: ["Std_Skin_Head", "Std_Skin_Body"],
+      strengths: { Std_Skin_Head: 0.6, Std_Skin_Body: 0.6 }, stale: [] });
+    const r = await server.getRegisteredTool("apply_skin_overlay")({ image_path: "C:/o/bruise.png", region: "all", strength: 60 });
+    expect(r.content[0].text).toBe("Applied bruise.png at 60% to: Std_Skin_Head, Std_Skin_Body (CC5 reads back 60%)");
+    expect(r.isError).toBeUndefined();
+  });
+
+  it("names the materials CC5 still reads differently, without calling it a failure", async () => {
+    bridge.applySkinOverlay.mockResolvedValue({ success: true, applied_to: ["Std_Skin_Head", "Std_Skin_Arm"],
+      strengths: { Std_Skin_Head: 0, Std_Skin_Arm: 0.333 }, stale: ["Std_Skin_Head", "Std_Skin_Arm"] });
+    const r = await server.getRegisteredTool("apply_skin_overlay")({ image_path: "C:/o/bruise.png", region: "all", strength: 60 });
+    expect(r.content[0].text).toBe("Applied bruise.png at 60% to: Std_Skin_Head, Std_Skin_Arm. CC5 still reads a different "
+      + "strength on Std_Skin_Head (0%), Std_Skin_Arm (33.3%) until it next renders: capture_viewport shows the overlay.");
+    expect(r.isError).toBeUndefined();
   });
 });
 
@@ -48,6 +78,62 @@ describe("remove_skin_overlay", () => {
     bridge.removeSkinOverlay.mockResolvedValue({ success: true, removed_from: [], no_overlay: ["Std_Skin_Head"] });
     const r = await server.getRegisteredTool("remove_skin_overlay")({ region: "head" });
     expect(r.content[0].text).toBe("No skin overlay to remove in region 'head'");
+  });
+
+  // X-5: the plugin sets the Diffuse Blend strength to 0 on materials without an image too (F-66), inside the
+  // 'Remove Skin Overlay' action: a change and one CC5 undo step, which the reply names.
+  it("says the strength was set to 0, as one CC5 undo step, when no image was removed but a strength was reset", async () => {
+    bridge.removeSkinOverlay.mockResolvedValue({ success: true, removed_from: [], no_overlay: ["Std_Skin_Head", "Std_Skin_Body"],
+      reset: ["Std_Skin_Head", "Std_Skin_Body"] });
+    const r = await server.getRegisteredTool("remove_skin_overlay")({ region: "all" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe("No overlay image in region 'all'; the Diffuse Blend strength was set to 0 on: " +
+      "Std_Skin_Head, Std_Skin_Body (one CC5 undo step).");
+    expect(r.content[0].text).not.toContain("No skin overlay to remove");
+  });
+
+  it("keeps the reset's warnings, and names the removed overlays as before when there were any", async () => {
+    const warning = "WARNING: Std_Skin_Body: strength not reset to 0 (boom)";
+    bridge.removeSkinOverlay.mockResolvedValue({ success: true, removed_from: [], no_overlay: ["Std_Skin_Head", "Std_Skin_Body"],
+      reset: ["Std_Skin_Head"], notes: [warning] });  // the plugin lists a material in reset only when its reset worked
+    const none = await server.getRegisteredTool("remove_skin_overlay")({ region: "all" });
+    expect(none.content[0].text).toBe("No overlay image in region 'all'; the Diffuse Blend strength was set to 0 on: " +
+      `Std_Skin_Head (one CC5 undo step).\n${warning}`);
+    bridge.removeSkinOverlay.mockResolvedValue({ success: true, removed_from: ["Std_Skin_Head"], no_overlay: ["Std_Skin_Body"],
+      reset: ["Std_Skin_Body"] });
+    const some = await server.getRegisteredTool("remove_skin_overlay")({ region: "all" });
+    expect(some.content[0].text).toBe("Removed overlays from: Std_Skin_Head");
+  });
+
+  // F-66: the strength goes back to 0, so a later image on the layer does not show at the old strength.
+  it("appends CC5's warning when a strength was not reset to 0", async () => {
+    const warning = "WARNING: Std_Skin_Head: strength not reset to 0 (AddTextureWeightKey reported an error status)";
+    bridge.removeSkinOverlay.mockResolvedValue({ success: true, removed_from: ["Std_Skin_Head"], no_overlay: [],
+      notes: [warning, "an ordinary note"] });
+    const r = await server.getRegisteredTool("remove_skin_overlay")({ region: "head" });
+    expect(r.content[0].text).toBe(`Removed overlays from: Std_Skin_Head\n${warning}`);
+  });
+});
+
+// TS-2: a {success: false} result comes back as HTTP 400, and only its `error` survives that (cc5-bridge.ts
+// describeHttpError). So the plugin writes what it did change and the WARNING lines into `error`, and the tool shows
+// that text whole.
+describe("remove_skin_overlay through the real bridge client", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows what was removed and the warnings of a failure, carried in CC5's error text", async () => {
+    const warning = "WARNING: Std_Skin_Body: strength not reset to 0 (boom)";
+    const error = `Overlay not removed from: Std_Skin_Arm (x). Removed from: Std_Skin_Body.\n${warning}`;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: false, error,
+      removed_from: ["Std_Skin_Body"], no_overlay: [], notes: [warning] }), { status: 400 })));
+    const live = createMockServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerSkinTools(live as any, new CC5Bridge("http://127.0.0.1:5101"));
+    const r = await live.getRegisteredTool("remove_skin_overlay")({ region: "all" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(error);
+    expect(r.content[0].text).toContain("Removed from: Std_Skin_Body.");
+    expect(r.content[0].text).toContain(warning);
   });
 });
 
@@ -94,6 +180,19 @@ describe("apply_skin_overlay through the real bridge client", () => {
     // C2 (F-21): CC5's own refusal is shown as CC5 wrote it, without "CC5 bridge error".
     expect(r.content[0].text).toBe("No avatar in scene");
   });
+
+  // TS-2: only `error` survives the 400, so the plugin names there the materials the overlay already changed.
+  it("shows the materials a failed overlay had already changed, carried in CC5's error text", async () => {
+    const error = "AddTextureWeightKey on Std_Skin_Arm reported an error status. Applied to: Std_Skin_Head, Std_Skin_Body.";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ success: false, error, applied_to: ["Std_Skin_Head", "Std_Skin_Body"] }), { status: 400 })));
+    const live = createMockServer();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    registerSkinTools(live as any, new CC5Bridge("http://127.0.0.1:5101"));
+    const r = await live.getRegisteredTool("apply_skin_overlay")({ image_path: "C:/o/bruise.png", region: "all", strength: 50 });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(error);
+  });
 });
 
 describe("set_wrinkle_strength", () => {
@@ -101,7 +200,17 @@ describe("set_wrinkle_strength", () => {
     bridge.setWrinkleStrength.mockResolvedValue({ success: true, parts: ["EWrinkleFacePart_Blink"] });
     const r = await server.getRegisteredTool("set_wrinkle_strength")({ strength: 0.4 });
     expect(bridge.setWrinkleStrength).toHaveBeenCalledWith(0.4);
-    expect(r.content[0].text).toContain("Wrinkle strength set to 0.4");
+    expect(r.content[0].text).toBe("Expression wrinkle strength set to 0.4 (it shows only while an expression is active; "
+      + "CC5 cannot read it back)");
+  });
+
+  // F-70: live, a neutral face did not change: the strength scales the creases of an active expression.
+  it("says it sets expression wrinkles and does not age a resting face", () => {
+    const description = server.tool.mock.calls.find((c) => c[0] === "set_wrinkle_strength")?.[1] as string;
+    expect(description).toContain("expression wrinkles");
+    expect(description).toContain("does not age a resting face");
+    expect(description).toContain("search_morphs");
+    expect(description).not.toContain("aging");
   });
 
   it("reports a missing wrinkle API as an error", async () => {

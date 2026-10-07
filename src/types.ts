@@ -184,7 +184,14 @@ export interface ShaderParameters extends OperationResult {
   mesh?: string;
   material?: string;
   shader?: string | null;
+  /** The settable parameters only (F-69): name -> current values. */
   parameters?: Record<string, number[]>;
+  /** F-69: parameters CC5 returns no value for ([]), so they cannot be set. Absent from older plugins. */
+  no_value?: string[];
+  /** F-69: the shader's padding entries ('padding1', 'padding Last4'): filler, not settings. Absent from older plugins. */
+  filler?: string[];
+  /** F-69: parameters CC5 could not read, or read as something other than finite numbers. Absent from older plugins. */
+  unreadable?: string[];
 }
 
 export interface SetShaderParameterResult extends OperationResult {
@@ -346,6 +353,8 @@ export interface ExportFbxResult extends OperationResult {
   embed_textures?: boolean;
   /** Whether image format conversion was applied. */
   convert_image_format?: boolean;
+  /** F-86: CC5 cleared its undo history with this export (live CC5 5.13 does on every FBX export). */
+  undo_history_cleared?: boolean;
 }
 
 export interface BakeSkinResult extends OperationResult {
@@ -354,6 +363,8 @@ export interface BakeSkinResult extends OperationResult {
   manual_step_required?: boolean;
   instructions?: string;
   notes?: string[];
+  /** F-84: CC5's skin-related commands the plugin looked at (at most 20), whether it could run them or not. */
+  candidates_inspected?: Array<{ text: string; objectName: string }>;
 }
 
 export interface ExportHeadMetaHumanResult extends OperationResult {

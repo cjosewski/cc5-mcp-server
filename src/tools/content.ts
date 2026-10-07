@@ -5,56 +5,68 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { isBrowseTruncation, type CC5Bridge } from "../cc5-bridge.js";
-import { bridgeCall } from "../util.js";
+import { bridgeCall, bridgeErrorResult, type ToolResult } from "../util.js";
+import { PICK_RULE, STORE_HINT, STORE_RULE } from "../prompts/content-rules.js";
+import { isBrowseError } from "./builder.js";
+
+export const NO_AVATAR = "No avatar in the scene.";
+
+const BROWSE_DESCRIPTION =
+  "Browse available CC5 content files by category. Returns file paths that can be loaded with load_asset. Wearables: " +
+  "cloth_upper (shirts, coats), cloth_lower (pants, skirts), cloth (full-body outfits), underwear, gloves, cloth_other " +
+  "(socks, outfit sets), shoes, accessory_head (hats, glasses), accessory_body (torso, arm and leg accessories), " +
+  "accessory_other (handheld and outfit pieces), hair (.rlHair hairstyles), eye (.ccEye eye presets). Scene/animation: " +
+  "pose, motion, expression, props, light, camera, character (pose/motion may be empty on a base install without " +
+  "content packs). Lists CC5's template content and the user's own content from CC5's Custom tab (paths under " +
+  "'Reallusion Custom', plus 'Shared Custom' and 'Shared Templates' when they hold content), the user's own first. " +
+  PICK_RULE + " If nothing listed fits, try search_content. " + STORE_RULE;
+
+/**
+ * A worn-item list (F-61): the plugin answers an empty list both when nothing is worn and when the scene has no
+ * character, so an empty list is told apart by reading the avatars (only then).
+ */
+async function wornList<T extends { name: string; id: number }>(
+  bridge: Pick<CC5Bridge, "getAvatars">,
+  list: () => Promise<T[]>,
+  none: string,
+  heading: string,
+): Promise<ToolResult> {
+  try {
+    const items = await list();
+    let text: string;
+    if (items.length === 0) {
+      const avatars = await bridge.getAvatars();
+      text = avatars?.length ? none : NO_AVATAR;
+    } else {
+      // CC5's numeric type is not a garment kind (live: Boxers and Slim Jeans 1, T-shirt and socks 4): left out.
+      text = `${heading} (${items.length}):\n${items.map((i) => `- ${i.name} (ID: ${i.id})`).join("\n")}`;
+    }
+    return { content: [{ type: "text" as const, text }] };
+  } catch (err) {
+    return bridgeErrorResult(err);
+  }
+}
 
 export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "list_clothes",
-    "List the clothing (including shoes and socks) the avatar wears, by name and ID, or say that no clothes are applied.",
+    "List the clothing (including shoes and socks) the avatar wears, by name and ID, or say that none are applied, or that the scene has no character.",
     {},
-    async () => bridgeCall(
-      () => bridge.listClothes(),
-      (clothes) => {
-        if (clothes.length === 0) {
-          return "No clothes are applied.";
-        }
-        // CC5's numeric type is not a garment kind (live: Boxers and Slim Jeans 1, T-shirt and socks 4): left out.
-        const lines = clothes.map(c => `- ${c.name} (ID: ${c.id})`);
-        return `Clothes applied (${clothes.length}):\n${lines.join("\n")}`;
-      },
-    )
+    async () => wornList(bridge, () => bridge.listClothes(), "No clothes are applied.", "Clothes applied")
   );
 
   server.tool(
     "list_hair",
-    "List the hair the avatar wears, by name and ID, or say that no hair is applied.",
+    "List the hair the avatar wears, by name and ID, or say that none are applied, or that the scene has no character.",
     {},
-    async () => bridgeCall(
-      () => bridge.listHair(),
-      (hairs) => {
-        if (hairs.length === 0) {
-          return "No hair is applied.";
-        }
-        const lines = hairs.map(h => `- ${h.name} (ID: ${h.id})`);
-        return `Hair applied (${hairs.length}):\n${lines.join("\n")}`;
-      },
-    )
+    async () => wornList(bridge, () => bridge.listHair(), "No hair is applied.", "Hair applied")
   );
 
   server.tool(
     "list_accessories",
-    "List the accessories the avatar wears, by name and ID, or say that no accessories are applied.",
+    "List the accessories the avatar wears, by name and ID, or say that none are applied, or that the scene has no character.",
     {},
-    async () => bridgeCall(
-      () => bridge.listAccessories(),
-      (accessories) => {
-        if (accessories.length === 0) {
-          return "No accessories are applied.";
-        }
-        const lines = accessories.map(a => `- ${a.name} (ID: ${a.id})`);
-        return `Accessories applied (${accessories.length}):\n${lines.join("\n")}`;
-      },
-    )
+    async () => wornList(bridge, () => bridge.listAccessories(), "No accessories are applied.", "Accessories applied")
   );
 
   server.tool(
@@ -73,7 +85,7 @@ export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
 
   server.tool(
     "browse_content",
-    "Browse available CC5 content files by category. Returns file paths that can be loaded with load_asset. Wearables: cloth_upper (shirts, coats), cloth_lower (pants, skirts), cloth (full-body outfits), underwear, gloves, cloth_other (socks, outfit sets), shoes, accessory_head (hats, glasses), accessory_body (torso, arm and leg accessories), accessory_other (handheld and outfit pieces), hair (.rlHair hairstyles), eye (.ccEye eye presets). Scene/animation: pose, motion, expression, props, light, camera, character (pose/motion may be empty on a base install without content packs).",
+    BROWSE_DESCRIPTION,
     {
       folder_type: z.enum([
         "cloth_upper", "cloth_lower", "cloth", "underwear", "gloves", "cloth_other", "shoes",
@@ -89,11 +101,13 @@ export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
       (listing) => {
         const truncated = listing.length > 0 && isBrowseTruncation(listing[listing.length - 1]);
         const files = truncated ? listing.slice(0, -1) : listing;
-        if (files.length === 0) {
-          return `No content files found for category '${folder_type}'.`;
+        // TS-10: "No content folder resolved for '<category>'" (CC5 has no folder for it, or only the Custom root the
+        // plugin leaves out) is an empty category, not a file.
+        if (files.length === 0 || (files.length === 1 && files[0].startsWith("No content folder"))) {
+          return `No content files found for category '${folder_type}'. Try search_content. ${STORE_HINT}`;
         }
-        // Check if the first entry is an error message
-        if (files.length === 1 && (files[0].startsWith("Unknown folder") || files[0].startsWith("Error") || files[0].startsWith("Content browsing"))) {
+        // CC5's other answers for a category it could not list (the prefixes search_content checks too): as they are.
+        if (files.length === 1 && isBrowseError(files[0])) {
           return files[0];
         }
         const display = files.slice(0, 50);

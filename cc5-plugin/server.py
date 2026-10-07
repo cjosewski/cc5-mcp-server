@@ -12,6 +12,7 @@ import importlib
 import json
 import os
 import queue
+import re
 import secrets
 import sys
 import tempfile
@@ -31,6 +32,33 @@ TOKEN_HEADER = "X-CC5-Token"
 def _token_path() -> str:
     base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
     return os.path.join(base, "CC5_MCP_Bridge", "token")
+
+
+# F-63: the request log goes to requests.log next to the token, never to stdout. Past REQUEST_LOG_MAX_BYTES it moves
+# to requests.log.1 (replacing the older one), so the log stays under about twice that size.
+REQUEST_LOG_MAX_BYTES = 1_000_000
+_request_log_lock = threading.Lock()
+
+
+def _request_log_path() -> str:
+    return os.path.join(os.path.dirname(_token_path()), "requests.log")
+
+
+def _write_request_log(line: str) -> None:
+    """Append one timestamped line to requests.log. Never raises and never prints (it runs on HTTP threads)."""
+    try:
+        with _request_log_lock:
+            path = _request_log_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            try:
+                if os.path.getsize(path) > REQUEST_LOG_MAX_BYTES:
+                    os.replace(path, path + ".1")
+            except OSError:
+                pass  # no log yet (or the old one could not be moved: keep appending)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}\n")
+    except Exception:
+        pass
 
 
 def _load_or_create_token() -> str:
@@ -143,7 +171,9 @@ ACTION_MAP: dict[str, Any] = {
     "create_default_avatar": lambda p: cc5_api.create_default_avatar(),
     "delete_avatar":         lambda p: cc5_api.delete_avatar(p.get("name", "")),
     "load_asset":            lambda p: cc5_api.load_asset(p["file_path"], p.get("target")),
-    "export_fbx":            lambda p: cc5_api.export_fbx(
+    # F-86: a failed export that may have cleared CC5's undo history says so in its error text: the HTTP 400 reply
+    # is read for its `error` only (cc5_api.with_undo_history_sentence).
+    "export_fbx":            lambda p: cc5_api.with_undo_history_sentence(cc5_api.export_fbx(
         p["output_path"],
         int(p.get("options", 0)),
         target_tool=p.get("target_tool", ""),
@@ -159,7 +189,7 @@ ACTION_MAP: dict[str, Any] = {
         motion_range=p.get("motion_range"),
         convert_image_format=bool(p.get("convert_image_format", False)),
         texture_size=(int(p["texture_size"]) if p.get("texture_size") is not None else None),
-    ),
+    )),
     "capture_viewport":      lambda p: cc5_api.capture_viewport(p.get("output_path", ""), int(p.get("width", 1280)), int(p.get("height", 720))),
     "set_subdivision_level": lambda p: cc5_api.set_subdivision_level(int(p["level"])),
     "undo":                  lambda p: cc5_api.undo(),
@@ -392,17 +422,67 @@ def _dialog_buttons(dialog: Any) -> list[Any]:
             if b.isVisible() and b.isEnabled() and _plain(b.text()).replace("&", "")]
 
 
+# F-85 (live CC5 5.13): SkinGen's About box ("CCSkinGen") shows the licence serial in a label ("S/N : <serial>"), and
+# every message that repeats a dialog's text put it into the agent's conversation and the MCP server's log. The value
+# after a serial or licence label (optional ':' or '#') is replaced; with no ':' or '#' only a following word that holds
+# a digit counts as the value, so a sentence such as "Your license has expired" stays readable. The value may sit on
+# the next line (P-4: a dialog's text is its labels joined by newlines, and a form shows the label and the value in
+# two labels).
+_SECRET_LABEL_WORDS = (r"(S/N|SN|Serial\s+Number|Serial\s+No\.?|Serial|Licen[cs]e\s+Key|Licen[cs]e|Product\s+Key"
+                       r"|Activation\s+Code|Registration\s+Code)")
+_SECRET_LABEL = re.compile(
+    r"(?<![A-Za-z0-9])"
+    + _SECRET_LABEL_WORDS +
+    r"(?![A-Za-z0-9])"
+    r"(?:(\s*[:#]\s*)([^\n]*\S)|(\s+)((?=[A-Za-z0-9-]*\d)[A-Za-z0-9][A-Za-z0-9-]*))",
+    re.IGNORECASE)
+# A line that is only a serial or licence label (optional ':' or '#'): the dialog part after it is its value,
+# whatever it holds (P-4).
+_SECRET_LABEL_LINE = re.compile(_SECRET_LABEL_WORDS + r"\s*[:#]?", re.IGNORECASE)
+# A key on its own: three or more groups of 4-6 letters or digits joined by '-' (e.g. ABCDE-12345-FGHIJ-67890).
+_SECRET_TOKEN = re.compile(r"\b[A-Za-z0-9]{4,6}(?:-[A-Za-z0-9]{4,6}){2,}\b")
+SECRET_PLACEHOLDER = "(serial)"
+
+
+def _redact_secrets(text: str) -> str:
+    """`text` with licence serials and keys replaced by "(serial)" (F-85). Text without one comes back unchanged."""
+    def label(m: re.Match) -> str:
+        separator = m.group(2) if m.group(2) is not None else m.group(4)
+        return f"{m.group(1)}{separator}{SECRET_PLACEHOLDER}"
+
+    return _SECRET_TOKEN.sub(SECRET_PLACEHOLDER, _SECRET_LABEL.sub(label, text or ""))
+
+
+def _dialog_text(parts: list[Any]) -> str:
+    """A dialog's text: its parts (its visible QLabels, or a QMessageBox's text and informative text) joined by
+    newlines, with licence serials redacted (F-85).
+
+    Each part is redacted on its own and the joined text once more (P-4): a form shows the label and the value in two
+    labels ("Serial Number:", then the key), and a QMessageBox can end its text with the label and hold the value in
+    its informative text. The part after one whose last line is only a serial or licence label is replaced whole,
+    also a value without a digit. Over-redacting a line of a dialog is the safe direction.
+    """
+    cleaned = [p for p in (_redact_secrets(_plain(x)) for x in parts) if p]
+    label_only = [bool(_SECRET_LABEL_LINE.fullmatch((p.splitlines() or [""])[-1].strip())) for p in cleaned]
+    for i in range(1, len(cleaned)):
+        if label_only[i - 1]:
+            cleaned[i] = SECRET_PLACEHOLDER
+    return _redact_secrets("\n".join(cleaned))
+
+
 def _describe_modal() -> dict[str, Any] | None:
     """{title, text, buttons} of the modal dialog CC5 is showing, or None. Main thread only.
 
     CC5's own dialogs (e.g. "The target object layer already exists ... Replace / Material Only / Cancel")
-    are not QMessageBoxes: their question sits in QLabels, so every visible label is read.
+    are not QMessageBoxes: their question sits in QLabels, so every visible label is read. Licence serials in the
+    title and the labels are redacted here (F-85), the one source of every message that shows a dialog's text: the
+    queue guard, the waiting error, job_status, get_cc5_dialog and check_cc5_connection.
     """
     dialog = _modal_widget()
     if dialog is None:
         return None
     try:
-        title = _plain(dialog.windowTitle())
+        title = _redact_secrets(_plain(dialog.windowTitle()))
     except Exception:
         return None  # e.g. the dialog was deleted while being read
     text, buttons, text_read, progress = "", [], False, False
@@ -414,7 +494,7 @@ def _describe_modal() -> dict[str, Any] | None:
         else:
             from PySide2.QtWidgets import QLabel  # type: ignore
             parts = [lbl.text() for lbl in dialog.findChildren(QLabel) if lbl.isVisible()]
-        text = "\n".join(p for p in (_plain(x) for x in parts) if p)
+        text = _dialog_text(parts)
         text_read = True
     except Exception:
         pass
@@ -466,6 +546,16 @@ def _modal_dialog_error(title: str, text: str, described: dict[str, Any] | None 
         action = "answer it in CC5 (OK restores your last unsaved work, Cancel discards it)"
     elif described is not None and not described.get("text_read"):
         action = "its text could not be read, so ask the user to answer it in CC5"
+    elif described is not None and not described.get("buttons"):
+        # F-85: a window with no buttons (live: SkinGen's About box, whose labels hold the licence serial) is no
+        # question, and answer_cc5_dialog has nothing to click. Named by its title, else its first line, never by
+        # its whole text.
+        first_line = next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
+        name = title or first_line
+        if len(name) > 120:
+            name = name[:117] + "..."
+        return (f'CC5 has a window open with no buttons: "{name}" - close it in Character Creator 5 (no MCP tool '
+                "can close it), then try again.")
     else:
         # The guard runs only while no MCP command is running, so no MCP command is waiting on this dialog: it is
         # the user's own or CC5's, and not a confirmation of something the user asked the agent to do.
@@ -952,7 +1042,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
             status = str(args[0])
         if status.startswith(("2", "3")):
             return
-        print(f"[CC5 MCP Bridge] {format % args}")
+        # Written to requests.log, never printed: prints from HTTP threads reach CC5's console and a running
+        # exec_python's redirected stdout (F-57, F-63).
+        try:
+            _write_request_log(format % args)
+        except Exception:
+            pass
 
     def _send_json(self, status: int, data: Any) -> None:
         body = json.dumps(data).encode("utf-8")

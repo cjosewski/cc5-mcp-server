@@ -117,11 +117,13 @@ class ImportTest(unittest.TestCase):
         self.assertFalse(r["success"])
         self.assertIn("CC_Base_Body", r["error"])
 
-    def test_replace_mesh_calls_avatar(self):
+    def test_replace_mesh_refuses_an_obj_without_that_mesh(self):
+        # F-83: the OBJ is read and checked before anything changes; the replace itself is in test_obj_roundtrip.
         with mock.patch.object(self.pipe.cc5_api, "get_first_avatar", return_value=self.avatar):
             r = self.pipe.replace_mesh_from_obj("CC_Base_Body", self._file("a.obj"))
-        self.assertTrue(r["success"])
-        self.avatar.ReplaceMesh.assert_called_once()
+        self.assertFalse(r["success"])
+        self.assertIn("a.obj has no group named CC_Base_Body", r["error"])
+        self.avatar.ReplaceMesh.assert_not_called()
 
 
 

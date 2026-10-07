@@ -238,6 +238,18 @@ def unity_project_error(path: str) -> str | None:
             "delete it or pass another --scratch")
 
 
+def stand_in_unity_project(root: str) -> str:
+    """Write <root>/ProjectSettings/ProjectVersion.txt: export_for_unity refuses an Assets folder with no Unity project
+    around it, and the CC5 leg exports into <root>/Assets before the Unity leg copies the files into a real project."""
+    marker = os.path.join(root, "ProjectSettings", "ProjectVersion.txt")
+    os.makedirs(os.path.dirname(marker), exist_ok=True)
+    with open(marker, "w", encoding="utf-8") as f:
+        f.write("m_EditorVersion: 6000.2.10f1\n"
+                "# Written by cc5-mcp-server scripts/e2e/run_e2e.py so that export_for_unity accepts this folder; "
+                "it is not a real Unity project.\n")
+    return marker
+
+
 # ---------------------------------------------------------------- CC5 bridge and MCP client
 
 class Bridge:
@@ -394,6 +406,8 @@ def cc5_leg(run: dict, a: argparse.Namespace, bridge: Bridge) -> None:
     for path, what in ((a.overlay, "--overlay"), (a.pose, "--pose")) + (((a.base, "--base"),) if a.base != "default" else ()):
         if not record(run, leg, f"input {what} exists", os.path.isfile(path), path, 0, "file system"):
             raise LegAborted
+    # export_for_unity needs a Unity project around its Assets folder (main() deleted <scratch>/cc5 before this run).
+    stand_in_unity_project(os.path.join(out, "Unity"))
 
     mcp = McpClient(os.path.join(a.scratch, "mcp-server.log"))
     try:
@@ -428,7 +442,10 @@ def _alive_after_export(run: dict, bridge: Bridge, what: str) -> bool:
 
 
 def _export_unity(run, a, bridge, mcp, unity_dir, name, posed: bool) -> bool:
-    args = {"unity_dir": unity_dir, "character_name": name, "sub_d_level": 0, "texture_size": 2048, "wait_seconds": 120}
+    # The recipe puts an overlay (60) and pale (0.6) on the patient: an FBX carries neither, and export_for_unity
+    # will not export them without a choice. This check is about the FBX itself, so they are left out.
+    args = {"unity_dir": unity_dir, "character_name": name, "sub_d_level": 0, "texture_size": 2048, "wait_seconds": 120,
+            "injuries": "omit"}
     if posed:
         args["include_current_pose"] = True
     t0 = time.monotonic()
