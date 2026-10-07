@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { registerContentTools, NO_AVATAR } from "../../src/tools/content.js";
+import {
+  registerContentTools, isLiteHair, liteHairLabel, liteHairLast, LITE_HAIR_LABEL, NO_AVATAR,
+} from "../../src/tools/content.js";
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -138,6 +140,67 @@ describe("worn-item lists with no character in the scene (F-61)", () => {
       expect(description.endsWith("or say that none are applied, or that the scene has no character.")).toBe(true);
     }
     for (const call of server.tool.mock.calls) expect((call[1] as string).length).toBeLessThan(2000);
+  });
+});
+
+// I-07 (Chad, 2026-10-07): the Lite Hair sets are low-poly versions made for mobile games, "used only as a failsafe".
+describe("browse_content's Lite Hair hairstyles (I-07)", () => {
+  const LITE = "C:/Reallusion/Templates/Hair/Group/Lite Hair Female Vol. 1/Pixie.rlHair";
+  const LITE_AFRO = "C:/Reallusion/Templates/Hair/Group/Lite Hair Afro Vol. 2/Puffs.rlHair";
+  const BOB = "C:/Reallusion/Templates/Hair/Group/Prime Hairstyles/06_Ear length Bob.rlHair";
+  const BUZZ = "C:/Reallusion/Templates/Hair/Group/Buzz Cut.rlHair";
+
+  it("labels them and lists them after the other hairstyles, each group in its own order", async () => {
+    bridge.browseContent.mockResolvedValue([LITE, BOB, LITE_AFRO, BUZZ]);
+    const r = await server.getRegisteredTool("browse_content")({ folder_type: "hair" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe("Found 4 content file(s) for 'hair':\n" + [
+      `- ${BOB}`,
+      `- ${BUZZ}`,
+      `- ${LITE} - Lite Hair: low-poly mobile version, only as a fallback`,
+      `- ${LITE_AFRO} - Lite Hair: low-poly mobile version, only as a fallback`,
+    ].join("\n"));
+  });
+
+  it("shows the full-quality hairstyles first when the reply stops at 50", async () => {
+    const lite = Array.from({ length: 30 }, (_, i) => `C:/T/Hair/Group/Lite Hair Male Vol. 1/Lite ${i}.rlHair`);
+    const full = Array.from({ length: 30 }, (_, i) => `C:/T/Hair/Group/Prime Hairstyles/Prime ${i}.rlHair`);
+    bridge.browseContent.mockResolvedValue([...lite, ...full]);
+    const lines = (await server.getRegisteredTool("browse_content")({ folder_type: "hair" })).content[0].text.split("\n");
+    expect(lines[0]).toBe("Found 60 content file(s) for 'hair':");
+    expect(lines.slice(1, 31)).toEqual(full.map((f) => `- ${f}`));
+    expect(lines[31]).toBe(`- ${lite[0]}${LITE_HAIR_LABEL}`);
+    expect(lines.at(-1)).toBe("... and 10 more");
+  });
+
+  it("tells a Lite Hair folder by its name, with either slash, never by the file's own name", () => {
+    expect(isLiteHair("C:\\T\\Hair\\Group\\Lite Hair Afro Vol. 1\\Puffs.rlHair")).toBe(true);
+    expect(isLiteHair("$/Hair/Group/lite hair male vol. 3/Short.rlHair")).toBe(true);
+    expect(isLiteHair("C:/T/Hair/Group/Prime Hairstyles/Lite Hair Bob.rlHair")).toBe(false);
+    expect(isLiteHair("C:/T/Hair/Group/Satellite Hair/Bob.rlHair")).toBe(false);
+    expect(liteHairLabel(LITE)).toBe(LITE_HAIR_LABEL);
+    expect(liteHairLabel(BOB)).toBe("");
+    expect(LITE_HAIR_LABEL).toBe(" - Lite Hair: low-poly mobile version, only as a fallback");
+  });
+
+  it("liteHairLast moves only the hair entries and leaves the others in place, as search_content's hits need", () => {
+    const hits = [
+      { folder: "cloth", path: "C:/T/Cloth/Shirt.ccCloth" },
+      { folder: "hair", path: LITE },
+      { folder: "hair", path: BOB },
+      { folder: "hair", path: LITE_AFRO },
+      { folder: "hair", path: BUZZ },
+      { folder: "eye", path: "C:/T/Eye/Blue.ccEye" },
+    ];
+    expect(liteHairLast(hits, (h) => (h.folder === "hair" ? h.path : undefined)).map((h) => h.path))
+      .toEqual(["C:/T/Cloth/Shirt.ccCloth", BOB, BUZZ, LITE, LITE_AFRO, "C:/T/Eye/Blue.ccEye"]);
+    expect(hits[1].path).toBe(LITE);  // a new list: the hits themselves keep their order
+  });
+
+  it("labels and moves only the hair category's entries", async () => {
+    bridge.browseContent.mockResolvedValue([LITE, "C:/s/Boots.ccShoes"]);
+    const r = await server.getRegisteredTool("browse_content")({ folder_type: "shoes" });
+    expect(r.content[0].text).toBe(`Found 2 content file(s) for 'shoes':\n- ${LITE}\n- C:/s/Boots.ccShoes`);
   });
 });
 

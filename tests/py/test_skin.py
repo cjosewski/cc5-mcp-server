@@ -203,6 +203,21 @@ class SkinTest(unittest.TestCase):
         self.assertTrue(r["success"])
         self.assertEqual(r["removed_from"], ["Std_Skin_Head", "Std_Skin_Body", "Std_Skin_Arm", "Std_Skin_Leg"])
 
+    def test_condition_records_each_colour_it_wrote(self):
+        # F-90 (live): CC5 reports a new skin colour only after it renders; the F-34 comparison of a later load reads
+        # this record instead (cc5_api._writes_since_render, on the 0-255 steps CC5 reads after a render).
+        self.avatar.GetID.return_value = 7
+        self.assertTrue(self.skin.set_skin_condition("normal", 1.0, "all", (0.4, 0.2, 0.8))["success"])
+        skin = ("Std_Skin_Head", "Std_Skin_Body", "Std_Skin_Arm", "Std_Skin_Leg")
+        self.assertEqual(self.skin.cc5_api._writes_since_render,
+                         {("7", "CC_Base_Body", mat): {"diffuse": [102, 51, 204]} for mat in skin})
+
+    def test_condition_records_only_the_colours_cc5_took(self):
+        self.avatar.GetID.return_value = 7
+        self._refuse("AddDiffuseKey", on_call=2)
+        self.assertFalse(self.skin.set_skin_condition("cyanotic", 1.0, "all")["success"])
+        self.assertEqual(list(self.skin.cc5_api._writes_since_render), [("7", "CC_Base_Body", "Std_Skin_Head")])
+
     def test_condition_fails_when_cc5_refuses_a_diffuse_key(self):
         self._refuse("AddDiffuseKey", on_call=2)
         r = self.skin.set_skin_condition("pale", 1.0, "all")

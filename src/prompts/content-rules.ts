@@ -6,6 +6,11 @@
  *
  * LAYER_RULE and LAYER_STOP_ADVICE follow Chad's answer to what counts as one build (DEC-1, 2026-10-06): one
  * character when building interactively, one batch run in a batch.
+ *
+ * F-91 (live CC5 5.13, cause found 2026-10-07): a SkinGen or makeup preset (.ccSkinGenPreset) starts what CC5 calls a
+ * SkinGen session. While it lasts the viewport hides hair, brows and clothing (still worn, and in an export), until a
+ * content load or a delete ends it; a content load during it can first ask SKINGEN_QUESTION (PRESET_RULE,
+ * SKINGEN_QUESTION_RULE; batch F review #13: only a prop load was seen asking, and a prop delete ended one silently).
  */
 
 export const PICK_RULE =
@@ -22,11 +27,42 @@ export const STORE_HINT =
   "If nothing installed fits, you can search the Reallusion store (Content Store, Marketplace) on the web and " +
   "suggest options with name, link, price and CC5 fit; the user decides and buys.";
 
+/**
+ * F-91: the lip makeup preset (Red Velvet) that "hid hair and brows" had started a SkinGen session, which hides
+ * clothing too. Its "reset the skin colour" (F-34, by eye) is left out: in the batch D live check (WP-2 #2) the skin
+ * colour read back unchanged after that preset, and its load report had no CHECK line (F-91). Batch F review #13: the
+ * live example names both things seen to end the session, a content load (a prop, after OK) and a delete (a prop,
+ * without a question); "until a content load ends" left the delete out. Worded as seen, in the past tense, it brings
+ * SERVER_INSTRUCTIONS to exactly 2,000 characters.
+ */
 export const PRESET_RULE =
-  "Presets and clothing can change more than they are named for (live: a lip makeup preset hid hair and brows and " +
-  "reset the skin colour; uniform pants removed the template's Boxers). Every character-content load is compared " +
-  "before and after: show the CHECK and NOT CHECKED lines to the user, with captures, and offer undo before " +
-  "changing the character again.";
+  "Presets and clothing can change more than they are named for (live: uniform pants removed the Boxers; a SkinGen " +
+  "or makeup preset hid hair, brows and clothing until a content load or a delete ended its SkinGen session). Every " +
+  "character-content load is compared before and after: show the user its CHECK and NOT CHECKED lines with " +
+  "captures and offer undo before the next change.";
+
+/**
+ * CC5 5.13's question at a content load during a SkinGen session (F-91, live: in a window titled "Character Creator 5",
+ * buttons OK and Cancel).
+ */
+export const SKINGEN_QUESTION =
+  "Applying this content will deactivate the current SkinGen session. Would you like to continue?";
+
+/**
+ * F-91 (live CC5 5.13, 2026-10-07): after a .ccSkinGenPreset load, the next content load (a prop) asked
+ * SKINGEN_QUESTION; after OK the clothing showed again, the makeup stayed and the load finished. Deleting a prop also
+ * ended a session, without a question. A load with no session asked nothing. Not tested: whether another SkinGen
+ * preset loaded during a session asks. So the rule says a content load can ask, as seen for a prop load, and that a
+ * delete ends the session too (batch F review #13: it said CC5 asks at every content load during a session). It goes
+ * with a question an MCP command waits in (formatDialog, withSkinGenRule, the recipe and batch reports; batch F
+ * review #12) and in answer_cc5_dialog's description.
+ */
+export const SKINGEN_QUESTION_RULE =
+  `CC5 can ask "${SKINGEN_QUESTION}" when content is loaded during a SkinGen session (seen for a prop load). ` +
+  "A SkinGen or makeup preset starts one; until a later content load or a delete ends it, the viewport hides " +
+  "hair, brows and clothing (live: deleting a prop ended one without a question). For a load the user asked " +
+  "for, the question is a plain confirmation: answer OK and say so; OK ends the session (the makeup stays) and " +
+  "the load goes on.";
 
 export const FIT_RULE =
   "After clothing, shoes, hats or hair, run check_fit and show the user every view: a single capture missed a " +
@@ -72,7 +108,9 @@ export const LAYER_STOP_ADVICE =
 
 /**
  * Sent as the MCP server instructions. Claude Code cuts server instructions at about 2,000 characters, so this stays
- * below that (a test checks it). If an edit goes over, shorten PRESET_RULE's live example; never drop a rule.
+ * at or under 2,000 (a test checks it; since batch F review #13 it is exactly 2,000, so any addition needs a cut). If
+ * an edit goes over, shorten PRESET_RULE's live example; never drop a rule. SKINGEN_QUESTION_RULE is not among them:
+ * it goes with the dialog tools (src/tools/dialog.ts) and the replies about a job waiting in that question.
  */
 export const SERVER_INSTRUCTIONS =
   "Rules for every Character Creator 5 (CC5) session:" +

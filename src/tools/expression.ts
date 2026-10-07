@@ -7,6 +7,24 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall } from "../util.js";
 
+/**
+ * Review #5 (F-88): the OBJ round trip needs a neutral face, and the expression is set again after the replace, but
+ * the replies named at most three sliders with their weights. A plugin result's `field` ({name: weight}:
+ * reset_expression's reset_weights, export_obj's and replace_mesh_from_obj's expression_weights) becomes one ready
+ * line with every slider: "To set the expression again: set_expression with Brow_Compress_L 0.6, Mouth_Frown_L 0.4".
+ * Weights at most 4 decimals, as set_expression replies (F-13). Undefined when the field holds no weight (an older
+ * plugin, a neutral face); JSON from another process, so an entry that is not a finite number is left out.
+ */
+export function setExpressionAgainLine(result: unknown, field: "reset_weights" | "expression_weights"): string | undefined {
+  const weights = typeof result === "object" && result !== null ? (result as Record<string, unknown>)[field] : undefined;
+  if (typeof weights !== "object" || weights === null || Array.isArray(weights)) return undefined;
+  const sliders = Object.entries(weights)
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]));
+  if (!sliders.length) return undefined;
+  const list = sliders.map(([name, weight]) => `${name} ${Number(weight.toFixed(4))}`).join(", ");
+  return `To set the expression again: set_expression with ${list}`;
+}
+
 export function registerExpressionTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "get_expression_info",
@@ -58,13 +76,17 @@ export function registerExpressionTools(server: McpServer, bridge: CC5Bridge) {
     {},
     async () => bridgeCall(
       () => bridge.resetExpression(),
-      (result) => !result.success ? `Failed: ${result.error}`
-        : result.reset === undefined
+      (result) => {
+        if (!result.success) return `Failed: ${result.error}`;
+        if (result.reset?.length === 0) return "The face was already neutral: no expression slider was set.";
+        const reset = result.reset === undefined
           ? `Reset ${result.reset_count ?? 0} expression slider(s) to neutral.`
-          : result.reset.length === 0
-            ? "The face was already neutral: no expression slider was set."
-            : `Reset ${result.reset_count} expression slider(s) to neutral: ${result.reset.join(", ")}` +
-              `${(result.reset_count ?? 0) > result.reset.length ? ", ..." : ""}.`,
+          : `Reset ${result.reset_count} expression slider(s) to neutral: ${result.reset.join(", ")}` +
+            `${(result.reset_count ?? 0) > result.reset.length ? ", ..." : ""}.`;
+        // Review #5: every weight it reset, so the expression can be set again (after an OBJ round trip, F-88).
+        const again = setExpressionAgainLine(result, "reset_weights");
+        return again === undefined ? reset : `${reset}\n${again}`;
+      },
     )
   );
 }

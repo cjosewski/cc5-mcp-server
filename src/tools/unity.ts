@@ -327,24 +327,10 @@ export function evaluateExportBudget(stats: MeshStatsResult, textures: TextureIn
   };
 }
 
-/**
- * F-86 (live CC5 5.13): an FBX export clears CC5's undo history, and undo still reports success afterwards. The last
- * line of the reply of every export whose result says so (undo_history_cleared).
- */
-export const UNDO_HISTORY_CLEARED = "CC5 cleared its undo history with this export: changes made before it can no " +
-  "longer be undone (save_character first to keep a way back).";
-
-/** `text` with UNDO_HISTORY_CLEARED as its last line when the export result says CC5 cleared its undo history. */
-export function withUndoHistoryLine(text: string, result?: { undo_history_cleared?: boolean }): string {
-  return result?.undo_history_cleared ? `${text}\n${UNDO_HISTORY_CLEARED}` : text;
-}
-
 type ExportForUnityResult = {
   success: boolean; error?: string; fbx?: string; folder?: string; files?: Array<{ path: string; bytes: number }>;
   notes?: string[]; export_level?: number | null; needs_choice?: boolean; injuries?: InjuryReport;
   remove_tearline_occlusion?: boolean;
-  /** F-86: the FBX export cleared CC5's undo history (passed through from export_fbx). */
-  undo_history_cleared?: boolean;
 };
 
 export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
@@ -384,7 +370,7 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
         if (out.failed || !r.success) {
           // A failed export shows the plugin's notes as they are, a timeline left at one frame among them.
           const noteText = otherNotes.length ? `\n${otherNotes.join("\n")}` : "";
-          return errorResult(withUndoHistoryLine(`Unity export failed: ${r.error ?? "unknown error"}${noteText}`, r));
+          return errorResult(`Unity export failed: ${r.error ?? "unknown error"}${noteText}`);
         }
         // X-2: a timeline CC5 could not set back after the export is no export setting it failed to apply.
         const timelineLeft = otherNotes.some((n) => n.startsWith(TIMELINE_NOT_RESTORED_PREFIX));
@@ -414,12 +400,12 @@ export function registerUnityTools(server: McpServer, bridge: CC5Bridge) {
         const lines = injuryLines(r.injuries);
         if (blocks.length) {
           const timeline = timelineLeft ? [TIMELINE_LEFT_LINE] : [];
-          return errorResult(withUndoHistoryLine([exported, ...blocks, ...lines, ...timeline].join("\n"), r));
+          return errorResult([exported, ...blocks, ...lines, ...timeline].join("\n"));
         }
         const parts = [`${exported} Switch to Unity to import it.`, ...lines];
         if (remove_tearline_occlusion) parts.push("Tear line and eye occlusion left out: pass remove_tearline_occlusion: true to check_quest_budget.");
         if (timelineLeft) parts.push(TIMELINE_USABLE_LINE);
-        return { content: [{ type: "text" as const, text: withUndoHistoryLine(parts.join("\n"), r) }] };
+        return { content: [{ type: "text" as const, text: parts.join("\n") }] };
       } catch (err) {
         return bridgeErrorResult(err);
       }

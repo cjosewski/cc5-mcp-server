@@ -88,11 +88,14 @@ describe("undo handler", () => {
     expect(result.content[0].text).toContain("Is CC5 running");
   });
 
-  // F-86 (live CC5 5.13): after an FBX export three undos changed nothing, and each said "Undo successful".
-  it("says an FBX export clears CC5's undo history, keeping the rest of its description", () => {
+  // F-89 (live CC5 5.13, corrects F-86): an FBX export does not clear CC5's undo history. Only a light's intensity
+  // change made before an export was not undone (and undo said it succeeded); morph and skin changes undid normally.
+  it("names the one change an undo did not take back after an FBX export, keeping the rest of its description", () => {
     const description = server.tool.mock.calls.find((c) => c[0] === "undo")?.[1] as string;
-    expect(description).toContain("An FBX export (export_fbx, export_for_unity, export_textures, batch_generate_patients) " +
-      "clears CC5's undo history: nothing done before it can be undone, and undo still reports success.");
+    expect(description).toContain("Live (CC5 5.13): after an FBX export, an undo did not take back a light's intensity " +
+      "change made before the export, and still reported success; morph and skin changes undo normally across exports.");
+    expect(description).not.toContain("undo history");
+    expect(description).not.toContain("nothing done before it can be undone");
     expect(description).toContain("CC5 does not say when nothing is left to undo (this still reports success)");
     expect(description).toContain("after a viewport capture, an extra undo lets a later redo replay the capture instead " +
       "of the change.");

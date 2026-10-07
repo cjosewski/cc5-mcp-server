@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { BridgeUnreachableError } from "../../src/cc5-bridge.js";
-import { registerMorphTools } from "../../src/tools/morph.js";
+import { registerMorphTools, NO_CHARACTER_FOR_MORPHS } from "../../src/tools/morph.js";
 import { createMockBridge, SUCCESS, FAILURE } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 
@@ -78,6 +78,7 @@ describe("search_morphs handler", () => {
 
   it("returns not-found message when results array is empty", async () => {
     bridge.searchMorphs.mockResolvedValue([]);
+    bridge.getAvatars.mockResolvedValue([{ name: "Kevin", id: "1", type: "avatar" }]);
     const handler = server.getRegisteredTool("search_morphs");
     const result = await handler({ query: "xyznonexistent" });
     expect(result.content[0].text).toBe("No morphs found matching 'xyznonexistent'");
@@ -125,6 +126,35 @@ describe("search_morphs handler", () => {
     expect(result.content[0].text).toContain("Eye Wide L");
     expect(result.content[0].text).toContain("Eye Wide R");
     expect(result.content[0].text).toContain("Eye Squint L");
+  });
+});
+
+// F-103 (live): on an empty scene, search_morphs("height") replied "No morphs found matching 'height'" (also 'scale',
+// 'tall', 'short'); with a character loaded the same search listed 200 morphs, Character Height among them.
+describe("search_morphs with no character in the scene (F-103)", () => {
+  it("says that CC5 lists morphs only for a loaded character, as a result, not an error", async () => {
+    bridge.searchMorphs.mockResolvedValue([]);
+    bridge.getAvatars.mockResolvedValue([]);
+    const result = await server.getRegisteredTool("search_morphs")({ query: "height" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe(NO_CHARACTER_FOR_MORPHS);
+    expect(NO_CHARACTER_FOR_MORPHS).toBe("No character in the scene: CC5 lists morphs only for a loaded character. " +
+      "Load or create one first.");
+  });
+
+  it("reads the avatars only when the search found nothing", async () => {
+    bridge.searchMorphs.mockResolvedValue([{ id: "pack_full_body6", display_name: "Character Height", category: "Body" }]);
+    const result = await server.getRegisteredTool("search_morphs")({ query: "height" });
+    expect(result.content[0].text).toBe("Found 1 morph(s):\n- Character Height (ID: pack_full_body6)");
+    expect(bridge.getAvatars).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed avatar read as a bridge error", async () => {
+    bridge.searchMorphs.mockResolvedValue([]);
+    bridge.getAvatars.mockRejectedValue(new Error("fetch failed"));
+    const result = await server.getRegisteredTool("search_morphs")({ query: "height" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe("CC5 bridge error: fetch failed");
   });
 });
 

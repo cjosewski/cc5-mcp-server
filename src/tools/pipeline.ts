@@ -7,9 +7,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, bridgeErrorResult, errorResult, warningNotes } from "../util.js";
-import {
-  isLocalAbsolute, TIMELINE_LEFT_LINE, TIMELINE_NOT_RESTORED_PREFIX, TIMELINE_USABLE_LINE, withUndoHistoryLine,
-} from "./unity.js";
+import { isLocalAbsolute, TIMELINE_LEFT_LINE, TIMELINE_NOT_RESTORED_PREFIX, TIMELINE_USABLE_LINE } from "./unity.js";
+import { setExpressionAgainLine } from "./expression.js";
 import { runJob, runJobTool, pendingResult, type JobResult } from "../jobs.js";
 
 /** Local absolute path (no '..', no UNC/network or device path), extension in the allowed set. Returns an error message or null. */
@@ -65,9 +64,21 @@ function savedText(r: SaveCharacterResult, outputPath: string): string {
 // OBJ (an export_obj with y_up false), naming the axis (cc5_pipeline.replace_mesh_from_obj). What it needs:
 export const OBJ_Y_UP = "a Y-up OBJ (export with y_up true, and save Y-up from the sculpting tool)";
 
+// F-88 (live CC5 5.13): an OBJ carries the facial expression the character shows, and a replace with the expression
+// set made it part of the mesh, with the expression applied on top again. export_obj warns, its note starting with
+// OBJ_EXPRESSION_PREFIX, and replace_mesh_from_obj refuses while an expression is set; both replies, and
+// reset_expression's, end with every slider's weight as one line to set the expression again (review #5:
+// setExpressionAgainLine). Keep in step with OBJ_EXPRESSION_PREFIX and EXPRESSION_REFUSED in
+// cc5-plugin/cc5_pipeline.py. What the round trip needs:
+export const OBJ_NEUTRAL_FACE =
+  "a neutral face (reset_expression before export_obj; set the expression again after the replace)";
+/** Starts export_obj's note on the facial expression the OBJ carries (= OBJ_EXPRESSION_PREFIX in cc5_pipeline.py). */
+export const OBJ_EXPRESSION_PREFIX = "WARNING: the OBJ carries the facial expression: ";
+
 export const EXPORT_OBJ_DESCRIPTION =
   "Export the current character as OBJ in CC5's T-pose (arms horizontal), for sculpting in ZBrush or Blender. Keep " +
-  `the pose while sculpting, then bring the mesh back with replace_mesh_from_obj, which needs ${OBJ_Y_UP}.`;
+  `the pose while sculpting, then bring the mesh back with replace_mesh_from_obj, which needs ${OBJ_Y_UP} and ` +
+  `${OBJ_NEUTRAL_FACE}.`;
 
 // DEC-9 (Chad, 2026-10-06): replace_mesh_from_obj removes a pose (a motion clip of at most one frame) but refuses
 // an animation, which it would have to delete for good. Keep in step with ANIMATION_REFUSED and _clips_to_remove in
@@ -78,13 +89,25 @@ export const REPLACE_MESH_ANIMATION_RULE =
 
 export const REPLACE_MESH_DESCRIPTION =
   "Replace one of the character's meshes with an edited OBJ from export_obj (same topology, in CC5's T-pose), e.g. a " +
-  `ZBrush or Blender sculpt of CC_Base_Body. It needs ${OBJ_Y_UP}. CC5 reads the OBJ in the character's current ` +
-  "pose, so the tool first removes the character's pose (it then stands in a T-pose; apply_pose puts a pose back). " +
-  `${REPLACE_MESH_ANIMATION_RULE} It also refuses, changing nothing, an OBJ whose mesh has a different vertex count, ` +
-  "another pose (an OBJ from an older export_obj is in the bind pose) or another vertex order, and a Z-up OBJ (an " +
-  "export_obj with y_up false). After the replace it checks the mesh against the OBJ and undoes the replace if CC5 " +
-  "read it differently or did not apply it. Runs as a background job; a slow replacement returns a job id for " +
-  "job_status.";
+  `ZBrush or Blender sculpt of CC_Base_Body. It needs ${OBJ_Y_UP} and ${OBJ_NEUTRAL_FACE}. CC5 reads the OBJ in the ` +
+  "character's current pose, so the tool first removes the character's pose (it then stands in a T-pose; apply_pose " +
+  `puts a pose back). ${REPLACE_MESH_ANIMATION_RULE} It also refuses, changing nothing, an OBJ whose mesh has a ` +
+  "different vertex count, another pose (an OBJ from an older export_obj is in the bind pose) or another vertex " +
+  "order, and a Z-up OBJ (an export_obj with y_up false). After the replace it checks the mesh against the OBJ and " +
+  "undoes the replace if CC5 read it differently or did not apply it; one CC5 read differently is tried once more " +
+  "after 3 s (right after an undo of a texture load CC5 can read the OBJ in the old pose). Runs as a background job; " +
+  "a slow replacement returns a job id for job_status.";
+
+/**
+ * F-101 (live CC5 5.13, 2026-10-07): a replace that started a fraction of a second after an undo of a texture load
+ * (load_texture, then undo) read the OBJ in the character's old pose: the mesh came out 95.44 cm off, the plugin's
+ * check caught it and undid the replace. Two or three seconds later the same replace matched (0.00 cm). CC5 reloads the
+ * old texture after such an undo at a moment the bridge's queue gate (F-104) cannot see, so the tool runs a replace CC5
+ * read differently once more after this wait. Only that failure: a refusal, or a replace CC5 did not apply, is final.
+ */
+export const REPLACE_RETRY_MS = 3_000;
+const READ_DIFFERENTLY =
+  /^CC5 did not read .+ as expected \(the mesh differs by up to [\d.]+ cm from the OBJ\); the replace was undone\.$/;
 
 export const EXPORT_GOZ_DESCRIPTION =
   "Export the current character as GoZ files for ZBrush (open them in ZBrush, sculpt, then export an OBJ and bring " +
@@ -154,13 +177,19 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       let warnings: string[] = [];
       const res = await bridgeCall(() => bridge.exportObj(output_path, y_up), (r) => {
         if (!r.success) return `Failed: ${r.error}`;
-        warnings = warningNotes(r);
-        // The plugin's note says the OBJ is in CC5's T-pose (F-83).
-        if (!warnings.length) return [`Exported ${r.path}`, ...resultNotes(r)].join("\n");
+        // F-88: the note on the facial expression the OBJ carries is no option CC5 failed to apply: the export ran as
+        // asked, and the OBJ may be wanted for other uses.
+        const expression = warningNotes(r).filter((n) => n.startsWith(OBJ_EXPRESSION_PREFIX));
+        warnings = warningNotes(r).filter((n) => !n.startsWith(OBJ_EXPRESSION_PREFIX));
+        // Review #5: every slider's weight (the note names three), to set the expression again after the round trip.
+        const again = setExpressionAgainLine(r, "expression_weights");
+        const weights = again === undefined ? [] : [again];
+        // The plugin's notes say the OBJ is in CC5's T-pose (F-83), and which expression it carries (F-88).
+        if (!warnings.length) return [`Exported ${r.path}`, ...resultNotes(r), ...weights].join("\n");
         // A weaker call form drops the axis, part and material options, and its OBJ may not be in CC5's T-pose:
         // replace_mesh_from_obj would refuse it, or read it wrong.
-        return `Exported ${r.path} with ${r.signature}, not as asked:\n${warnings.join("\n")}\n` +
-          "Do not sculpt on this OBJ or bring it back with replace_mesh_from_obj.";
+        return [`Exported ${r.path} with ${r.signature}, not as asked:`, ...warnings,
+          "Do not sculpt on this OBJ or bring it back with replace_mesh_from_obj.", ...expression, ...weights].join("\n");
       });
       return warnings.length ? errorResult(res.content[0].text) : res;
     }
@@ -238,8 +267,35 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
     async ({ mesh_name, obj_path }) => {
       const err = checkFile(obj_path, [".obj"]);
       if (err) return errorResult(err);
-      return runJobTool(bridge, "replace_mesh_from_obj", { mesh_name, obj_path },
-        (r: ReplaceMeshResult) => replacedText(r, mesh_name, obj_path));
+      // runJobTool's failure text, plus review #5's line: a refusal over a set facial expression (F-88) carries every
+      // slider's weight, to set the expression again after the round trip.
+      try {
+        let out = await runJob(bridge, "replace_mesh_from_obj", { mesh_name, obj_path });
+        if (!out.done) return pendingResult(out);
+        let r = (out.result ?? {}) as ReplaceMeshResult;
+        // F-101: a replace CC5 read differently (and the plugin undid) is run once more after REPLACE_RETRY_MS.
+        const firstTry: string[] = [];
+        if ((out.failed || r.success === false) && READ_DIFFERENTLY.test(r.error ?? "")) {
+          firstTry.push(`First try: ${r.error} CC5 can still be busy for a moment after an undo of a texture load ` +
+            `(F-101), so the replace ran once more ${REPLACE_RETRY_MS / 1000} s later.`);
+          await new Promise((resolve) => setTimeout(resolve, REPLACE_RETRY_MS));
+          out = await runJob(bridge, "replace_mesh_from_obj", { mesh_name, obj_path });
+          if (!out.done) {
+            const pending = pendingResult(out);
+            const text = pending.content[0]?.type === "text" ? pending.content[0].text : "";
+            return { ...pending, content: [{ type: "text" as const, text: [...firstTry, text].join("\n") }] };
+          }
+          r = (out.result ?? {}) as ReplaceMeshResult;
+        }
+        if (out.failed || r.success === false) {
+          const again = setExpressionAgainLine(r, "expression_weights");
+          return errorResult([...firstTry, `Failed: ${r.error ?? "unknown error"}`, ...(again === undefined ? [] : [again])]
+            .join("\n"));
+        }
+        return { content: [{ type: "text" as const, text: [...firstTry, replacedText(r, mesh_name, obj_path)].join("\n") }] };
+      } catch (e) {
+        return bridgeErrorResult(e);
+      }
     }
   );
 
@@ -305,10 +361,7 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
       try {
         const out = await runJob(bridge, "export_textures", { output_dir, character_name });
         if (!out.done) return pendingResult(out);
-        const r = out.result as {
-          success: boolean; error?: string; folder?: string; files?: unknown[]; notes?: string[];
-          undo_history_cleared?: boolean;
-        };
+        const r = out.result as { success: boolean; error?: string; folder?: string; files?: unknown[]; notes?: string[] };
         const warnings = warningNotes(r);
         // X-2: the note on CC5's timeline, set to one frame for this mesh-only export (F-82) and not set back, is no
         // export setting CC5 failed to apply: the FBX is right. Its line calls the FBX usable only when nothing else
@@ -318,16 +371,15 @@ export function registerPipelineTools(server: McpServer, bridge: CC5Bridge) {
         const timelineLeft = timelineNotRestored ? [TIMELINE_LEFT_LINE] : [];
         if (out.failed || !r.success) {
           const failed = [`Texture export failed: ${r.error ?? "unknown error"}`, ...settingWarnings, ...timelineLeft];
-          return errorResult(withUndoHistoryLine(failed.join("\n"), r));
+          return errorResult(failed.join("\n"));
         }
         const exported = `Exported mesh and ${r.files?.length ?? 0} files to ${r.folder}`;
-        // F-86: this is an FBX export too, so CC5 cleared its undo history.
         if (settingWarnings.length) {
           const notApplied = [`${exported}, but CC5 did not apply every export setting:`, ...settingWarnings, ...timelineLeft];
-          return errorResult(withUndoHistoryLine(notApplied.join("\n"), r));
+          return errorResult(notApplied.join("\n"));
         }
         const done = [exported, ...(timelineNotRestored ? [TIMELINE_USABLE_LINE] : [])];
-        return { content: [{ type: "text" as const, text: withUndoHistoryLine(done.join("\n"), r) }] };
+        return { content: [{ type: "text" as const, text: done.join("\n") }] };
       } catch (e) {
         return bridgeErrorResult(e);
       }

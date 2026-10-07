@@ -64,11 +64,23 @@ class ExpressionValuesTest(unittest.TestCase):
         sent = self.face.AddExpressionKeys.call_args.args
         self.assertEqual((sent[1], sent[2]), (["Brow_Raise_Inner_L", "Mouth_Smile", "Jaw_Open"], [0.0, 0.0, 0.0]))
 
+    def test_reset_gives_each_slider_it_reset_with_its_weight_before(self):
+        # Review #5: the OBJ round trip (F-88) resets the expression and sets it again afterwards, which needs every
+        # weight; CC5 reads them back as float32 (F-13). A weight that is not a finite number stays out (P-8: JSON).
+        self.face.GetExpressionWeights.return_value = [0.800000011920929, 0.0, 0.30000001192092896]
+        r = self.api.reset_expression()
+        self.assertEqual(r["reset_weights"], {"Brow_Raise_Inner_L": 0.8, "Jaw_Open": 0.3})
+        self.face.GetExpressionWeights.return_value = [float("inf"), 0.0, 0.5]
+        r = self.api.reset_expression()
+        self.assertEqual(r["reset_weights"], {"Jaw_Open": 0.5})
+        json.dumps(r, allow_nan=False)
+
     def test_reset_falls_back_to_all_when_cc5_cannot_be_read_first(self):
         self.face.GetExpressionWeights.side_effect = RuntimeError("SWIG")
         r = self.api.reset_expression()
         self.assertEqual(r["reset_count"], 3)
         self.assertNotIn("reset", r)
+        self.assertNotIn("reset_weights", r)  # the weights before the reset are not known
 
 
 if __name__ == "__main__":

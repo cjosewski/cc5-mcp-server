@@ -76,6 +76,7 @@ class InjuryTestCase(unittest.TestCase):
     def _avatar(self):
         avatar = mock.MagicMock(name="Kevin")
         avatar.GetID.return_value = AVATAR_ID
+        avatar.GetName.return_value = "Kevin"
         avatar.GetMeshNames.side_effect = lambda *a: list(self.materials)
         mc = avatar.GetMaterialComponent.return_value
         mc.GetMaterialNames.side_effect = lambda mesh: list(self.materials[mesh])
@@ -441,6 +442,126 @@ class TintTest(InjuryTestCase):
             self.assertEqual(call.args[2], [("tint", (0.8, 0.86, 0.98))])
         self.assertIn("P1.fbm/Std_Skin_Arm_Diffuse.jpg: tint (0.80, 0.86, 0.98)", r["injuries"]["done"])
         self.assertEqual(r["injuries"]["failed"], [])
+
+
+class TintRecordTest(InjuryTestCase):
+    """Review #0 (F-90, live): CC5 reports a skin colour only after it renders, so right after set_skin_condition its read
+    still gave the colour from before. The export's tint read takes a colour the bridge set since then from the bridge's
+    record (cc5_api._writes_since_render), as the F-34 comparison does."""
+
+    UNVERIFIED = ("skin colour (0.80, 0.86, 0.98) on Std_Skin_Head, Std_Skin_Body, Std_Skin_Arm, Std_Skin_Leg: CC5 "
+                  "writes it as the FBX material colour, not yet checked in Unity")
+
+    def sidecar(self):
+        with open(os.path.join(self.folder, "P1_injuries.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_a_tint_just_set_is_listed_and_written_to_the_sidecar(self):
+        # CC5 still reports white (self.colors is empty): no render since set_skin_condition, as in a batch variant
+        # whose last step before the export is skin_condition.
+        self.assertTrue(self.skin.set_skin_condition("cyanotic")["success"])
+        r = self.export("separate")
+        self.assertTrue(r["success"], r)
+        self.assertEqual(r["injuries"]["unverified"], [self.UNVERIFIED])
+        self.assertEqual(self.sidecar()["tints"],
+                         [{"mesh": BODY, "material": mat, "rgb": [0.8, 0.86, 0.98]} for mat in SKIN])
+        self.mc.GetDiffuseColor.assert_not_called()  # the record stands in for CC5's read
+
+    def test_a_tint_just_cleared_is_not_listed(self):
+        for mat in SKIN:  # cyanotic when CC5 last rendered, so that is what it still reads
+            self.colors[(BODY, mat)] = (204, 219, 250)
+        self.assertTrue(self.skin.set_skin_condition("normal")["success"])
+        r = self.export("separate")
+        self.assertTrue(r["success"], r)
+        self.assertEqual(r["injuries"]["unverified"], [])
+        self.assertFalse(os.path.exists(os.path.join(self.folder, "P1_injuries.json")))
+
+    def test_a_record_of_another_material_or_character_leaves_cc5s_read(self):
+        for mat in SKIN:
+            self.colors[(BODY, mat)] = (204, 219, 250)
+        api = self.pipe.cc5_api
+        api._writes_since_render[("someone-else", BODY, "Std_Skin_Head")] = {"diffuse": [255, 255, 255]}
+        api._writes_since_render[(AVATAR_ID, BODY, "Std_Nails")] = {"diffuse": [255, 255, 255]}
+        api._writes_since_render[(AVATAR_ID, BODY, "Std_Skin_Arm")] = {"opacity": 0.5}  # no colour recorded
+        state = self.skin.skin_export_state(self.avatar)
+        self.assertEqual([t["material"] for t in state["tints"]], SKIN)
+
+
+class TintLateReadTest(InjuryTestCase):
+    """Batch F review #3: CC5's colour reads of a character in cc5_api._colours_late_since_undo may still give its last
+    render: after an undo or redo with it in the scene (review #20), or after a load whose comparison found CC5 still
+    reporting a colour the bridge had set as before (cc5_changes). The bridge has no record of its own there, so the
+    tint list and the sidecar come from CC5's read, and a WARNING in the injuries notes (export_for_unity's reply shows
+    them) says the read may be late, once. A colour from the bridge's record needs none."""
+
+    LATE = ("WARNING: Kevin's skin colours were read with no capture since an undo or redo, or since a load after which "
+            "CC5 still reported a colour or opacity from before the bridge set it, so CC5 may report them late: run "
+            "capture_viewport, then export again.")
+
+    def marks(self):
+        return self.pipe.cc5_api._colours_late_since_undo
+
+    def test_a_tint_cc5_may_report_late_comes_with_a_warning(self):
+        # The finding's first case: cyanotic set and captured, then an undo: CC5 holds white again, but its reads still
+        # give cyanotic, which the export lists and writes to the sidecar as this patient's skin colour.
+        for mat in SKIN:
+            self.colors[(BODY, mat)] = (204, 219, 250)
+        self.marks().add(AVATAR_ID)
+        r = self.export("separate")
+        self.assertTrue(r["success"], r)
+        self.assertEqual(r["injuries"]["notes"], [self.LATE])  # once for the character, not once per material
+        self.assertEqual(r["injuries"]["unverified"], [TintRecordTest.UNVERIFIED])  # still listed, now with the doubt
+
+    def test_a_white_read_cc5_may_report_late_comes_with_the_warning_too(self):
+        # The finding's second case: cyanotic, then an undo and a redo with no capture: CC5 holds cyanotic, its reads
+        # still give white, so no tint is listed or written and only the WARNING says the read may be late.
+        self.marks().add(AVATAR_ID)
+        r = self.export("separate")
+        self.assertTrue(r["success"], r)
+        self.assertEqual((r["injuries"]["unverified"], r["injuries"]["notes"]), ([], [self.LATE]))
+        self.assertFalse(os.path.exists(os.path.join(self.folder, "P1_injuries.json")))
+
+    def test_no_warning_for_a_character_that_is_not_marked(self):
+        for mat in SKIN:
+            self.colors[(BODY, mat)] = (204, 219, 250)
+        for marks in (set(), {"someone-else"}):
+            with self.subTest(marks=marks):
+                self.marks().clear()
+                self.marks().update(marks)
+                state = self.skin.skin_export_state(self.avatar)
+                self.assertEqual(state["notes"], [])
+                self.assertEqual([t["material"] for t in state["tints"]], SKIN)
+
+    def test_colours_from_the_bridges_record_need_no_warning(self):
+        # Set again after the undo: the record says what CC5 holds, whatever CC5 still reads.
+        self.marks().add(AVATAR_ID)
+        self.assertTrue(self.skin.set_skin_condition("cyanotic")["success"])
+        state = self.skin.skin_export_state(self.avatar)
+        self.assertEqual(state["notes"], [])
+        self.mc.GetDiffuseColor.assert_not_called()
+        # One skin material read from CC5 is enough for the WARNING.
+        del self.pipe.cc5_api._writes_since_render[(AVATAR_ID, BODY, "Std_Skin_Leg")]
+        self.assertEqual(self.skin.skin_export_state(self.avatar)["notes"], [self.LATE])
+
+    def test_an_undo_marks_the_character_for_the_export_until_a_capture_clears_the_mark(self):
+        # Through cc5_api: undo() marks the characters in the scene by id (review #20).
+        self.rl.RScene.GetAvatars.return_value = [self.avatar]
+        self.assertTrue(self.pipe.cc5_api.undo()["success"])
+        self.assertEqual(self.export()["injuries"]["notes"], [self.LATE])
+        self.marks().clear()  # what a capture whose RenderImage wrote the file does (cc5_api._clear_colours_late)
+        self.assertEqual(self.export()["injuries"]["notes"], [])
+
+    def test_a_colour_cc5_could_not_read_is_named_as_unread_not_as_late(self):
+        self.marks().add(AVATAR_ID)
+        self.mc.GetDiffuseColor.side_effect = RuntimeError("SWIG")
+        state = self.skin.skin_export_state(self.avatar)
+        self.assertEqual(state["notes"], [f"{mat}: CC5 could not read its diffuse colour (SWIG)" for mat in SKIN])
+
+    def test_a_character_whose_name_cannot_be_read_is_the_character(self):
+        self.marks().add(AVATAR_ID)
+        self.avatar.GetName.side_effect = RuntimeError("SWIG")
+        self.assertEqual(self.skin.skin_export_state(self.avatar)["notes"],
+                         [self.LATE.replace("WARNING: Kevin's", "WARNING: the character's")])
 
 
 class OmitTest(InjuryTestCase):

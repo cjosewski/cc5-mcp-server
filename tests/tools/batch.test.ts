@@ -3,17 +3,20 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  runBatch, registerBatchTools, readManifest, mergeManifest, BatchSchema,
+  runBatch, registerBatchTools, readManifest, mergeManifest, BatchSchema, SELECTION_NOT_CLEARED,
   type BatchStopDetail, type Manifest, type ManifestVariant,
 } from "../../src/tools/batch.js";
 import { registerBuilderTools } from "../../src/tools/builder.js";
+import { CANCELLED_BASE } from "../../src/recipe.js";
 import { BridgeHttpError } from "../../src/cc5-bridge.js";
 import { finishBuild, startBuild, LAYER_EXPECT } from "../../src/build-session.js";
 import { formatDialog } from "../../src/tools/dialog.js";
 import {
   INJURY_WARNING_PREFIX, TIMELINE_LEFT_LINE, TIMELINE_NOT_RESTORED_PREFIX, injuryLines, injuryQuestion, type InjuryReport,
 } from "../../src/tools/unity.js";
-import { BATCH_RULE, CANCEL_NOT_CARRIED } from "../../src/prompts/content-rules.js";
+import {
+  BATCH_RULE, CANCEL_NOT_CARRIED, SKINGEN_QUESTION, SKINGEN_QUESTION_RULE,
+} from "../../src/prompts/content-rules.js";
 import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -83,6 +86,23 @@ const waiting = (id: string, question = LAYER_QUESTION, buttons = "Replace, Mate
   `CC5 is waiting for an answer to "${question}" (the "Character Creator 5" window). Buttons: ${buttons}. The command is ` +
   `still running as job ${id}: answer it with answer_cc5_dialog (ask the user when it is a real choice), then check ` +
   `its result with job_status("${id}").`;
+/** F-94: a window with no buttons (live: SkinGen's About box, its serial redacted by the plugin). */
+const ABOUT = { title: "CCSkinGen", text: "SkinGen 2.0 S/N : (serial)", buttons: [] as string[] };
+/** F-99: a QML dialog (live: CC5's Export FBX): its buttons are QML items the bridge cannot see. */
+const QML = { title: "Export FBX", text: "", buttons: [] as string[], buttons_unreadable: true, text_read: true };
+/** F-91: CC5's question when a content load would end the SkinGen session a SkinGen or makeup preset started. */
+const SKINGEN = { title: "Character Creator 5", text: SKINGEN_QUESTION, buttons: ["OK", "Cancel"] };
+/**
+ * F-92 (cc5_api.py delete_avatar): its note after it cleared CC5's selection, and its refusal when it could not clear it
+ * (review #2: it then deletes nothing; it no longer deletes with a WARNING note).
+ */
+const clearedNote = (names: string) => `CC5's selection (${names}) was cleared before the delete: deleting a ` +
+  "character while one of its worn items is selected can crash CC5 (F-92).";
+const CLEARED = clearedNote("Pants");
+const REFUSED = "CC5's selection (Pants) could not be cleared, so nothing was deleted: deleting a character while one " +
+  "of its worn items is selected can crash CC5 (F-92). Run clear_selection (or deselect everything in Character Creator 5), then delete again.";
+/** F-98: job_status answers after the user's Cancel was clicked with answer_cc5_dialog. */
+const CANCELLED = [{ button: "Cancel", title: "Character Creator 5" }];
 const changes = (facts: unknown[]) => ({ complete: true, target: "Old", target_is_first: true, elapsed_ms: 420,
   compared: { worn: 3, morphs: 12, materials: 30 }, skipped: 0, truncated: false, facts });
 const SKIN_FACT = { kind: "material", mesh: "CC_Base_Body", material: "Std_Skin_Head", field: "diffuse",
@@ -90,11 +110,17 @@ const SKIN_FACT = { kind: "material", mesh: "CC_Base_Body", material: "Std_Skin_
 /** The id in a manifest's stopped line. */
 const continueId = (text: string) => /continue_after: "([^"]+)"/.exec(text)?.[1] ?? "";
 
-type Script = { status: "queued" | "running" | "done" | "failed"; result?: unknown; dialog?: unknown; dialog_message?: string; blocked_by?: string };
+type Script = {
+  status: "queued" | "running" | "done" | "failed"; result?: unknown; dialog?: unknown; dialog_message?: string;
+  blocked_by?: string; answers?: Array<{ button: string; title?: string }>;
+};
 const finished = (result: unknown): Script => ({ status: "done", result });
 const asking = (id: string, dialog: unknown = LAYER, message = waiting(id)): Script =>
   ({ status: "running", dialog, dialog_message: message });
 const loadedEye = (file: string): Script => finished({ success: true, path: file, target: "Old", changes: changes([]) });
+/** A .ccAvatar load that failed after its question was answered OK (cc5_api.load_asset's error for a failed LoadFile). */
+const LOAD_FAILED: Script = { status: "failed", result: { success: false, error: "LoadFile reported an error status" },
+  answers: [{ button: "OK", title: "" }] };
 
 /** Jobs that report what the test scripts: `next` says how a new job starts, `set` changes what a job reports later. */
 function jobStore(next: (action: string, params: Record<string, unknown>, id: string) => Script) {
@@ -811,7 +837,8 @@ describe("runBatch stops on a CC5 question or window (D1)", () => {
     },
   });
   const stoppedLine = (step: string, waits: boolean, rest: string) => `Stopped at A (${step}): ` +
-    (waits ? "CC5 is waiting for an answer nobody has given yet" : "it could not run while CC5 shows a window nobody has answered") +
+    (waits ? "CC5 is waiting for an answer nobody has given yet"
+      : "it could not run while CC5 shows a window nobody has answered or closed") +
     `, so nothing more was sent to CC5. ${rest}`;
 
   it("stops when a call never started behind an open window (504 and a dialog), and starts nothing else", async () => {
@@ -1012,6 +1039,7 @@ describe("batch_generate_patients goes on after the answer (continue_after)", ()
       'given yet, so nothing more was sent to CC5. Not started: none. continue_after: "cmd_ab12cd34_2".');
     expect(first.content[0].text).toContain("its recipe is not run again), then nothing else.");
     expect(first.content[0].text).not.toContain("This is a real choice");
+    expect(first.content[0].text).not.toContain(SKINGEN_QUESTION_RULE);  // F-91: only for CC5's SkinGen question
     expect(bridge.getMeshStats).not.toHaveBeenCalled();
 
     store.set("cmd_ab12cd34_2", finished(exported("A")));
@@ -1067,6 +1095,9 @@ describe("batch_generate_patients goes on after the answer (continue_after)", ()
     const id = continueId(first.content[0].text);
     expect(id).toMatch(/^stop_\d+$/);
     expect(first.content[0].text).toContain(`\nWAIT A: stopped: ${GUARD}; not exported\n`);
+    // Review #3: the batch cannot tell which window kept the step from running, nor whether it is a question.
+    expect(first.content[0].text).toContain("\nTo go on once the window is answered or closed in CC5: call " +
+      "batch_generate_patients again with the same base_character");
     expect(started).toEqual([]);
     const r = await batchHandler()({ ...args, continue_after: id });
     expect(r.isError).toBeUndefined();
@@ -1080,7 +1111,7 @@ describe("batch_generate_patients goes on after the answer (continue_after)", ()
     const args = inProject(p, { variants: [input.variants[0]] });
     const first = await batchHandler()(args);
     expect(first.content[0].text.split("\n")[0]).toMatch(new RegExp("^Stopped at A \\(budget check\\): it could not run " +
-      "while CC5 shows a window nobody has answered, so nothing more was sent to CC5\\. Not started: none\\. " +
+      "while CC5 shows a window nobody has answered or closed, so nothing more was sent to CC5\\. Not started: none\\. " +
       'continue_after: "stop_\\d+"\\.$'));
     const r = await batchHandler()({ ...args, continue_after: continueId(first.content[0].text) });
     expect(r.isError).toBeUndefined();
@@ -1098,12 +1129,16 @@ describe("batch_generate_patients goes on after the answer (continue_after)", ()
     const id = continueId(first.content[0].text);
     expect(id).toMatch(/^stop_\d+$/);
     expect(first.content[0].text.split("\n")[0]).toBe("Stopped at A (skin_rgb): it could not run while CC5 shows a " +
-      `window nobody has answered, so nothing more was sent to CC5. Not started: none. continue_after: "${id}".`);
+      `window nobody has answered or closed, so nothing more was sent to CC5. Not started: none. continue_after: "${id}".`);
     expect(started.map((j) => j.action)).toEqual(["load_asset"]);
 
     const r = await batchHandler()({ ...args, continue_after: id });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text.split("\n")).toContain("FAIL A");
+    // F-100: the reply says which step failed, and why, under the variant's line.
+    const lines = r.content[0].text.split("\n");
+    expect(lines.slice(lines.indexOf("FAIL A"), lines.indexOf("FAIL A") + 2)).toEqual(["FAIL A",
+      "     FAIL skin_rgb (after the answer): its job id is unknown: check the scene (list_clothes, capture_viewport) " +
+        "before relying on it"]);
     expect(bridge.setSkinColor).toHaveBeenCalledTimes(1);  // CC5 ran it under the question: not sent again
     expect(started.map((j) => j.action)).toEqual(["load_asset", "apply_pose", "export_for_unity"]);
     expect(readManifest(p.manifestPath)?.variants[0].steps).toEqual([
@@ -1140,6 +1175,93 @@ describe("batch_generate_patients goes on after the answer (continue_after)", ()
     expect(bridge.setSkinColor).not.toHaveBeenCalled();
     bridge.getDialog.mockResolvedValue({ success: true, dialog: null, waiting_job: null });
     expect((await batchHandler()({ ...eyeArgs(), continue_after: "cmd_ab12cd34_2" })).isError).toBeUndefined();
+  });
+
+  // Review #3: a job waiting in a window with no buttons (F-94) was told to answer it, while get_cc5_dialog said that no
+  // MCP tool can close it.
+  it("says to answer or close a window with no buttons the stopped job waits in, and goes on once it is closed", async () => {
+    const store = jobStore((action, params, id) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      return String(params.file_path).endsWith(".ccEye") ? asking(id, ABOUT, waiting(id, ABOUT.text, "none found")) : finished(ok);
+    });
+    const first = await batchHandler()(eyeArgs());
+    expect(first.isError).toBe(true);
+    expect(first.content[0].text.split("\n")[0]).toBe("Stopped at A (asset Eyes_01.ccEye): CC5 is waiting in a window " +
+      'nobody has answered or closed yet, so nothing more was sent to CC5. Not started: B. continue_after: "cmd_ab12cd34_2".');
+    expect(first.content[0].text).not.toContain("This is a real choice");
+    // It has no answer to wait for: the batch goes on once the user has closed it in CC5.
+    expect(first.content[0].text).toContain("\nTo go on once the window is closed in CC5: call batch_generate_patients " +
+      'again with the same base_character, unity_dir, sub_d_level, texture_size and injuries, continue_after "cmd_ab12cd34_2"');
+    expect(first.content[0].text).not.toContain("after the answer");
+
+    const still = await batchHandler()({ ...eyeArgs(), continue_after: "cmd_ab12cd34_2" });
+    expect(still.isError).toBe(true);
+    expect(still.content[0].text.endsWith("\nAnswer or close it first, then call batch_generate_patients with " +
+      'continue_after "cmd_ab12cd34_2" again. Nothing else was sent to CC5.')).toBe(true);
+    expect(bridge.setSkinColor).not.toHaveBeenCalled();
+
+    store.set("cmd_ab12cd34_2", loadedEye(EYES));  // the user closed it in CC5, and the load finished
+    expect((await batchHandler()({ ...eyeArgs(), continue_after: "cmd_ab12cd34_2" })).isError).toBeUndefined();
+    expect(bridge.setSkinColor).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the same for a QML window whose buttons the bridge cannot read (F-99)", async () => {
+    jobStore((action, _params, id) => action === "export_for_unity"
+      ? asking(id, QML, waiting(id, QML.title, "none found")) : finished(ok));
+    const args = inProject(p, { variants: [input.variants[0]] });
+    const first = await batchHandler()(args);
+    expect(first.content[0].text.split("\n")[0]).toBe("Stopped at A (export): CC5 is waiting in a window nobody has " +
+      'answered or closed yet, so nothing more was sent to CC5. Not started: none. continue_after: "cmd_ab12cd34_2".');
+    expect(first.content[0].text).toContain("\nTo go on once the window is answered or closed in CC5: call " +
+      "batch_generate_patients again with the same base_character");
+    expect(first.content[0].text).not.toContain("after the answer");
+    const still = await batchHandler()({ ...args, continue_after: "cmd_ab12cd34_2" });
+    expect(still.content[0].text.endsWith("\nAnswer or close it first, then call batch_generate_patients with " +
+      'continue_after "cmd_ab12cd34_2" again. Nothing else was sent to CC5.')).toBe(true);
+    expect(bridge.getMeshStats).not.toHaveBeenCalled();
+  });
+
+  // Review #8: answer_cc5_dialog refuses a question whose text could not be read (it may be the crash-recovery prompt),
+  // so continue_after asks for the user's answer in CC5, as apply_character_recipe's does.
+  it("asks for the user's answer in CC5 to a question whose text could not be read", async () => {
+    const UNREAD = { title: "Character Creator 5", text: "", buttons: ["OK", "Cancel"], text_read: false };
+    jobStore((action, _params, id) => action === "export_for_unity"
+      ? asking(id, UNREAD, waiting(id, UNREAD.title, "OK, Cancel")) : finished(ok));
+    const args = inProject(p, { variants: [input.variants[0]] });
+    expect((await batchHandler()(args)).isError).toBe(true);
+    const still = await batchHandler()({ ...args, continue_after: "cmd_ab12cd34_2" });
+    expect(still.isError).toBe(true);
+    expect(still.content[0].text.endsWith("\nAsk the user to answer it in CC5 first, then call batch_generate_patients " +
+      'with continue_after "cmd_ab12cd34_2" again. Nothing else was sent to CC5.')).toBe(true);
+    expect(bridge.getMeshStats).not.toHaveBeenCalled();
+  });
+
+  // F-91 (live): a content load after a SkinGen or makeup preset asked whether to end the SkinGen session; for a load
+  // the user asked for, that is a plain confirmation.
+  it("adds the rule for CC5's SkinGen session question to a stop on it (F-91)", async () => {
+    jobStore((action, params, id) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      return String(params.file_path).endsWith(".ccEye")
+        ? asking(id, SKINGEN, waiting(id, SKINGEN_QUESTION, "OK, Cancel")) : finished(ok);
+    });
+    const first = await batchHandler()(eyeArgs());
+    expect(first.isError).toBe(true);
+    expect(first.content[0].text.split("\n").slice(-2)).toEqual([
+      "To go on after the answer: call batch_generate_patients again with the same base_character, unity_dir, " +
+        'sub_d_level, texture_size and injuries, continue_after "cmd_ab12cd34_2", and these variants: A first and ' +
+        "unchanged (it is finished from where it stopped; its recipe is not run again), then B.",
+      SKINGEN_QUESTION_RULE,
+    ]);
+
+    // The words in the window's title count too, in any case and across a line break.
+    finishBuild(startBuild("batch"));
+    const inTitle = { title: "Deactivate the current\nSKINGEN session?", text: "Continue?", buttons: ["OK", "Cancel"] };
+    jobStore((action, params, id) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      return String(params.file_path).endsWith(".ccEye") ? asking(id, inTitle, waiting(id, "Continue?", "OK, Cancel"))
+        : finished(ok);
+    });
+    expect((await batchHandler()(eyeArgs())).content[0].text.split("\n").at(-1)).toBe(SKINGEN_QUESTION_RULE);
   });
 
   it("refuses an unknown continue_after without any CC5 call", async () => {
@@ -1295,6 +1417,11 @@ describe("batch_generate_patients goes on after the answer (continue_after)", ()
     expect(readManifest(p.manifestPath)?.variants[0].steps[0]).toMatchObject({ step: "asset Eyes_01.ccEye (after the answer)",
       ok: true, detail: "CC5 asked 'Replace / Material Only'; answered 'Replace' (the user's answer earlier in this run)" });
     expect(bridge.answerDialog).toHaveBeenCalledTimes(1);
+    // F-100: the reply names it too, under the variant's line.
+    expect(r.content[0].text.split("\n").slice(1, 4)).toEqual(["OK   A",
+      "     asset Eyes_01.ccEye (after the answer): CC5 asked 'Replace / Material Only'; answered 'Replace' (the " +
+        "user's answer earlier in this run)",
+      "OK   B (the base, unchanged on purpose)"]);
   });
 
   // RB-4: a manifest write that threw ended the batch with only the file-system error, and the stop was forgotten.
@@ -1344,6 +1471,24 @@ describe("batch_generate_patients goes on after the answer (continue_after)", ()
     const r = await batchHandler()({ ...eyeArgs(), continue_after: "cmd_ab12cd34_2" });
     expect(r.isError).toBeUndefined();
     expect(readManifest(p.manifestPath)?.variants.map((v) => [v.name, v.ok])).toEqual([["A", true], ["B", true]]);
+  });
+
+  it("says to go on once a window with no buttons is closed, also when the run failed after that stop (RB-4)", async () => {
+    jobStore((action, params, id) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      return String(params.file_path).endsWith(".ccEye") ? asking(id, ABOUT, waiting(id, ABOUT.text, "none found")) : finished(ok);
+    });
+    const sendNotification = vi.fn((n: { params: { message?: string } }) => {
+      if (String(n.params.message).endsWith(": stopped")) throw new Error("transport closed");
+      return Promise.resolve();
+    });
+    const first = await batchHandler()(eyeArgs(), { signal: new AbortController().signal, _meta: { progressToken: 1 }, sendNotification });
+    expect(first.isError).toBe(true);
+    const lines = first.content[0].text.split("\n");
+    expect(lines[0]).toBe("transport closed");
+    expect(lines.at(-1)).toBe('Once the window is closed in CC5, call batch_generate_patients with continue_after ' +
+      '"cmd_ab12cd34_2".');
+    expect(first.content[0].text).not.toContain("After the answer");
   });
 
   it("no longer counts a preset's skin-colour CHECK from before the stop once skin_rgb ran after it", async () => {
@@ -1420,6 +1565,33 @@ describe("Replace / Material Only in a batch (D3)", () => {
     expect(bridge.answerDialog).toHaveBeenCalledTimes(1);
   });
 
+  // F-100 (live): the reply said only "OK F80_D"; the Replace the batch answered by itself was only in the manifest.
+  it("names under a variant's line each question the batch answered itself, and with what", async () => {
+    const store = eyesAsk();
+    bridge.answerDialog.mockImplementation(async (button: string) => {
+      const asked = store.started[store.started.length - 1];
+      store.set(asked.id, loadedEye(String(asked.params.file_path)));
+      return { success: true, clicked: button, dialog: LAYER };
+    });
+    await batchHandler()(twoEyes());
+    store.set("cmd_ab12cd34_2", loadedEye(EYES));  // the user picked Replace and it was answered
+
+    vi.useFakeTimers();
+    const pending = batchHandler()({ ...twoEyes(), continue_after: "cmd_ab12cd34_2", layer_answer: "Replace" });
+    await vi.advanceTimersByTimeAsync(5_000);
+    const r = await pending;
+    vi.useRealTimers();
+    expect(r.isError).toBeUndefined();
+    // A's question was the user's own answer; B's the batch gave with it.
+    expect(r.content[0].text.split("\n").slice(0, 4)).toEqual([
+      `2/2 variants exported. Manifest: ${p.manifestPath}`,
+      "OK   A",
+      "OK   B",
+      "     asset Eyes_01.ccEye: CC5 asked 'Replace / Material Only'; answered 'Replace' (the user's answer earlier in " +
+        "this run)",
+    ]);
+  });
+
   it("refuses layer_answer after a stop on another question", async () => {
     jobStore((action, params, id) => {
       if (action === "export_for_unity") return finished(exported(String(params.character_name)));
@@ -1456,6 +1628,160 @@ describe("Replace / Material Only in a batch (D3)", () => {
       '(continue_after "cmd_ab12cd34_2") was not continued; that stop is forgotten.');
     expect((await batchHandler()({ ...twoEyes(), continue_after: "cmd_ab12cd34_2" })).content[0].text)
       .toContain("is not where the last batch stopped");
+  });
+});
+
+// F-98 (live): after the user's Cancel, the continued run reported the step OK, though CC5 applied nothing. The job's
+// status names every button answer_cc5_dialog clicked while it waited (answers).
+describe("a CC5 question answered Cancel in a batch (F-98)", () => {
+  let p: Project;
+  beforeEach(() => {
+    p = makeProject();
+    bridge.setSkinColor.mockResolvedValue(ok);
+  });
+  afterEach(() => fs.rmSync(p.root, { recursive: true, force: true }));
+  const askApply = (id: string) => asking(id, APPLY, waiting(id, "Apply the preset?", "OK, Cancel"));
+  /** A's base load (job cmd_ab12cd34_1) waits in a question, so the batch stops there; every other job finishes. */
+  const baseLoadAsks = () => jobStore((action, params, id) => {
+    if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+    return id === "cmd_ab12cd34_1" ? askApply(id) : finished(ok);
+  });
+
+  it("does not report OK a recipe step whose question the user answered Cancel", async () => {
+    const store = eyesAsk();
+    await batchHandler()(inProject(p, { variants: eyeVariants }));  // stops at A's eye preset
+    store.set("cmd_ab12cd34_2", { ...loadedEye(EYES), answers: CANCELLED });  // CC5 finished the load, applying nothing
+    const r = await batchHandler()(inProject(p, { variants: eyeVariants, continue_after: "cmd_ab12cd34_2" }));
+    expect(r.isError).toBe(true);
+    const lines = r.content[0].text.split("\n");
+    expect(lines[0]).toBe(`2/2 variants exported (1 OK: see the lines below). Manifest: ${p.manifestPath}`);
+    expect(lines[1]).toBe("FAIL A");
+    expect(lines[2]).toMatch(/^ {5}CANCELLED asset Eyes_01\.ccEye \(after the answer\): .*Cancel/);
+    expect(lines[3]).toBe("OK   B (the base, unchanged on purpose)");
+    expect(readManifest(p.manifestPath)?.variants.map((v) => [v.name, v.ok])).toEqual([["A", false], ["B", true]]);
+  });
+
+  it("does not report OK a variant whose recipe step's job was answered Cancel while the batch waited for it", async () => {
+    jobStore((action, params) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      return params.file_path === EYES ? { ...loadedEye(EYES), answers: CANCELLED } : finished(ok);
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, { ...input, variants: eyeVariants }, () => undefined, anyFile);
+    expect(m.variants[0]).toMatchObject({ name: "A", ok: false, fbx: "D:/P/Assets/Pt/A/A.fbx" });
+    expect(m.variants[0].steps[0]).toMatchObject({ step: "asset Eyes_01.ccEye", ok: false });
+    expect(m.variants[1]).toMatchObject({ name: "B", ok: true });
+  });
+
+  it("says CANCELLED, not FAIL, in the progress notification of a recipe step answered Cancel", async () => {
+    jobStore((action, params) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      return params.file_path === EYES ? { ...loadedEye(EYES), answers: CANCELLED } : finished(ok);
+    });
+    const progress: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await runBatch(bridge as any, { ...input, variants: eyeVariants }, () => undefined,
+      { ...anyFile, onProgress: (message) => progress.push(message) });
+    expect(progress).toEqual(["A (1/2): CANCELLED asset Eyes_01.ccEye", "A (1/2): OK skin_rgb", "A (1/2): FAILED",
+      "B (2/2): done"]);
+  });
+
+  // Batch F review #7: the scene clear had deleted every character and the Cancel loaded nothing, so the scene held
+  // none when the batch went on; the continuation was refused as a changed scene, and B was never built.
+  it("does not build a variant whose base load's question was answered Cancel, and builds the next", async () => {
+    const store = baseLoadAsks();
+    const first = await batchHandler()(inProject(p));
+    expect(first.content[0].text.split("\n")[0]).toMatch(/^Stopped at A \(base load\): /);
+    store.set("cmd_ab12cd34_1", { ...finished(ok), answers: CANCELLED });
+    bridge.getAvatars.mockResolvedValue([]);  // A's scene clear deleted Old, and the Cancel loaded nothing
+    const r = await batchHandler()({ ...inProject(p), continue_after: "cmd_ab12cd34_1" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text.split("\n").slice(0, 3)).toEqual([
+      `1/2 variants exported. Manifest: ${p.manifestPath}`,
+      "FAIL A: base load: CC5's question (the \"Character Creator 5\" window) was answered 'Cancel', so the base may " +
+        "not have loaded; this variant's recipe and export were not run",
+      "OK   B (the base, unchanged on purpose)",
+    ]);
+    expect(bridge.setSkinCondition).not.toHaveBeenCalled();
+    expect(store.started.map((j) => j.action)).toEqual(["load_asset", "load_asset", "export_for_unity"]);
+    expect(bridge.deleteAvatar).toHaveBeenCalledTimes(1);  // A's scene clear; B's found the scene empty
+    const written = readManifest(p.manifestPath);
+    expect(written?.stopped).toBeUndefined();
+    expect(written?.variants.map((v) => [v.name, v.ok])).toEqual([["A", false], ["B", true]]);
+    expect((await batchHandler()({ ...inProject(p), continue_after: "cmd_ab12cd34_1" })).content[0].text)
+      .toContain("is not where the last batch stopped");
+  });
+
+  // Batch F review #7: the same for a base load that failed after the answer.
+  it("does not build a variant whose base load failed after the answer, and builds the next", async () => {
+    const store = baseLoadAsks();
+    await batchHandler()(inProject(p));  // stops at A's base load
+    store.set("cmd_ab12cd34_1", LOAD_FAILED);
+    bridge.getAvatars.mockResolvedValue([]);  // A's scene clear deleted Old, and the load failed
+    const r = await batchHandler()({ ...inProject(p), continue_after: "cmd_ab12cd34_1" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text.split("\n").slice(0, 3)).toEqual([
+      `1/2 variants exported. Manifest: ${p.manifestPath}`,
+      "FAIL A: base load failed: LoadFile reported an error status",
+      "OK   B (the base, unchanged on purpose)",
+    ]);
+    expect(bridge.setSkinCondition).not.toHaveBeenCalled();
+    expect(store.started.map((j) => j.action)).toEqual(["load_asset", "load_asset", "export_for_unity"]);
+  });
+
+  it("still refuses a base load that finished after the answer when the scene changed during the pause", async () => {
+    const store = baseLoadAsks();
+    await batchHandler()(inProject(p));
+    store.set("cmd_ab12cd34_1", { ...finished(ok), answers: [{ button: "OK", title: "" }] });
+    bridge.getAvatars.mockResolvedValue([]);  // the base loaded, and was deleted during the pause
+    const r = await batchHandler()({ ...inProject(p), continue_after: "cmd_ab12cd34_1" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("The scene holds 0 characters now, not just variant A: it changed while the batch was " +
+      "stopped, so A cannot be finished from where it stopped. Run A and the variants not started (B) as a new batch, " +
+      "without continue_after. Nothing was changed in CC5.");
+    expect(store.started).toHaveLength(1);
+    expect(bridge.setSkinCondition).not.toHaveBeenCalled();
+  });
+
+  it("fails a variant whose base load was answered Cancel before the batch saw the question", async () => {
+    jobStore((action, params, id) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      return id === "cmd_ab12cd34_1" ? { ...finished(ok), answers: [{ button: "&Cancel" }] } : finished(ok);
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, input, () => undefined, anyFile);
+    expect(m.variants[0]).toMatchObject({ name: "A", ok: false, error: "base load: CC5's question was answered " +
+      "'Cancel', so the base may not have loaded; this variant's recipe and export were not run" });
+    expect(m.variants[1]).toMatchObject({ name: "B", ok: true });
+    expect(bridge.setSkinCondition).not.toHaveBeenCalled();
+  });
+
+  it("does not report OK a variant whose export's question was answered Cancel, and keeps its FBX", async () => {
+    const store = jobStore((action, _params, id) => action === "export_for_unity" ? askApply(id) : finished(ok));
+    const args = inProject(p, { variants: [input.variants[0]] });
+    const first = await batchHandler()(args);
+    expect(first.content[0].text.split("\n")[0]).toMatch(/^Stopped at A \(export\): /);
+    store.set("cmd_ab12cd34_2", { ...finished(exported("A")), answers: [{ button: "OK", title: "" }, ...CANCELLED] });
+    const r = await batchHandler()({ ...args, continue_after: "cmd_ab12cd34_2" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text.split("\n").slice(0, 2)).toEqual([
+      `1/1 variants exported (0 OK: see the lines below). Manifest: ${p.manifestPath}`,
+      "FAIL A: export: CC5's question (the \"Character Creator 5\" window) was answered 'Cancel', so CC5 may not have " +
+        "written the FBX as asked: check it before using it",
+    ]);
+    expect(readManifest(p.manifestPath)?.variants[0]).toMatchObject({ name: "A", ok: false, fbx: "D:/P/Assets/Pt/A/A.fbx",
+      budget_pass: true });
+    expect(store.started.filter((j) => j.action === "export_for_unity")).toHaveLength(1);
+  });
+
+  it("keeps a variant OK whose questions were answered with other buttons", async () => {
+    const store = jobStore((action, _params, id) => action === "export_for_unity" ? askApply(id) : finished(ok));
+    const args = inProject(p, { variants: [input.variants[0]] });
+    await batchHandler()(args);
+    store.set("cmd_ab12cd34_2", { ...finished(exported("A")), answers: [{ button: "OK", title: "Character Creator 5" }] });
+    const r = await batchHandler()({ ...args, continue_after: "cmd_ab12cd34_2" });
+    expect(r.isError).toBeUndefined();
+    expect(readManifest(p.manifestPath)?.variants[0]).toMatchObject({ name: "A", ok: true });
   });
 });
 
@@ -1559,6 +1885,54 @@ describe("skin overlays and skin conditions in a batch (F-75)", () => {
     expect(m2.variants[0]).toMatchObject({ ok: false, error: "injuries not carried: injuries step failed: boom" });
   });
 
+  // F-100 (live BO_Athletic): the injury images and the sidecar written beside the FBX were only in the manifest.
+  it("summarises under each variant's line what its export did with the injuries", async () => {
+    const skin = ["Std_Skin_Head", "Std_Skin_Body", "Std_Skin_Arm", "Std_Skin_Leg"];
+    const separate = noInjuries({
+      choice: "separate",
+      not_carried: [...skin.map((m) => `overlay.png on ${m} (Diffuse Blend overlay at 60%)`),
+        `pale skin on ${skin.join(", ")} (Digital Human skin shader: Brightness +0.036, Saturation -0.150)`],
+      done: [...skin.map((m) => `Injuries/${m}_DiffuseBlend.png (${m}, 60%)`),
+        `BO_Athletic_injuries.json: skin-condition values for ${skin.join(", ")}`],
+      sidecar: "D:\\P\\Assets\\Pt\\BO_Athletic\\BO_Athletic_injuries.json",
+    });
+    const baked = noInjuries({ choice: "bake", not_carried: [ARM], done: ["Textures/Std_Skin_Arm_Diffuse.png: overlay 60%"] });
+    const tint = "skin colour (0.8, 0.6, 0.5) on Std_Skin_Head: CC5 writes it as the FBX material colour, not yet checked in Unity";
+    const omitted = noInjuries({ not_carried: [ARM], unverified: [tint] });
+    exportResults.push({ ...exported("BO_Athletic"), injuries: separate }, { ...exported("BO_Baked"), injuries: baked },
+      { ...exported("BO_Omit"), injuries: omitted });
+    bridge.applySkinOverlay.mockResolvedValue(ok);
+    const overlay = { overlays: [{ image_path: "C:/o/overlay.png", strength: 60 }] };
+    const r = await batchHandler()(inProject(p, { variants: [
+      { name: "BO_Athletic", recipe: overlay, injuries: "separate" },
+      { name: "BO_Baked", recipe: overlay, injuries: "bake" },
+      { name: "BO_Omit", recipe: overlay },  // the batch's own injuries: 'omit'
+    ] }));
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text.split("\n").slice(1, 7)).toEqual([
+      "OK   BO_Athletic",
+      "     injuries 'separate': 4 overlay images and BO_Athletic_injuries.json written beside the FBX",
+      "OK   BO_Baked",
+      "     injuries 'bake': baked into 1 diffuse texture of this export (the bake formula is not yet checked against " +
+        "CC5's look)",
+      "OK   BO_Omit",
+      "     injuries 'omit': left out of the FBX, as asked; 1 item not verified to reach Unity",
+    ]);
+    const written = readManifest(p.manifestPath);
+    expect(written?.variants[0].injuries_summary).toBe("injuries 'separate': 4 overlay images and " +
+      "BO_Athletic_injuries.json written beside the FBX");
+    expect(written?.variants[0].injuries).toEqual(injuryLines(separate));  // the full lines stay in the manifest
+  });
+
+  it("adds no injuries line for a character without skin overlays or a skin condition", async () => {
+    const r = await batchHandler()(inProject(p, { variants: [input.variants[1]] }));
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text.split("\n").slice(1, 3)).toEqual(["OK   B (the base, unchanged on purpose)",
+      "1 variant(s) have no expression step and were exported with a neutral face (a .ccAvatar does not keep the " +
+        "facial expression)."]);
+    expect(readManifest(p.manifestPath)?.variants[0].injuries_summary).toBeUndefined();
+  });
+
   it("names the variants whose export carried no injuries report: the plugin is older than that check", async () => {
     exportResults.push(plainExport("A"), plainExport("B"));
     const r = await batchHandler()(inProject(p));
@@ -1628,11 +2002,10 @@ describe("content loads that changed more than they were for (F-34)", () => {
   });
 });
 
-describe("what a batch reports besides each variant (F-77, F-86)", () => {
+describe("what a batch reports besides each variant (F-77, F-89)", () => {
   let p: Project;
   beforeEach(() => { p = makeProject(); });
   afterEach(() => fs.rmSync(p.root, { recursive: true, force: true }));
-  const UNDO = "CC5 cleared its undo history with these exports: changes made before them can no longer be undone.";
 
   // F-77: a .ccAvatar does not keep the facial expression, so a variant without an expression step is neutral-faced.
   it("notes a neutral face only for variants without an expression step, and counts them", async () => {
@@ -1648,22 +2021,35 @@ describe("what a batch reports besides each variant (F-77, F-86)", () => {
       "(a .ccAvatar does not keep the facial expression).");
   });
 
-  // F-86: an FBX export clears CC5's undo history.
-  it("ends with one line when the exports cleared CC5's undo history", async () => {
+  // F-89 (live CC5 5.13, corrects F-86): an FBX export does not clear CC5's undo history, so the batch says nothing
+  // about it, also for results from a plugin installed before the fix that still send undo_history_cleared.
+  it("says nothing about CC5's undo history after its exports", async () => {
     exportResults.push({ ...exported("A"), undo_history_cleared: true }, { ...exported("B"), undo_history_cleared: true });
-    const lines = (await batchHandler()(inProject(p))).content[0].text.split("\n");
-    expect(lines.at(-1)).toBe(UNDO);
-    expect(lines.filter((l) => l.includes("cleared its undo history"))).toHaveLength(1);
-    const plain = await batchHandler()(inProject(p));
-    expect(plain.content[0].text).not.toContain("cleared its undo history");
+    const text = (await batchHandler()(inProject(p))).content[0].text;
+    expect(text.split("\n").at(-1)).toMatch(/^2 variant\(s\) have no expression step/);
+    expect(text).not.toContain("undo history");
   });
 
-  it("keeps the note about a replaced stop last, after the undo-history line", async () => {
+  it("keeps the note about a replaced stop last, with no undo-history line", async () => {
     eyesAsk((name) => ({ ...exported(name), undo_history_cleared: true }));
     await batchHandler()(inProject(p, { variants: eyeVariants }));
-    const lines = (await batchHandler()(inProject(p))).content[0].text.split("\n");
-    expect(lines.slice(-2)).toEqual([UNDO, "Note: the earlier batch that stopped at asset Eyes_01.ccEye (continue_after " +
-      '"cmd_ab12cd34_2") was not continued; that stop is forgotten.']);
+    const text = (await batchHandler()(inProject(p))).content[0].text;
+    expect(text.split("\n").at(-1)).toBe("Note: the earlier batch that stopped at asset Eyes_01.ccEye (continue_after " +
+      '"cmd_ab12cd34_2") was not continued; that stop is forgotten.');
+    expect(text).not.toContain("undo history");
+  });
+
+  // F-100: a variant line said only "FAIL A" when a recipe step failed; the reason was only in the manifest.
+  it("names each failed step under its variant's line", async () => {
+    bridge.setSkinCondition.mockResolvedValueOnce({ success: false, error: "No avatar in scene" });
+    const r = await batchHandler()(inProject(p));
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text.split("\n").slice(0, 4)).toEqual([
+      `2/2 variants exported (1 OK: see the lines below). Manifest: ${p.manifestPath}`,
+      "FAIL A",
+      "     FAIL skin_condition: No avatar in scene",
+      "OK   B (the base, unchanged on purpose)",
+    ]);
   });
 
   // TS-5: two soldiers exported with their FBX kept read '0/2 variants exported'.
@@ -1706,9 +2092,309 @@ describe("what a batch reports besides each variant (F-77, F-86)", () => {
   });
 });
 
+// F-92 (review #12): the scene clear goes through delete_avatar, which clears CC5's selection first (live: deleting a
+// character while its uniform pants were selected crashed CC5), says so, and deletes nothing when it cannot clear it.
+describe("the batch's scene clear and CC5's selection (F-92)", () => {
+  let p: Project;
+  beforeEach(() => { p = makeProject(); });
+  afterEach(() => fs.rmSync(p.root, { recursive: true, force: true }));
+  const threeVariants = () => inProject(p, { variants: [input.variants[0], { name: "B", recipe: { skin_rgb: RGB } },
+    { name: "C", recipe: {}, export_base_unchanged: true }] });
+  const TO_GO_ON = "To go on: clear CC5's selection (clear_selection, or deselect in Character Creator 5), then run " +
+    "batch_generate_patients again with the variants not finished: ";
+
+  it("shows under each variant what delete_avatar noted about CC5's selection", async () => {
+    const hatAndShirt = clearedNote("Hat, Shirt");
+    bridge.deleteAvatar
+      .mockResolvedValueOnce({ success: true, removed: ["Old"], notes: [CLEARED] })
+      .mockResolvedValueOnce({ success: true, removed: ["A"], notes: [hatAndShirt] });
+    const r = await batchHandler()(inProject(p));
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text.split("\n").slice(1, 5)).toEqual([
+      "OK   A",
+      `     scene clear: ${CLEARED}`,
+      "OK   B (the base, unchanged on purpose)",
+      `     scene clear: ${hatAndShirt}`,
+    ]);
+    expect(readManifest(p.manifestPath)?.variants.map((v) => v.scene_clear)).toEqual([[CLEARED], [hatAndShirt]]);
+  });
+
+  it("stops the batch before a variant whose scene clear delete_avatar refused, with its text", async () => {
+    bridge.setSkinColor.mockResolvedValue(ok);
+    bridge.deleteAvatar.mockResolvedValueOnce(ok).mockRejectedValueOnce(new BridgeHttpError(REFUSED, 400));
+    const r = await batchHandler()(threeVariants());
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text.split("\n")).toEqual([
+      "Stopped at B (scene clear): CC5 refused to delete a character in the scene, so nothing more was sent to CC5. " +
+        "Not started: C.",
+      `1/2 variants exported. Manifest: ${p.manifestPath}`,
+      "OK   A",
+      `FAIL B: ${REFUSED}`,
+      "1 variant(s) have no expression step and were exported with a neutral face (a .ccAvatar does not keep the " +
+        "facial expression).",
+      `${TO_GO_ON}B, C.`,
+    ]);
+    // Nothing of B or C reached CC5: no base load, recipe step or export after the refused delete.
+    expect(bridge.deleteAvatar).toHaveBeenCalledTimes(2);
+    expect(baseLoads()).toHaveLength(1);
+    expect(exportsOf().map((j) => j.params.character_name)).toEqual(["A"]);
+    expect(bridge.setSkinColor).not.toHaveBeenCalled();
+    const written = readManifest(p.manifestPath);
+    expect(written?.stopped).toBe(r.content[0].text.split("\n")[0]);
+    expect(written?.variants.map((v) => [v.name, v.ok, v.error])).toEqual([["A", true, undefined], ["B", false, REFUSED]]);
+    // No continue_after: the batch runs again once CC5's selection is cleared.
+    expect(r.content[0].text).not.toContain("continue_after");
+  });
+
+  it("stops on a refusal because CC5's selection could not be read, also when the bridge returns it as a result", async () => {
+    const notRead = "CC5's selection could not be read or cleared, so nothing was deleted: deleting a character while " +
+      "one of its worn items is selected can crash CC5 (F-92). Run clear_selection (or deselect everything in Character Creator 5), then delete again.";
+    bridge.deleteAvatar.mockResolvedValueOnce({ success: false, error: notRead });
+    const stops: BatchStopDetail[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = await runBatch(bridge as any, input, () => undefined, { ...anyFile, onStop: (d) => { stops.push(d); return "stop_1"; } });
+    expect(m.stopped).toBe("Stopped at A (scene clear): CC5 refused to delete a character in the scene, so nothing more " +
+      "was sent to CC5. Not started: B.");
+    expect(m.variants).toEqual([expect.objectContaining({ name: "A", ok: false,
+      error: `could not remove existing avatar Old: ${notRead}` })]);
+    expect(m.variants[0].stopped).toBeUndefined();
+    expect(stops).toEqual([]);  // not a CC5 question: nothing for continue_after
+    expect(started).toEqual([]);
+  });
+
+  it("stops the batch at a variant whose own recipe base step delete_avatar refused, and does not export it", async () => {
+    const variantBase = path.join(p.root, "Variant.ccAvatar");
+    fs.writeFileSync(variantBase, "saved variant base");
+    // The batch's own scene clear works; the recipe's base step is refused.
+    bridge.deleteAvatar.mockResolvedValueOnce(ok).mockRejectedValueOnce(new BridgeHttpError(REFUSED, 400));
+    bridge.setSkinColor.mockResolvedValue(ok);
+    const r = await batchHandler()(inProject(p, { variants: [{ name: "A", recipe: { base: variantBase, skin_rgb: RGB } },
+      input.variants[1]] }));
+    expect(r.isError).toBe(true);
+    const lines = r.content[0].text.split("\n");
+    expect(lines[0]).toBe("Stopped at A (base): CC5 refused to delete a character in the scene, so nothing more was " +
+      "sent to CC5. Not started: B.");
+    expect(lines[1]).toBe(`0/1 variants exported. Manifest: ${p.manifestPath}`);
+    // Its text once, on the variant's line: the failed base step is not repeated under it.
+    expect(lines[2].startsWith("FAIL A: ")).toBe(true);
+    expect(lines[2].endsWith(REFUSED)).toBe(true);
+    expect(lines.slice(3)).toEqual([`${TO_GO_ON}A, B.`]);
+    expect(exportsOf()).toEqual([]);
+    expect(readManifest(p.manifestPath)?.variants.map((v) => [v.name, v.ok, v.fbx])).toEqual([["A", false, undefined]]);
+  });
+
+  it("keeps a stopped variant's scene-clear notes for continue_after", async () => {
+    const store = eyesAsk();
+    bridge.setSkinColor.mockResolvedValue(ok);
+    bridge.deleteAvatar.mockResolvedValueOnce({ success: true, removed: ["Old"], notes: [CLEARED] });
+    const first = await batchHandler()(inProject(p, { variants: eyeVariants }));
+    expect(first.content[0].text.split("\n").slice(2, 4)).toEqual([`WAIT A: stopped: ${waiting("cmd_ab12cd34_2")}; not exported`,
+      `     scene clear: ${CLEARED}`]);
+
+    store.set("cmd_ab12cd34_2", loadedEye(EYES));
+    const r = await batchHandler()(inProject(p, { variants: eyeVariants, continue_after: "cmd_ab12cd34_2" }));
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text.split("\n").slice(1, 3)).toEqual(["OK   A", `     scene clear: ${CLEARED}`]);
+    expect(readManifest(p.manifestPath)?.variants[0].scene_clear).toEqual([CLEARED]);
+  });
+
+  // The ts-recipe review: continue_after dropped the WAIT step's notes, so the cleared selection went unsaid.
+  it("keeps what a recipe base step's delete noted with that step when it finishes after the answer", async () => {
+    const variantBase = path.join(p.root, "Variant.ccAvatar");
+    fs.writeFileSync(variantBase, "saved variant base");
+    const store = jobStore((action, params, id) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      return params.file_path === variantBase ? asking(id, APPLY, waiting(id, "Apply the preset?", "OK, Cancel")) : finished(ok);
+    });
+    bridge.setSkinColor.mockResolvedValue(ok);
+    // The batch's scene clear notes nothing; the recipe's base step cleared CC5's selection before its delete.
+    bridge.deleteAvatar.mockResolvedValueOnce(ok).mockResolvedValueOnce({ success: true, removed: ["Old"], notes: [CLEARED] });
+    const args = inProject(p, { variants: [{ name: "A", recipe: { base: variantBase, skin_rgb: RGB } }] });
+    const first = await batchHandler()(args);
+    expect(first.content[0].text.split("\n").slice(2, 4)).toEqual([
+      `WAIT A: stopped: ${waiting("cmd_ab12cd34_2", "Apply the preset?", "OK, Cancel")}; not exported`,
+      `     base: ${CLEARED}`]);
+
+    store.set("cmd_ab12cd34_2", finished(ok));
+    const r = await batchHandler()({ ...args, continue_after: "cmd_ab12cd34_2" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text.split("\n").slice(1, 3)).toEqual(["OK   A", `     base (after the answer): ${CLEARED}`]);
+    expect(readManifest(p.manifestPath)?.variants[0].steps[0]).toEqual({ step: "base (after the answer)", ok: true,
+      detail: "", notes: [CLEARED] });
+  });
+
+  it("keeps them with the base step that runs again after a window kept its load from running", async () => {
+    const variantBase = path.join(p.root, "Variant.ccAvatar");
+    fs.writeFileSync(variantBase, "saved variant base");
+    let blocked = false;
+    const store = jobStore((action, params) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      if (params.file_path === variantBase && !blocked) {
+        blocked = true;
+        return finished({ success: false, error: GUARD });
+      }
+      return finished(ok);
+    });
+    bridge.setSkinColor.mockResolvedValue(ok);
+    bridge.deleteAvatar.mockResolvedValueOnce(ok).mockResolvedValueOnce({ success: true, removed: ["Old"], notes: [CLEARED] });
+    const args = inProject(p, { variants: [{ name: "A", recipe: { base: variantBase, skin_rgb: RGB } }] });
+    const first = await batchHandler()(args);
+    const id = continueId(first.content[0].text);
+    expect(id).toMatch(/^stop_\d+$/);
+    expect(first.content[0].text).toContain(`\nWAIT A: stopped: ${GUARD}; not exported\n     base: ${CLEARED}\n`);
+
+    bridge.getAvatars.mockResolvedValue([]);  // the base step deleted the character before the window stopped it
+    const r = await batchHandler()({ ...args, continue_after: id });
+    expect(r.isError).toBeUndefined();
+    expect(store.started.filter((j) => j.params.file_path === variantBase)).toHaveLength(2);
+    expect(r.content[0].text.split("\n").slice(1, 3)).toEqual(["OK   A", `     base: ${CLEARED}`]);
+    expect(readManifest(p.manifestPath)?.variants[0].steps[0]).toEqual({ step: "base", ok: true, detail: "",
+      notes: [CLEARED] });
+  });
+});
+
+// The batch's own scene clear and base load worked, then the variant recipe's base step failed: an export would have
+// been the character the scene held (the batch's base, or nothing), not the variant's (the ts-recipe review).
+describe("a variant whose own recipe's base step failed is not exported", () => {
+  let p: Project;
+  let variantBase: string;
+  beforeEach(() => {
+    p = makeProject();
+    variantBase = path.join(p.root, "Variant.ccAvatar");
+    fs.writeFileSync(variantBase, "saved variant base");
+    bridge.setSkinColor.mockResolvedValue(ok);
+  });
+  afterEach(() => fs.rmSync(p.root, { recursive: true, force: true }));
+  const args = () => inProject(p, { variants: [{ name: "A", recipe: { base: variantBase, skin_rgb: RGB } }, input.variants[1]] });
+  const exportedNames = (jobs: Array<{ action: string; params: Record<string, unknown> }>) =>
+    jobs.filter((j) => j.action === "export_for_unity").map((j) => j.params.character_name);
+  /** The base step's load waits in a question, so the batch stops there (continue_after "cmd_ab12cd34_2"). */
+  const baseAsks = () => jobStore((action, params, id) => {
+    if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+    return params.file_path === variantBase ? asking(id, APPLY, waiting(id, "Apply the preset?", "OK, Cancel")) : finished(ok);
+  });
+  /**
+   * Batch F review #7: the scene once the base step had deleted Old and its load was answered Cancel or failed. It holds
+   * no character, so the rest of A's recipe fails there, as the plugin's set_skin_color does ("No avatar in scene").
+   */
+  const leaveSceneEmpty = () => {
+    bridge.getAvatars.mockResolvedValue([]);
+    bridge.setSkinColor.mockRejectedValueOnce(new BridgeHttpError("No avatar in scene", 400));
+  };
+
+  it("fails it with the base step's error when that step failed, and builds the next variant", async () => {
+    // The batch's scene clear works; the recipe's base step cannot delete the character (not F-92's refusal).
+    bridge.deleteAvatar.mockResolvedValueOnce(ok).mockResolvedValueOnce({ success: false, error: "locked" });
+    const r = await batchHandler()(args());
+    expect(r.isError).toBe(true);
+    // The base step's error once, on the variant's line: it is not repeated under it.
+    expect(r.content[0].text.split("\n").slice(0, 3)).toEqual([
+      `1/2 variants exported. Manifest: ${p.manifestPath}`,
+      "FAIL A: not exported: its recipe's base step failed (could not remove existing avatar Old: locked), so the " +
+        "scene may not hold its base",
+      "OK   B (the base, unchanged on purpose)",
+    ]);
+    expect(exportedNames(started)).toEqual(["B"]);
+    const written = readManifest(p.manifestPath);
+    expect(written?.stopped).toBeUndefined();
+    expect(written?.variants[0]).toMatchObject({ name: "A", ok: false });
+    expect(written?.variants[0].fbx).toBeUndefined();
+    expect(written?.variants[0].steps[0]).toEqual({ step: "base", ok: false, detail: "could not remove existing avatar Old: locked" });
+  });
+
+  // Batch F review #11: the base step deleted Old before its load, and nothing compared that load, so its line says
+  // CC5 may not have done it and that the characters were already deleted, never that CC5 applied nothing.
+  it("does the same when the base load was answered Cancel in CC5 (F-98)", async () => {
+    const store = jobStore((action, params) => {
+      if (action === "export_for_unity") return finished(exported(String(params.character_name)));
+      return params.file_path === variantBase ? { ...finished(ok), answers: CANCELLED } : finished(ok);
+    });
+    const r = await batchHandler()(args());
+    expect(r.isError).toBe(true);
+    const line = r.content[0].text.split("\n")[1];
+    expect(line).toBe(`FAIL A: not exported: its recipe's base step was cancelled (${CANCELLED_BASE}), so the scene ` +
+      "may not hold its base");
+    expect(line).not.toContain("applied nothing");
+    expect(exportedNames(store.started)).toEqual(["B"]);
+  });
+
+  // Batch F review #7: the base step had deleted Old and the Cancel loaded nothing, so the scene held no character when
+  // the batch went on; the continuation was refused as a changed scene, and B was never built.
+  it("does the same when the base load finished after the answer as cancelled (continue_after)", async () => {
+    const store = baseAsks();
+    const first = await batchHandler()(args());
+    expect(first.content[0].text.split("\n")[0]).toMatch(/^Stopped at A \(base\): /);
+    store.set("cmd_ab12cd34_2", { ...finished(ok), answers: CANCELLED });
+    leaveSceneEmpty();
+    const r = await batchHandler()({ ...args(), continue_after: "cmd_ab12cd34_2" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text.split("\n").slice(0, 4)).toEqual([
+      `1/2 variants exported. Manifest: ${p.manifestPath}`,
+      `FAIL A: not exported: its recipe's base step was cancelled (${CANCELLED_BASE}), so the scene may not hold ` +
+        "its base",
+      "     FAIL skin_rgb: No avatar in scene",
+      "OK   B (the base, unchanged on purpose)",
+    ]);
+    expect(exportedNames(store.started)).toEqual(["B"]);
+    const written = readManifest(p.manifestPath);
+    expect(written?.stopped).toBeUndefined();
+    expect(written?.variants.map((v) => [v.name, v.ok])).toEqual([["A", false], ["B", true]]);
+  });
+
+  // Batch F review #7: the same for a base step whose load failed after the answer.
+  it("does the same when the base load failed after the answer (continue_after)", async () => {
+    const store = baseAsks();
+    await batchHandler()(args());  // stops at A's base step
+    store.set("cmd_ab12cd34_2", LOAD_FAILED);
+    leaveSceneEmpty();
+    const r = await batchHandler()({ ...args(), continue_after: "cmd_ab12cd34_2" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text.split("\n").slice(0, 4)).toEqual([
+      `1/2 variants exported. Manifest: ${p.manifestPath}`,
+      "FAIL A: not exported: its recipe's base step failed (LoadFile reported an error status), so the scene may not " +
+        "hold its base",
+      "     FAIL skin_rgb: No avatar in scene",
+      "OK   B (the base, unchanged on purpose)",
+    ]);
+    expect(exportedNames(store.started)).toEqual(["B"]);
+    expect(readManifest(p.manifestPath)?.variants[0].steps[0]).toEqual({ step: "base (after the answer)", ok: false,
+      detail: "LoadFile reported an error status" });
+  });
+
+  it("still refuses a base step that finished after the answer when the scene changed during the pause", async () => {
+    const store = baseAsks();
+    await batchHandler()(args());
+    store.set("cmd_ab12cd34_2", { ...finished(ok), answers: [{ button: "OK", title: "" }] });
+    bridge.getAvatars.mockResolvedValue([]);  // the variant's base loaded, and was deleted during the pause
+    const r = await batchHandler()({ ...args(), continue_after: "cmd_ab12cd34_2" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe("The scene holds 0 characters now, not just variant A: it changed while the batch was " +
+      "stopped, so A cannot be finished from where it stopped. Run A and the variants not started (B) as a new batch, " +
+      "without continue_after. Nothing was changed in CC5.");
+    expect(bridge.setSkinColor).not.toHaveBeenCalled();
+    expect(exportedNames(store.started)).toEqual([]);
+  });
+});
+
 describe("the CC5 texts a batch reads", () => {
   it("matches what server.py sends for a direct call that never started", () => {
     const server = fs.readFileSync(new URL("../../cc5-plugin/server.py", import.meta.url), "utf-8");
     expect(server).toContain("Timed out before CC5 started the command");
+  });
+
+  it("matches both of delete_avatar's refusals when CC5's selection could not be cleared (F-92)", () => {
+    const api = fs.readFileSync(new URL("../../cc5-plugin/cc5_api.py", import.meta.url), "utf-8");
+    for (const name of ["DELETE_SELECTION_NOT_CLEARED", "DELETE_SELECTION_NOT_READ"]) {
+      expect(new RegExp(`${name} = \\("[^"]*${SELECTION_NOT_CLEARED}`).test(api)).toBe(true);
+    }
+  });
+
+  it("matches delete_avatar's note after it cleared CC5's selection, its one note before a delete (F-92, review #2)", () => {
+    const api = fs.readFileSync(new URL("../../cc5-plugin/cc5_api.py", import.meta.url), "utf-8");
+    const crash = /_SELECTED_ITEM_CRASH = "([^"]+)"/.exec(api)?.[1];
+    expect(api).toMatch(/f"CC5's selection \(\{\w+\}\) was cleared before the delete: \{_SELECTED_ITEM_CRASH\}\."/);
+    expect(CLEARED).toBe(`CC5's selection (Pants) was cleared before the delete: ${crash}.`);
+    // Its WARNING note for a clear that failed is gone: it deletes nothing then (REFUSED above).
+    expect(api).not.toContain("could not be cleared before the delete");
   });
 });

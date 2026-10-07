@@ -9,6 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, errorResult, warningNotes } from "../util.js";
 import { checkFile, IMAGE_EXTENSIONS, IMAGE_TYPES_TEXT } from "./pipeline.js";
+import { shaderValue } from "./material.js";
 
 export const SKIN_REGIONS = ["all", "head", "body", "arms", "legs"] as const;
 export const SKIN_CONDITIONS = ["normal", "pale", "cyanotic", "flushed", "jaundiced"] as const;
@@ -54,9 +55,10 @@ function overlayRemoved(region: string, r: RemoveOverlayResult): string {
 }
 
 export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
+  // F-68: live, a BMP and a TIFF overlay each showed on the arms as a PNG does, so every accepted type is listed.
   server.tool(
     "apply_skin_overlay",
-    "Blend an image over the character's skin (bruising, abrasions, dirt, dried blood). The overlay is an image file the user provides (" + IMAGE_TYPES_TEXT + "; BMP and TIFF are not yet tested in CC5 5.13), laid out on the CC skin UVs (author it in Substance Painter or Photoshop). Strength 0-100.",
+    "Blend an image over the character's skin (bruising, abrasions, dirt, dried blood). The overlay is an image file the user provides (" + IMAGE_TYPES_TEXT + "), laid out on the CC skin UVs (author it in Substance Painter or Photoshop). Strength 0-100.",
     {
       image_path: z.string().describe("Absolute path to the overlay image (" + IMAGE_TYPES_TEXT + ")"),
       region: z.enum(SKIN_REGIONS).default("all"),
@@ -112,9 +114,11 @@ export function registerSkinTools(server: McpServer, bridge: CC5Bridge) {
       parameter_name: z.string().min(1).max(200).describe("Shader parameter name, e.g. 'Original Roughness Strength'"),
       values: z.array(z.number()).min(1).max(16).describe("New value(s), as many as the parameter has, e.g. [0.4]"),
     },
+    // F-102: CC5 keeps shader values as float32 (live, set_shader_parameter: RootColor 0.02 came back as
+    // 0.019999999552965164), so the read-back is shown as set_shader_parameter shows it, to at most 4 decimals.
     async ({ parameter_name, values }) => bridgeCall(() => bridge.setSkinShader(parameter_name, values),
       (r) => r.success
-        ? [`${parameter_name} set to [${(r.values ?? values).join(", ")}] on: ${(r.materials ?? []).join(", ")}`,
+        ? [`${parameter_name} set to [${(r.values ?? values).map(shaderValue).join(", ")}] on: ${(r.materials ?? []).join(", ")}`,
            ...((r.skipped ?? []).length
              ? [`WARNING: not set on every skin material, so a seam may show. Skipped: ${(r.skipped ?? []).join("; ")}`]
              : [])].join("\n")

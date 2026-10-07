@@ -9,7 +9,7 @@ import { bridgeCall } from "../util.js";
 export function registerEditTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "undo",
-    "Undo the last action in CC5. Use this to revert the most recent change. CC5 does not say when nothing is left to undo (this still reports success), so undo only as many steps as there were changes: after a viewport capture, an extra undo lets a later redo replay the capture instead of the change. An FBX export (export_fbx, export_for_unity, export_textures, batch_generate_patients) clears CC5's undo history: nothing done before it can be undone, and undo still reports success.",
+    "Undo the last action in CC5. Use this to revert the most recent change. CC5 does not say when nothing is left to undo (this still reports success), so undo only as many steps as there were changes: after a viewport capture, an extra undo lets a later redo replay the capture instead of the change. Live (CC5 5.13): after an FBX export, an undo did not take back a light's intensity change made before the export, and still reported success; morph and skin changes undo normally across exports.",
     {},
     async () => bridgeCall(
       () => bridge.undo(),

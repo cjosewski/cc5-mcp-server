@@ -55,23 +55,32 @@ Write-Host "[CC5] Launching CC5 (CC5_RECOVERY_ANSWER=$RecoveryAnswer)..."
 # Start-Process passes this process's environment to CC5, where the plugin reads it.
 $env:CC5_RECOVERY_ANSWER = $RecoveryAnswer
 Start-Process $cc5Path
+# The time to the bridge is measured from the launch. The count of 2 s sleeps printed before (live: "Bridge up after
+# 34s" and "16s") left out one sleep and the time each health request took.
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
 
-# 3. Wait for the bridge
+# 3. Wait for the bridge. F-93: without -UseBasicParsing, Windows PowerShell 5.1's Invoke-WebRequest threw on every
+# answer ("Object reference not set to an instance of an object"), so every start reported a bridge that was in fact
+# up after about 70 s. The check stops as soon as the bridge answers; 240 s is only the limit.
+$BridgeWaitSeconds = 240
 Write-Host "[CC5] Waiting for the bridge..."
 $up = $false
-for ($i = 0; $i -lt 60; $i++) {
+for ($i = 0; $i -lt ($BridgeWaitSeconds / 2); $i++) {
     Start-Sleep -Seconds 2
     try {
-        $r = Invoke-WebRequest -Uri "http://127.0.0.1:5101/health" -TimeoutSec 2 -ErrorAction SilentlyContinue
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:5101/health" -TimeoutSec 2 -UseBasicParsing -ErrorAction SilentlyContinue
         if ($r.StatusCode -eq 200) {
-            Write-Host "[CC5] Bridge up after $($i * 2)s"
+            Write-Host "[CC5] Bridge up after $([math]::Floor($clock.Elapsed.TotalSeconds))s"
             $up = $true
             break
         }
     } catch {}
 }
 if (-not $up) {
-    Write-Host "[CC5] The bridge did not answer within 120 s. Check the CC5 window."
+    # Live starts took up to about 70 s (F-93), so a bridge still silent here points at the CC5 window, not at a slow
+    # start.
+    Write-Host "[CC5] The bridge did not answer within $BridgeWaitSeconds s (live starts took up to about 70 s)."
+    Write-Host "[CC5] Check the CC5 window (the 3D Creator / AI Studio chooser, a startup dialog), and check the bridge with: curl.exe http://127.0.0.1:5101/health"
 }
 
 # 4. CC5's startup questions

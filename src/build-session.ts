@@ -28,14 +28,20 @@ export const DIALOG_CHECK_MS = 3_000;
 
 export type BuildKind = "recipe" | "batch";
 
+/** How the texts isBlockedByDialog knows begin. */
+const BLOCKED_PREFIXES = [
+  "CC5 is waiting for an answer to ", "CC5's Welcome / What's New page", "CC5 is busy with ",
+  "CC5 has a window open with no buttons: ", "CC5 has a window open whose buttons this bridge cannot read: ",
+];
+
 /**
  * The texts CC5 sends when a command could not run because a window was open: the open-dialog guard's
  * (server.py _modal_dialog_error: a question, the Welcome page, a progress window, a window with no buttons such as
- * SkinGen's About box, F-85) and a command waiting in the question it opened (server.py _waiting_dialog_error, 409).
+ * SkinGen's About box, F-85, and a window whose buttons the bridge cannot read, F-99: a QML dialog such as CC5's
+ * Export FBX) and a command waiting in the window it opened (server.py _waiting_dialog_error, 409).
  */
 export function isBlockedByDialog(text?: string): boolean {
-  return /^(CC5 is waiting for an answer to |CC5's Welcome \/ What's New page|CC5 is busy with |CC5 has a window open with no buttons: )/
-    .test(text ?? "");
+  return BLOCKED_PREFIXES.some((prefix) => (text ?? "").startsWith(prefix));
 }
 
 /** A direct call that never started because CC5's queue did not move for 30 s (server.py _execute_sync, 504). */

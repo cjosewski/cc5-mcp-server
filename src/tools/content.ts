@@ -11,6 +11,45 @@ import { isBrowseError } from "./builder.js";
 
 export const NO_AVATAR = "No avatar in the scene.";
 
+// I-07 (Chad, 2026-10-07): "Some of those hairstyles are super low poly versions made for mobile games. These need to
+// be classified as such and used only as a failsafe." CC5's Lite Hair sets (Hair/Group/Lite Hair Female Vol. 1-3,
+// Lite Hair Male Vol. 1-3, Lite Hair Afro Vol. 1-2) are mobile versions: live, Lite Hair Female Vol. 1/Pixie.rlHair
+// has 3,390 triangles and renders clay-like; Prime Hairstyles/06_Ear length Bob.rlHair has 15,808.
+export const LITE_HAIR_LABEL = " - Lite Hair: low-poly mobile version, only as a fallback";
+
+/** I-07: whether a content path lies in a folder whose name starts with "Lite Hair" (the file's own name is not looked at). */
+export function isLiteHair(filePath: string): boolean {
+  return filePath.split(/[\\/]/).slice(0, -1).some((folder) => /^lite hair/i.test(folder.trim()));
+}
+
+/** I-07: what follows a hair entry's path in a reply: LITE_HAIR_LABEL for a Lite Hair hairstyle, else nothing. */
+export function liteHairLabel(filePath: string): string {
+  return isLiteHair(filePath) ? LITE_HAIR_LABEL : "";
+}
+
+/**
+ * I-07: `entries` with the Lite Hair hairstyles moved after the other hairstyles, each group in its own order.
+ * `hairPath` gives a hair entry's path and undefined for any other entry, which keeps its place (search_content's hits
+ * of other categories). For browse_content's hair list and search_content's hits. This module imports builder.ts, so
+ * builder.ts may use these helpers inside its handlers only, never while the modules load.
+ */
+export function liteHairLast<T>(entries: T[], hairPath: (entry: T) => string | undefined): T[] {
+  const places: number[] = [];
+  const full: T[] = [];
+  const lite: T[] = [];
+  entries.forEach((entry, i) => {
+    const p = hairPath(entry);
+    if (p === undefined) return;
+    places.push(i);
+    (isLiteHair(p) ? lite : full).push(entry);
+  });
+  const ordered = [...entries];
+  [...full, ...lite].forEach((entry, k) => {
+    ordered[places[k]] = entry;
+  });
+  return ordered;
+}
+
 const BROWSE_DESCRIPTION =
   "Browse available CC5 content files by category. Returns file paths that can be loaded with load_asset. Wearables: " +
   "cloth_upper (shirts, coats), cloth_lower (pants, skirts), cloth (full-body outfits), underwear, gloves, cloth_other " +
@@ -110,9 +149,11 @@ export function registerContentTools(server: McpServer, bridge: CC5Bridge) {
         if (files.length === 1 && isBrowseError(files[0])) {
           return files[0];
         }
-        const display = files.slice(0, 50);
+        // I-07: Lite Hair hairstyles are labelled and come after the others, so the 50 shown are full quality first.
+        const hair = folder_type === "hair";
+        const display = (hair ? liteHairLast(files, (f) => f) : files).slice(0, 50);
         let text = `Found ${files.length}${truncated ? "+" : ""} content file(s) for '${folder_type}':\n`;
-        text += display.map(f => `- ${f}`).join("\n");
+        text += display.map(f => `- ${f}${hair ? liteHairLabel(f) : ""}`).join("\n");
         if (files.length > 50) {
           text += `\n... and ${files.length - 50} more`;
         }

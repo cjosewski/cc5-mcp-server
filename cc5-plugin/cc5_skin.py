@@ -60,6 +60,14 @@ _IMAGE_NOT_KNOWN = ("the overlay image is not known after an undo or a change ma
                     "apply_skin_overlay or load_texture, then export again")
 _RECORDED_IMAGES_NOTE = ("Overlay images are named as this bridge last loaded them (apply_skin_overlay, load_texture): "
                          "an image changed in CC5 itself is not seen.")
+# Batch F review #3: CC5's colour reads of a character in cc5_api._colours_late_since_undo may still give its last
+# render. It is there after an undo or redo with it in the scene (review #20), or after a load whose comparison found
+# CC5 still reporting a colour or opacity from before the bridge set it (cc5_changes._settle), until a capture whose
+# RenderImage wrote the file. A skin colour the export reads from CC5 there (the bridge has no record of its own) may
+# be late, so skin_export_state adds this once, with the injuries notes export_for_unity's reply shows.
+_TINTS_MAY_BE_LATE = ("WARNING: {character}'s skin colours were read with no capture since an undo or redo, or since a "
+                      "load after which CC5 still reported a colour or opacity from before the bridge set it, so CC5 "
+                      "may report them late: run capture_viewport, then export again.")
 
 
 def is_skin_material(mat: str) -> bool:
@@ -269,6 +277,7 @@ def set_skin_condition(condition: str, amount: float = 1.0, region: str = "all",
     try:
         for mesh, mat in targets:
             _raise_on_error(mat_comp.AddDiffuseKey(now_key(), mesh, mat, color), f"AddDiffuseKey on {mat}")
+            cc5_api._note_colour_write(avatar, mesh, mat, rgb)  # F-90: CC5 reports it only after it renders
             if (mesh, mat) in with_offsets:
                 for name, value in offsets.items():
                     mat_comp.SetShaderParameter(mesh, mat, name, [value])
@@ -391,15 +400,42 @@ def _read_pallor(mat_comp: Any, mesh: str, mat: str, state: dict[str, Any]) -> N
         state["pallor"].append({"mesh": mesh, "material": mat, "brightness": brightness, "saturation": saturation})
 
 
-def _read_tint(mat_comp: Any, mesh: str, mat: str, state: dict[str, Any]) -> None:
-    try:
-        color = mat_comp.GetDiffuseColor(mesh, mat)
-        rgb = [float(color.Red()), float(color.Green()), float(color.Blue())]
-    except Exception as e:
-        state["notes"].append(f"{mat}: CC5 could not read its diffuse colour ({e})")
-        return
+def _read_tint(avatar: Any, mat_comp: Any, mesh: str, mat: str, state: dict[str, Any]) -> bool:
+    """A skin material's diffuse colour into state["tints"] when it is not white; True when that colour is CC5's read.
+    F-90 (review #0): CC5 reports a colour only after it renders, so right after set_skin_condition its read still gave
+    the colour from before. A colour the bridge set since CC5 last rendered therefore comes from the bridge's record
+    (cc5_api._recorded_diffuse, on the 0-255 steps CC5 holds), as in the F-34 comparison; any other is CC5's read,
+    which may be late too (batch F review #3: skin_export_state says so, _colours_may_be_late)."""
+    recorded = cc5_api._recorded_diffuse(avatar, mesh, mat)
+    if recorded is not None:
+        rgb = [float(c) for c in recorded]
+    else:
+        try:
+            color = mat_comp.GetDiffuseColor(mesh, mat)
+            rgb = [float(color.Red()), float(color.Green()), float(color.Blue())]
+        except Exception as e:
+            state["notes"].append(f"{mat}: CC5 could not read its diffuse colour ({e})")
+            return False
     if min(rgb) < 254:
         state["tints"].append({"mesh": mesh, "material": mat, "rgb": [round(c / 255.0, 2) for c in rgb]})
+    return recorded is None
+
+
+def _colours_may_be_late(avatar: Any) -> bool:
+    """Whether the character is in cc5_api._colours_late_since_undo (batch F review #3), so CC5's colour reads of it
+    may still give its last render. Never raises: an id or a set that cannot be read counts as not in it."""
+    try:
+        return str(avatar.GetID()) in {str(i) for i in getattr(cc5_api, "_colours_late_since_undo", ())}
+    except Exception:
+        return False
+
+
+def _character_name(avatar: Any) -> str:
+    """The character's name for a note, else "the character". Never raises."""
+    try:
+        return str(avatar.GetName()) or "the character"
+    except Exception:
+        return "the character"
 
 
 def skin_export_state(avatar: Any) -> dict[str, Any]:
@@ -409,9 +445,12 @@ def skin_export_state(avatar: Any) -> dict[str, Any]:
     skin, and stale: True when the bridge's record cannot say which image CC5 shows (P-1), so it is neither shipped nor
     baked}], from every material of every mesh in GetMeshNames(True), worn items' too: load_texture('diffuse_blend')
     can put an overlay on any material. pallor: [{mesh, material, brightness, saturation}] of skin materials whose
-    pallor offsets are not 0. tints: [{mesh, material, rgb (0-1)}] of skin materials whose diffuse colour is not white.
+    pallor offsets are not 0. tints: [{mesh, material, rgb (0-1)}] of skin materials whose diffuse colour is not white
+    (the colour the bridge set since CC5 last rendered, else CC5's read: _read_tint, F-90).
     unread: materials CC5 could not read (reported as not verified; they never stop an export). notes: reads that
-    disagree with the bridge's records, or failed.
+    disagree with the bridge's records, or failed, and _TINTS_MAY_BE_LATE once when a skin colour is CC5's read on a
+    character whose colour reads CC5 may give late (batch F review #3), whatever colour it read: white too, since a
+    tint the skin has may be what the read misses.
     """
     state: dict[str, Any] = {"overlays": [], "pallor": [], "tints": [], "unread": [], "notes": []}
     refresh_current_frame()
@@ -454,9 +493,12 @@ def skin_export_state(avatar: Any) -> dict[str, Any]:
         state["unread"].append(f"the skin materials: CC5 could not list them ({e}), so a skin condition is not "
                                "ruled out")
         targets = []
+    read_from_cc5 = False
     for mesh, mat in targets:
         _read_pallor(mat_comp, mesh, mat, state)
-        _read_tint(mat_comp, mesh, mat, state)
+        read_from_cc5 = _read_tint(avatar, mat_comp, mesh, mat, state) or read_from_cc5
+    if read_from_cc5 and _colours_may_be_late(avatar):
+        state["notes"].append(_TINTS_MAY_BE_LATE.format(character=_character_name(avatar)))
     return state
 
 

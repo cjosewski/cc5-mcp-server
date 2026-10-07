@@ -172,29 +172,22 @@ def export_for_unity(
     # WARNING notes: job_status and a batch then never show a failed bake or copy as a clean finish.
     notes = list(result.get("notes", [])) + [INJURY_WARNING_PREFIX + line for line in report["failed"]]
     # Listed again: a bake rewrites this export's textures, 'separate' adds the Injuries folder and the sidecar.
-    # undo_history_cleared comes from export_fbx (F-86: the FBX export cleared CC5's undo history).
     return {"success": True, "fbx": fbx, "folder": folder, "files": list_files(folder, since=started),
             "notes": notes, "export_level": result.get("export_level"),
             "texture_size": result.get("texture_size"), "injuries": report,
-            "remove_tearline_occlusion": bool(remove_tearline_occlusion),
-            "undo_history_cleared": bool(result.get("undo_history_cleared"))}
+            "remove_tearline_occlusion": bool(remove_tearline_occlusion)}
 
 
 def _check_export(result: dict[str, Any], fbx: str, started: float) -> dict[str, Any] | None:
-    """A failure result unless export_fbx applied its settings and wrote `fbx` during this export. An export that ran
-    and failed a check still cleared CC5's undo history: the failure says so when export_fbx did (F-86)."""
+    """A failure result unless export_fbx applied its settings and wrote `fbx` during this export."""
     notes = result.get("notes", [])
     if not result.get("success"):
-        failure = {"success": False, "error": result.get("error", "FBX export failed"), "notes": notes}
-    elif not result.get("flags_applied"):
-        failure = {"success": False, "error": "CC5 exported without the requested FBX settings", "notes": notes}
-    elif not os.path.isfile(fbx) or os.stat(fbx).st_mtime < started:
-        failure = {"success": False, "error": f"CC5 reported success but did not write {fbx}", "notes": notes}
-    else:
-        return None
-    if result.get("undo_history_cleared"):
-        failure["undo_history_cleared"] = True
-    return failure
+        return {"success": False, "error": result.get("error", "FBX export failed"), "notes": notes}
+    if not result.get("flags_applied"):
+        return {"success": False, "error": "CC5 exported without the requested FBX settings", "notes": notes}
+    if not os.path.isfile(fbx) or os.stat(fbx).st_mtime < started:
+        return {"success": False, "error": f"CC5 reported success but did not write {fbx}", "notes": notes}
+    return None
 
 
 def _parts(avatar) -> list[tuple[str, Any]]:
@@ -301,22 +294,39 @@ def apply_pose(file_path: str) -> dict[str, Any]:
 
 EXPRESSION_NOT_READ = ("Could not read the facial expression; a .ccAvatar keeps neither the facial expression nor the "
                        "pose in any case.")
+# F-88: how many set expression sliders export_obj's note and replace_mesh_from_obj's refusal name before the count.
+# Both results also carry every set slider with its weight (expression_weights, review #5): setting the expression
+# again after the round trip needs them all.
+EXPRESSION_SLIDERS_NAMED = 3
 
 
-def _unsaved_expression(avatar: Any) -> list[dict[str, Any]] | None:
-    """The facial expression sliders that are not at 0, which a .ccAvatar does not store (F-77; nor the pose, which
-    is not read here), or None when they cannot be read. Read only: no action, no key."""
-    try:
-        face = avatar.GetFaceComponent()
-        if not face:
-            return None
-        names = sorted(cc5_api._collect_expression_names(face))
-        if not names:
-            return []
-        weights = list(face.GetExpressionWeights(RLPy.RGlobal.GetTime(), names))
-        return [{"name": n, "weight": round(float(w), 4)} for n, w in zip(names, weights) if abs(float(w)) > 1e-4]
-    except Exception:
-        return None
+def _active_expression(avatar: Any) -> list[dict[str, Any]]:
+    """The facial expression sliders that are not at 0 ([] for a neutral face), by name, each weight rounded to 4
+    places. Read only: no action, no key. Raises when they cannot be read, also when CC5 gives no face component.
+    save_character lists them, as a .ccAvatar does not store them (F-77; nor the pose, which is not read here);
+    export_obj warns about them and replace_mesh_from_obj refuses while there are any (F-88)."""
+    face = avatar.GetFaceComponent()
+    if not face:
+        raise RuntimeError("CC5 gave no face component")
+    names = sorted(cc5_api._collect_expression_names(face))
+    if not names:
+        return []
+    weights = list(face.GetExpressionWeights(RLPy.RGlobal.GetTime(), names))
+    return [{"name": n, "weight": round(float(w), 4)} for n, w in zip(names, weights) if abs(float(w)) > 1e-4]
+
+
+def _slider_text(sliders: list[dict[str, Any]]) -> str:
+    """The first EXPRESSION_SLIDERS_NAMED sliders with their weights, then how many more are set, as in
+    'A 0.6, B 0.6, C 0.3 and 3 more'."""
+    named = ", ".join(f"{s['name']} {s['weight']:g}" for s in sliders[:EXPRESSION_SLIDERS_NAMED])
+    more = len(sliders) - EXPRESSION_SLIDERS_NAMED
+    return f"{named} and {more} more" if more > 0 else named
+
+
+def _expression_weights(sliders: list[dict[str, Any]]) -> dict[str, float]:
+    """Every set slider with its weight rounded to 3 places, by name (review #5): what set_expression needs to set the
+    expression again, which the texts' _slider_text names only in part."""
+    return {s["name"]: round(float(s["weight"]), 3) for s in sliders}
 
 
 def save_character(output_path: str) -> dict[str, Any]:
@@ -335,7 +345,10 @@ def save_character(output_path: str) -> dict[str, Any]:
     if not avatar:
         return {"success": False, "error": "No avatar in scene"}
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    unsaved = _unsaved_expression(avatar)
+    try:
+        unsaved: list[dict[str, Any]] | None = _active_expression(avatar)
+    except Exception:  # the save runs either way
+        unsaved = None
     try:
         setting = RLPy.RSaveFileSetting()
         setting.SetSaveType(RLPy.ESaveFileType_Character)
@@ -399,6 +412,30 @@ OBJ_TPOSE_NOTE = ("The OBJ is in CC5's T-pose (arms horizontal). Sculpt it witho
 # asked for).
 OBJ_Z_UP_NOTE = ("The OBJ is Z-up (y_up false), in CC5's T-pose. replace_mesh_from_obj cannot bring it back, as it "
                  "reads only Y-up OBJs: for the round trip, export again with y_up true (the default).")
+# F-88 (live CC5 5.13): an OBJ carries the facial expression the character shows, and ReplaceMesh reads the OBJ as the
+# mesh with no expression on it. Kevin with six expression sliders set: an unedited OBJ, replaced, made the expression
+# part of the mesh, and the expression applied on top again (the head up to 0.36 cm off); with the expression reset
+# first the round trip is exact. So export_obj warns while an expression is set (the note starts with
+# OBJ_EXPRESSION_PREFIX, which src/tools/pipeline.ts tells apart from a call-form WARNING) and replace_mesh_from_obj
+# refuses (EXPRESSION_REFUSED). The refusal sees only the expression the character has now (review #6): an OBJ exported
+# with an expression and brought back after reset_expression passes every check, so the note says never to bring such
+# an OBJ back, and the refusal covers an OBJ exported with the expression and one exported with a neutral face. Keep
+# the wording in step with OBJ_NEUTRAL_FACE and OBJ_EXPRESSION_PREFIX in src/tools/pipeline.ts; a test reads the
+# OBJ_EXPRESSION_PREFIX line.
+OBJ_EXPRESSION_PREFIX = "WARNING: the OBJ carries the facial expression: "
+OBJ_EXPRESSION_NOTE = (OBJ_EXPRESSION_PREFIX + "{sliders} (this reply lists every slider with its weight). Do not "
+                       "bring this OBJ back with replace_mesh_from_obj, not even after reset_expression: the expression "
+                       "is part of this OBJ, and the replace would make it part of the mesh without noticing (its check "
+                       "would pass). For a round trip, run reset_expression, export again with export_obj and edit that "
+                       "OBJ; after the replace, set the expression again with these weights.")
+OBJ_EXPRESSION_NOT_READ = ("Could not read the facial expression: the OBJ carries any expression the face shows, and "
+                           "replace_mesh_from_obj refuses while the expression cannot be read.")
+EXPRESSION_REFUSED = ("{name}'s facial expression is set ({sliders}; this reply lists every slider with its weight), "
+                      "so nothing was replaced: an OBJ exported with the expression set carries it, and the replace "
+                      "would bake it into the mesh. If {file} was exported while this expression was set, run "
+                      "reset_expression, export the OBJ again with export_obj and make the edit on that OBJ. If it was "
+                      "exported with a neutral face, run reset_expression and replace it again. After the replace, set "
+                      "the expression again with the weights listed.")
 # replace_mesh_from_obj: a motion clip at most POSE_CLIP_MAX_FRAMES frames long is a pose, removed so that CC5 reads the
 # OBJ in the T-pose; a longer clip is an animation (ANIMATION_REFUSED).
 POSE_CLIP_MAX_FRAMES = 1
@@ -407,8 +444,10 @@ POSE_CLIP_MAX_FRAMES = 1
 # CC_Base_Body's vertices (the arms) more than 10 cm away, up to 36.5 cm.
 POSE_MISMATCH_CM = 10.0
 POSE_MISMATCH_SHARE = 0.05
-# After the replace, a T-pose export must match the OBJ this closely (live, an unedited round trip: 0.00 cm).
-ROUND_TRIP_TOLERANCE_CM = 0.5
+# After the replace, a T-pose export must match the OBJ this closely. Live: an unedited round trip reads 0.00 cm, and a
+# 2 cm edit to one vertex arrives as exactly 2.0 cm; an expression baked in and applied again read 0.36 cm, which the
+# 0.5 cm allowed before passed (F-88).
+ROUND_TRIP_TOLERANCE_CM = 0.05
 # P-3: an OBJ more than this far from the character's mesh must move it. A mesh still within this of its old shape after
 # the replace means CC5 did not apply the OBJ, whatever ReplaceMesh reported.
 REPLACE_APPLIED_CM = 0.01
@@ -431,7 +470,10 @@ def export_obj(output_path: str, y_up: bool = True) -> dict[str, Any]:
     The T-pose (arms horizontal) is the pose a character with no motion clip stands in, which is the pose
     replace_mesh_from_obj reads the OBJ back in (F-83). A weaker call form applies none of the options, so its OBJ
     gets a WARNING note instead of OBJ_TPOSE_NOTE. A Z-up OBJ (y_up false) gets OBJ_Z_UP_NOTE instead:
-    replace_mesh_from_obj reads only Y-up OBJs (P-9).
+    replace_mesh_from_obj reads only Y-up OBJs (P-9). The OBJ carries the facial expression the character shows
+    (F-88): with one set the export still runs (an OBJ may be wanted for other uses), a WARNING note names the
+    sliders and says not to bring this OBJ back (review #6), and the result lists every set slider with its weight
+    (expression_weights, review #5); an expression that cannot be read gets OBJ_EXPRESSION_NOT_READ.
     """
     error = check_path(output_path)
     if error:
@@ -442,6 +484,13 @@ def export_obj(output_path: str, y_up: bool = True) -> dict[str, Any]:
     if not avatar:
         return {"success": False, "error": "No avatar in scene"}
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    expression_weights: dict[str, float] = {}
+    try:
+        sliders = _active_expression(avatar)
+        expression_notes = [OBJ_EXPRESSION_NOTE.format(sliders=_slider_text(sliders))] if sliders else []
+        expression_weights = _expression_weights(sliders)
+    except Exception:  # read only: the export runs either way
+        expression_notes = [OBJ_EXPRESSION_NOT_READ]
     option = _obj_option(y_up)
     attempts: list[tuple[str, Any]] = [
         ("(avatar, path, option)",
@@ -458,7 +507,11 @@ def export_obj(output_path: str, y_up: bool = True) -> dict[str, Any]:
         return {"success": False, "error": f"CC5 did not write {output_path}", "signature": label, "notes": notes}
     if not notes:  # the options were applied: CC5's T-pose, Y-up unless y_up false asked for Z-up
         notes.append(OBJ_TPOSE_NOTE if y_up else OBJ_Z_UP_NOTE)
-    return {"success": True, "path": output_path, "signature": label, "notes": notes}
+    result: dict[str, Any] = {"success": True, "path": output_path, "signature": label,
+                              "notes": notes + expression_notes}
+    if expression_weights:
+        result["expression_weights"] = expression_weights
+    return result
 
 
 def _face_vertex_indices(refs: list[str], count: int) -> list[int] | None:
@@ -750,8 +803,8 @@ def _clips_to_remove(skeleton: Any, name: str = "The character") -> list[Any]:
 def _tpose_vertices(avatar: Any, mesh_name: str) -> list[tuple[float, float, float]]:
     """The vertices of the character's mesh `mesh_name` in CC5's T-pose, whatever pose the scene shows: an OBJ export
     into a temporary folder (export_obj's parts and Y-up, without ExportMaterial, so no textures are written), read
-    back, then the folder deleted. OBJ exports keep CC5's undo history (F-86 is about FBX exports). Raises when the
-    export fails or has no group named `mesh_name`."""
+    back, then the folder deleted. Live (F-83 probe), one undo still reversed ReplaceMesh after two OBJ exports. Raises
+    when the export fails or has no group named `mesh_name`."""
     folder = tempfile.mkdtemp(prefix="cc5_obj_check_")
     try:
         path = os.path.join(folder, "check.obj")
@@ -789,12 +842,15 @@ def replace_mesh_from_obj(mesh_name: str, obj_path: str) -> dict[str, Any]:
       1. mesh_name, the file, the avatar and a known mesh;
       2. the OBJ's group named mesh_name, else its only group (read_obj_groups: the vertices its faces use);
       3. the motion clips: a pose is removed later, an animation refused (_clips_to_remove, DEC-9);
-      4. a T-pose export of the current mesh (_tpose_vertices): the OBJ must have its vertex count, and at most
+      4. the facial expression: refused while a slider is not at 0 (EXPRESSION_REFUSED, F-88: the replace would bake
+         an expression the OBJ carries into the mesh), with every set slider and its weight (expression_weights,
+         review #5), and when it cannot be read;
+      5. a T-pose export of the current mesh (_tpose_vertices): the OBJ must have its vertex count, and at most
          POSE_MISMATCH_SHARE of its vertices may be more than POSE_MISMATCH_CM away (an older export_obj's bind pose
          is far more); a Z-up OBJ is refused naming the axis (_z_up_match, P-9); a failed export refuses too, so
          nothing is replaced unchecked;
-      5. as ONE undo step: the pose clips deleted (last first), ReplaceMesh, ObjectModified;
-      6. a T-pose export again must have moved when the OBJ differs from the mesh by more than REPLACE_APPLIED_CM (else
+      6. as ONE undo step: the pose clips deleted (last first), ReplaceMesh, ObjectModified;
+      7. a T-pose export again must have moved when the OBJ differs from the mesh by more than REPLACE_APPLIED_CM (else
          CC5 did not apply the OBJ, P-3), and must match the OBJ within ROUND_TRIP_TOLERANCE_CM; otherwise one
          RGlobal.Undo() takes the step back and the call fails. If that export fails, the replace stays, with a
          WARNING note.
@@ -832,6 +888,15 @@ def replace_mesh_from_obj(mesh_name: str, obj_path: str) -> dict[str, Any]:
         return {"success": False, "error": str(e)}
     except Exception as e:
         return {"success": False, "error": f"Could not read {character}'s motion clips, so nothing was replaced: {e}"}
+    try:
+        sliders = _active_expression(avatar)
+    except Exception as e:
+        return {"success": False,
+                "error": f"Could not read {character}'s facial expression, so nothing was replaced: {e}"}
+    if sliders:
+        return {"success": False,
+                "error": EXPRESSION_REFUSED.format(name=character, sliders=_slider_text(sliders), file=file),
+                "expression_weights": _expression_weights(sliders)}
     try:
         reference = _tpose_vertices(avatar, mesh_name)
     except Exception as e:
@@ -1139,9 +1204,8 @@ def export_textures(output_dir: str, character_name: str) -> dict[str, Any]:
     error = _check_export(result, fbx, started)
     if error:
         return error
-    # F-86: an FBX export clears CC5's undo history, this one included.
     return {"success": True, "folder": folder, "files": list_files(folder, since=started),
-            "notes": result.get("notes", []), "undo_history_cleared": bool(result.get("undo_history_cleared"))}
+            "notes": result.get("notes", [])}
 
 
 def _opt_int(p: dict, key: str) -> int | None:

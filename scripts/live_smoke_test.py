@@ -98,6 +98,16 @@ def is_resp(r):
     return isinstance(res(r), (dict, list))
 
 
+def light_reading(info):
+    """(r, g, b, multiplier) from a /light/info result, each to 3 decimals, or None when one of them was not read."""
+    color = info.get("color") if isinstance(info, dict) else None
+    values = [color.get(k) for k in "rgb"] if isinstance(color, dict) else [None]
+    values.append(info.get("multiplier") if isinstance(info, dict) else None)
+    if not all(isinstance(v, (int, float)) for v in values):
+        return None
+    return tuple(round(v, 3) for v in values)
+
+
 print("== Scene / Avatar ==")
 s, r = call("GET", "/health"); ok("check_cc5_connection", s == 200 and res(r).get("status") == "ok")
 s, r = call("POST", "/avatar/create"); ok("create_avatar", res(r).get("success"))
@@ -158,24 +168,36 @@ s, r = call("GET", "/lights"); lts = res(r); ok("get_lights", s == 200 and is_re
 lname = lts[0].get("name") if isinstance(lts, list) and lts and isinstance(lts[0], dict) else None
 if lname:
     s, r = call("POST", "/light/info", {"light_name": lname}); ok("get_light_info", is_resp(r))
-    # round-trip: set red, read back ~1.0/0/0 (RRgb.Red() is 0-255, get divides by 255)
-    call("POST", "/light/color", {"light_name": lname, "r": 1.0, "g": 0.0, "b": 0.0})
-    s, r = call("POST", "/light/info", {"light_name": lname}); c = res(r).get("color", {}) if isinstance(res(r), dict) else {}
-    ok("set_light_color round-trip", abs(c.get("r", 0) - 1.0) < 0.05 and c.get("g", 1) < 0.05, c)
-    s, r = call("POST", "/light/multiplier", {"light_name": lname, "multiplier": 1.0}); ok("set_light_multiplier", res(r).get("success") is not False and is_resp(r))
-    # on/off toggle round-trip (lighting-guide): off then read-back, then restore on
-    call("POST", "/light/active", {"light_name": lname, "active": False})
-    s, r = call("POST", "/light/info", {"light_name": lname}); off_state = res(r).get("active") if isinstance(res(r), dict) else None
-    s, r = call("POST", "/light/active", {"light_name": lname, "active": True}); ok("set_light_active round-trip", res(r).get("success") and off_state is False, res(r))
-    # shadow: set darkness + cast, read back, then restore
-    call("POST", "/light/shadow", {"light_name": lname, "cast_shadow": True, "darken_strength": 0.3})
-    s, r = call("POST", "/light/info", {"light_name": lname}); ds = res(r).get("darken_shadow_strength") if isinstance(res(r), dict) else None
-    ok("set_light_shadow darken round-trip", isinstance(ds, (int, float)) and abs(ds - 0.3) < 0.02, ds)
-    call("POST", "/light/shadow", {"light_name": lname, "darken_strength": 0.0})  # restore
-    s, r = call("POST", "/light/shadow", {"light_name": lname}); ok("set_light_shadow (clean no-arg error)", isinstance(res(r), dict) and res(r).get("success") is False)
+    # The checks below change this light. Its colour and multiplier, read here, are set back after them, also when one
+    # of them fails (live 2026-10-07 the script left "Key Light - Up" red at multiplier 1).
+    light0 = res(r) if isinstance(res(r), dict) else {}
+    try:
+        # round-trip: set red, read back ~1.0/0/0 (RRgb.Red() is 0-255, get divides by 255)
+        call("POST", "/light/color", {"light_name": lname, "r": 1.0, "g": 0.0, "b": 0.0})
+        s, r = call("POST", "/light/info", {"light_name": lname}); c = res(r).get("color", {}) if isinstance(res(r), dict) else {}
+        ok("set_light_color round-trip", abs(c.get("r", 0) - 1.0) < 0.05 and c.get("g", 1) < 0.05, c)
+        s, r = call("POST", "/light/multiplier", {"light_name": lname, "multiplier": 1.0}); ok("set_light_multiplier", res(r).get("success") is not False and is_resp(r))
+        # on/off toggle round-trip (lighting-guide): off then read-back, then restore on
+        call("POST", "/light/active", {"light_name": lname, "active": False})
+        s, r = call("POST", "/light/info", {"light_name": lname}); off_state = res(r).get("active") if isinstance(res(r), dict) else None
+        s, r = call("POST", "/light/active", {"light_name": lname, "active": True}); ok("set_light_active round-trip", res(r).get("success") and off_state is False, res(r))
+        # shadow: set darkness + cast, read back, then restore
+        call("POST", "/light/shadow", {"light_name": lname, "cast_shadow": True, "darken_strength": 0.3})
+        s, r = call("POST", "/light/info", {"light_name": lname}); ds = res(r).get("darken_shadow_strength") if isinstance(res(r), dict) else None
+        ok("set_light_shadow darken round-trip", isinstance(ds, (int, float)) and abs(ds - 0.3) < 0.02, ds)
+        call("POST", "/light/shadow", {"light_name": lname, "darken_strength": 0.0})  # restore
+        s, r = call("POST", "/light/shadow", {"light_name": lname}); ok("set_light_shadow (clean no-arg error)", isinstance(res(r), dict) and res(r).get("success") is False)
+    finally:
+        if isinstance(light0.get("color"), dict):
+            call("POST", "/light/color", dict(light0["color"], light_name=lname))
+        if isinstance(light0.get("multiplier"), (int, float)):
+            call("POST", "/light/multiplier", {"light_name": lname, "multiplier": light0["multiplier"]})
+    was, now = light_reading(light0), light_reading(res(call("POST", "/light/info", {"light_name": lname})[1]))
+    ok("light colour and multiplier set back", was is not None and now == was, f"{lname}: was {was}, now {now}")
 else:
-    for n in ["get_light_info", "set_light_color round-trip", "set_light_multiplier",
-              "set_light_active round-trip", "set_light_shadow darken round-trip", "set_light_shadow (clean no-arg error)"]:
+    for n in ["get_light_info", "set_light_color round-trip", "set_light_multiplier", "set_light_active round-trip",
+              "set_light_shadow darken round-trip", "set_light_shadow (clean no-arg error)",
+              "light colour and multiplier set back"]:
         skip(n, "no light")
 s, r = call("GET", "/camera/info"); ok("get_camera_info", s == 200 and is_resp(r))
 s, r = call("POST", "/camera/focal", {"focal_length": 50}); ok("set_camera_focal_length (responds)", answered(s, r), s)
@@ -245,11 +267,18 @@ s, r = call("POST", "/export/fbx", {"output_path": fbx}, timeout=180); ok("expor
 s, r = call("GET", "/export/head_mh/status"); ok("export_head_mh status", s == 200 and is_resp(r))
 s, r = call("POST", "/undo"); ok("undo", s == 200 and is_resp(r), s)
 s, r = call("POST", "/redo"); ok("redo", s == 200 and is_resp(r), s)
-s, r = call("POST", "/exec/python", {"code": "result=6*7"})
-if any(os.environ.get(v, "").strip().lower() in ("1", "true", "yes") for v in ("CC5_DEV_MODE", "CC5_ALLOW_EXEC")):
-    ok("exec_python (dev mode)", res(r).get("success") and str(res(r).get("result")) == "42", s)
+# Whether exec_python runs is decided by CC5's environment at its launch (CC5_DEV_MODE or CC5_ALLOW_EXEC), not by this
+# script's: live 2026-10-07 CC5 ran with CC5_DEV_MODE=1 while the script did not, and the check judged from the
+# script's environment FAILed. So the bridge's answer decides: 200 with 42 (allowed) or 403 (blocked).
+s, r = call("POST", "/exec/python", {"code": "result=6*7"}); ex = res(r)
+dev_vars = [v for v in ("CC5_DEV_MODE", "CC5_ALLOW_EXEC") if os.environ.get(v, "").strip().lower() in ("1", "true", "yes")]
+if s == 200 and isinstance(ex, dict) and ex.get("success") and str(ex.get("result")) == "42":
+    ok("exec_python (CC5 allows it)", True, s)
+elif s == 403:
+    ok("exec_python blocked (CC5 runs without dev mode)", True,
+       f"this script has {'/'.join(dev_vars)} set, CC5 does not" if dev_vars else s)
 else:
-    ok("exec_python blocked without dev mode", s == 403, s)
+    ok("exec_python (200 with 42, or 403)", False, f"{s} {ex}")
 
 STATUS_TIMES = []  # seconds per /jobs/status answer while jobs run
 
@@ -414,6 +443,10 @@ skin = next(((k, m) for k, v in (mi2.get("meshes", {}) if isinstance(mi2, dict) 
 if skin:
     s, r = call("POST", "/pipeline/load_texture", {"mesh_name": skin[0], "material_name": skin[1], "channel": "diffuse_blend", "image_path": overlay}); ok("load_texture", res(r).get("success"), res(r))
     call("POST", "/undo")
+    # F-101 (live 2026-10-07): a replace a fraction of a second after this undo read the OBJ in the old pose (95.44 cm)
+    # and was undone; 2-3 s later it matched. The MCP tool tries such a replace once more after 3 s; this script calls
+    # the plugin directly, so it waits instead.
+    time.sleep(3)
 else:
     skip("load_texture", "no skin material")
 body = next((m for m in meshes if "body" in str(m).lower()), meshes[0] if meshes else None)
@@ -494,14 +527,20 @@ ok("import_fbx character is switched off (do it by hand in CC5)", bool(r) and r.
 r = job("headshot_from_photo", {"photo_path": missing + ".jpg"}, timeout=30)
 ok("headshot_from_photo is switched off (do it by hand in CC5)", bool(r) and r.get("success") is False and
    "switched off" in str(r.get("error")) and "Headshot plugin inside Character Creator 5" in str(r.get("error")), r)
-# Last: CC5 5.13 has no Bake / Apply Skin / Skin Editor command (SkinGen's menu holds About, Online Manual, Video
-# Tutorial and Remove SkinGen Data), so bake_skin_textures must answer with the manual steps and open nothing. It used to
+# Last: CC5 5.13's skin bake command is "Bake All Skin Textures" (Character menu). Since batch F a bake command needs
+# the word bake and the word skin or skingen, so "Bake All Substance Textures" is not one (F-87). CC5 enables the skin
+# bake once the character has SkinGen layers applied in the Appearance Editor (Chad, 2026-10-07); on the neutral test
+# character it stays disabled, so bake_skin_textures must name it as disabled, answer with the manual steps and run
+# nothing. SkinGen's own menu (About, Online Manual, Video Tutorial, Remove SkinGen Data) is never run: it used to
 # trigger SkinGen's About box, a window with no buttons that blocked every later command until it was closed (F-84).
+# A FAIL with a triggered_action means CC5 ran its bake command, which nobody has seen run: check what it did
+# (captures, get_cc5_dialog) and record it.
 s, r = call("POST", "/skin/bake", {}, timeout=120); bk = res(r)
 bk = bk if isinstance(bk, dict) else {}
 ok("bake_skin_textures answers without opening a window",
    answered(s, r) and bk.get("manual_step_required") is True and not bk.get("triggered_action"), bk.get("error") or s)
 print("  skin commands bake_skin_textures looked at:", bk.get("candidates_inspected"))
+print("  disabled commands it named:", bk.get("disabled_candidates"))
 time.sleep(1)
 s, r = call("GET", "/avatars")
 ok("bake_skin_textures leaves no modal dialog open", s == 200, "" if s == 200 else (r or {}).get("error"))

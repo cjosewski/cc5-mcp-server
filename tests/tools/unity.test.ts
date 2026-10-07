@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import {
   registerUnityTools, isInUnityAssets, isLocalAbsolute, evaluateBudget, estimateTextureGpuMb, scanTextures, QUEST_DEFAULTS,
   unityFolderError, identicalMaterialCopies, withoutTearlineOcclusion, injuryQuestion, injuryLines,
-  INJURY_CHOICES, INJURY_WARNING_PREFIX, UNDO_HISTORY_CLEARED, withUndoHistoryLine, EXPORT_AGAIN_WITH_INJURIES,
+  INJURY_CHOICES, INJURY_WARNING_PREFIX, EXPORT_AGAIN_WITH_INJURIES,
   TIMELINE_LEFT_LINE, TIMELINE_NOT_RESTORED_PREFIX, TIMELINE_USABLE_LINE, type InjuryReport, type TextureInfo,
 } from "../../src/tools/unity.js";
 import type { MeshStatsResult } from "../../src/types.js";
@@ -359,38 +359,31 @@ describe("export_for_unity", () => {
     expect(/^INJURY_WARNING_PREFIX = "([^"]*)"/m.exec(plugin)?.[1]).toBe(INJURY_WARNING_PREFIX);
   });
 
-  // F-86 (live CC5 5.13): an FBX export clears CC5's undo history, and undo still reports success afterwards.
-  it("ends the reply with the undo-history line when the export cleared CC5's undo history", async () => {
+  // F-89 (live CC5 5.13, corrects F-86): an FBX export does not clear CC5's undo history (morph and skin changes undo
+  // across exports), so no reply says it does, also for a result from a plugin installed before the fix that still
+  // sends undo_history_cleared.
+  it("says nothing about CC5's undo history after an export", async () => {
     exported({ undo_history_cleared: true });
     const r = await handler()({ unity_dir: UNITY_DIR, character_name: "P1" });
     expect(r.isError).toBeUndefined();
     const text = r.content[0].text;
-    expect(text.split("\n").at(-1)).toBe("CC5 cleared its undo history with this export: changes made before it can no " +
-      "longer be undone (save_character first to keep a way back).");
     expect(text).toContain("Switch to Unity to import it.");  // the other lines stay
-    expect(text).toContain("The CC5 plugin did not report skin overlays or skin conditions");
-    exported({});
-    const plain = await handler()({ unity_dir: UNITY_DIR, character_name: "P1" });
-    expect(plain.content[0].text).not.toContain(UNDO_HISTORY_CLEARED);
+    expect(text.split("\n").at(-1)).toBe(injuryLines()[0]);
+    expect(text).not.toContain("undo history");
   });
 
-  it("says so after an export with warnings, and after one that ran and then failed its checks", async () => {
+  it("says nothing about it after an export with warnings, or after one that ran and then failed its checks", async () => {
     exported({ notes: ["WARNING: SetTextureSize failed: bad enum"], undo_history_cleared: true });
     const warned = await handler()({ unity_dir: UNITY_DIR, character_name: "P1", texture_size: 2048 });
     expect(warned.isError).toBe(true);
     expect(warned.content[0].text).toContain("CC5 did not apply every export setting");
-    expect(warned.content[0].text.endsWith(`\n${UNDO_HISTORY_CLEARED}`)).toBe(true);
+    expect(warned.content[0].text.split("\n").at(-1)).toBe(injuryLines()[0]);
+    expect(warned.content[0].text).not.toContain("undo history");
     finished({ success: false, error: `CC5 reported success but did not write ${FBX}`, notes: [], undo_history_cleared: true },
       "failed");
     const failed = await handler()({ unity_dir: UNITY_DIR, character_name: "P1" });
     expect(failed.isError).toBe(true);
-    expect(failed.content[0].text).toBe(`Unity export failed: CC5 reported success but did not write ${FBX}\n${UNDO_HISTORY_CLEARED}`);
-  });
-
-  it("adds the line only when the result says so", () => {
-    expect(withUndoHistoryLine("Exported.", { undo_history_cleared: true })).toBe(`Exported.\n${UNDO_HISTORY_CLEARED}`);
-    expect(withUndoHistoryLine("Exported.", { undo_history_cleared: false })).toBe("Exported.");
-    expect(withUndoHistoryLine("Exported.")).toBe("Exported.");
+    expect(failed.content[0].text).toBe(`Unity export failed: CC5 reported success but did not write ${FBX}`);
   });
 
   // X-2: CC5's timeline, set to one frame for the export (F-82), could not be set back: the FBX itself is right.
@@ -401,12 +394,12 @@ describe("export_for_unity", () => {
     expect(TIMELINE_NOT_RESTORED_PREFIX).toBe("WARNING: CC5 timeline not restored: ");
     expect(TIMELINE_LEFT_LINE).toBe("CC5's timeline was left at one frame: set its length in Character Creator 5.");
     expect(TIMELINE_USABLE_LINE).toBe(`The FBX is usable; ${TIMELINE_LEFT_LINE}`);
-    exported({ notes: [TIMELINE], undo_history_cleared: true });
+    exported({ notes: [TIMELINE] });
     const r = await handler()({ unity_dir: UNITY_DIR, character_name: "P1" });
     expect(r.isError).toBeUndefined();
     const lines = r.content[0].text.split("\n");
     expect(lines[0]).toContain("Switch to Unity to import it.");
-    expect(lines.slice(-2)).toEqual([TIMELINE_USABLE_LINE, UNDO_HISTORY_CLEARED]);
+    expect(lines.at(-1)).toBe(TIMELINE_USABLE_LINE);
     expect(r.content[0].text).not.toContain("did not apply every export setting");
     expect(r.content[0].text).not.toContain(TIMELINE_NOT_RESTORED_PREFIX);
   });

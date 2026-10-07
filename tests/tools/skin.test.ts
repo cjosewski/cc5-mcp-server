@@ -27,9 +27,9 @@ describe("apply_skin_overlay", () => {
     // Live CC5: browse_content('image_layer') lists .iImgLayer stage items, never PNG/JPG/TGA overlays.
     const call = server.tool.mock.calls.find((c) => c[0] === "apply_skin_overlay");
     const description = call?.[1] as string;
-    // F-68: every type the tools accept, and that BMP and TIFF are not yet tested live.
-    expect(description).toContain(`(${IMAGE_TYPES_TEXT}; BMP and TIFF are not yet tested in CC5 5.13)`);
-    expect(description).toContain("not yet tested");
+    // F-68: every type the tools accept, with no caveat: live, BMP and TIFF overlays showed on the skin as a PNG does.
+    expect(description).toContain(`image file the user provides (${IMAGE_TYPES_TEXT}), laid out on the CC skin UVs`);
+    expect(description).not.toContain("not yet tested");
     expect(description).not.toContain("image_layer");
     const shape = call?.[2] as Record<string, { description?: string }>;
     expect(shape.image_path.description).toBe(`Absolute path to the overlay image (${IMAGE_TYPES_TEXT})`);
@@ -235,5 +235,24 @@ describe("set_skin_shader (F-38)", () => {
     const description = server.tool.mock.calls.find((c) => c[0] === "set_skin_shader")?.[1] as string;
     expect(description).toContain("lower = shinier");
     expect(description).toContain("seam");
+  });
+
+  // F-102 (live, set_shader_parameter): CC5 reads shader values back as float32 (RootColor 0.02 came back as
+  // 0.019999999552965164); set_skin_shader echoed them as they came.
+  it("echoes CC5's float32 read-back to at most 4 decimals, as set_shader_parameter does (F-102)", async () => {
+    bridge.setSkinShader.mockResolvedValue({ success: true, parameter: "Original Roughness Strength",
+      values: [0.4000000059604645], materials: ["Std_Skin_Head", "Std_Skin_Body"] });
+    const r = await server.getRegisteredTool("set_skin_shader")({ parameter_name: "Original Roughness Strength", values: [0.4] });
+    expect(r.content[0].text).toBe("Original Roughness Strength set to [0.4] on: Std_Skin_Head, Std_Skin_Body");
+    bridge.setSkinShader.mockResolvedValue({ success: true, parameter: "RootColor", materials: ["Std_Skin_Head"],
+      values: [0.019999999552965164, 0.017999999225139618, 0.01600000075995922] });
+    const three = await server.getRegisteredTool("set_skin_shader")({ parameter_name: "RootColor", values: [0.02, 0.018, 0.016] });
+    expect(three.content[0].text).toBe("RootColor set to [0.02, 0.018, 0.016] on: Std_Skin_Head");
+  });
+
+  it("rounds the values it was given the same way when CC5 sends none back", async () => {
+    bridge.setSkinShader.mockResolvedValue({ success: true, materials: ["Std_Skin_Head"] });
+    const r = await server.getRegisteredTool("set_skin_shader")({ parameter_name: "SSS Radius", values: [0.12345678, 2] });
+    expect(r.content[0].text).toBe("SSS Radius set to [0.1235, 2] on: Std_Skin_Head");
   });
 });

@@ -6,7 +6,13 @@
  * the batch. Nothing more goes to CC5, the manifest says where it stopped, and continue_after finishes the stopped
  * variant from where it stopped after the answer, then runs the variants not started. A batch does not start while a
  * CC5 dialog is open. D3: CC5's "Replace / Material Only" has no standing answer: the user's button, passed as
- * layer_answer with continue_after, answers the identical question for the rest of this batch only.
+ * layer_answer with continue_after, answers the identical question for the rest of this batch only. The reply names,
+ * under each variant, every question the batch answered itself and what the export did with the injuries (F-100).
+ * A delete that delete_avatar refused because CC5's selection could not be cleared (in the scene clear, or in a
+ * variant recipe's base step) stops the batch too, before that variant is exported (F-92). A variant whose base load
+ * (the batch's own, or its recipe's base step) failed in any other way or was answered Cancel in CC5 (F-98) is not
+ * exported (the scene may not hold its base), and the batch goes on, also when that load finished after a stop
+ * (continue_after; batch F review #7).
  */
 
 import fs from "node:fs";
@@ -28,8 +34,8 @@ import {
   carryLayerAnswer, dialogStopFromError, findStop, finishBuild, isBlockedByDialog, layerDialogHandler, openDialog,
   recordStop, startBuild, LAYER_ANSWERS, LAYER_EXPECT, STOP_ID_PATTERN, type Build, type BuildStop, type LayerAnswer,
 } from "../build-session.js";
-import { BATCH_RULE, CANCEL_NOT_CARRIED } from "../prompts/content-rules.js";
-import { formatDialog } from "./dialog.js";
+import { BATCH_RULE, CANCEL_NOT_CARRIED, SKINGEN_QUESTION_RULE } from "../prompts/content-rules.js";
+import { formatDialog, isWindowToClose } from "./dialog.js";
 import {
   CHARACTER_NAME, INJURY_CHOICES, INJURY_WARNING_PREFIX, injuryLines, injuryQuestion, isLocalAbsolute,
   evaluateExportBudget, scanTextures, unityFolderError, QUEST_DEFAULTS, TIMELINE_LEFT_LINE, TIMELINE_NOT_RESTORED_PREFIX,
@@ -61,11 +67,17 @@ const checksProblem = (checks: string[]): string =>
 
 // F-77: a .ccAvatar keeps neither the facial expression nor (P8-10) the pose; the batch re-applies pose_file itself.
 const NEUTRAL_FACE = "No expression step: exported with a neutral face (a .ccAvatar does not keep the facial expression).";
-// F-86: every FBX export clears CC5's undo history; one line for the whole batch.
-const UNDO_CLEARED = "CC5 cleared its undo history with these exports: changes made before them can no longer be undone.";
 /** What injuryLines says for an export without an injuries report: a plugin older than F-75. */
 const NO_INJURY_REPORT = injuryLines();
 const UNKNOWN_JOB = "its job id is unknown: check the scene (list_clothes, capture_viewport) before relying on it";
+
+/**
+ * F-92 (review #12): the words of delete_avatar's refusals (cc5_api.py DELETE_SELECTION_NOT_CLEARED and
+ * DELETE_SELECTION_NOT_READ, "CC5's selection (<names>) could not be cleared, so nothing was deleted: ..." and "... could
+ * not be read or cleared, so nothing was deleted: ..."): deleting a character while one of its worn items is selected
+ * can crash CC5. Every later scene clear would be refused the same way, so the batch stops.
+ */
+export const SELECTION_NOT_CLEARED = "cleared, so nothing was deleted";
 
 const LAYER_WITHOUT_CONTINUE =
   "layer_answer only goes on after a batch stopped on CC5's 'Replace / Material Only' question (with continue_after). " +
@@ -175,8 +187,12 @@ export type ManifestVariant = {
   checks?: string[];
   /** Information that does not make the variant fail (F-77). */
   info?: string[];
+  /** F-92: the notes of the scene clear's delete_avatar: the CC5 selection it cleared before the delete. */
+  scene_clear?: string[];
   /** What the export did with skin overlays and skin conditions (F-75). */
   injuries?: string[];
+  /** F-100: those lines in one, for the reply: the choice, and what was written beside the FBX, baked or left out. */
+  injuries_summary?: string;
   /** A control patient: the base exported as saved (F-79). */
   export_base_unchanged?: true;
   /** The FBX of an earlier run, kept when this run did not export the variant again (F-80). */
@@ -189,7 +205,10 @@ export type Manifest = {
   unity_dir: string;
   /** Set when the client cancelled the run: says which variants never started. */
   cancelled?: string;
-  /** Set when a CC5 question or a missing injuries choice stopped the run: where, and which variants never started. */
+  /**
+   * Set when a CC5 question, a missing injuries choice or a delete CC5 refused (F-92: its selection could not be
+   * cleared) stopped the run: where, and which variants never started.
+   */
   stopped?: string;
   variants: ManifestVariant[];
 };
@@ -208,6 +227,13 @@ export interface BatchResume {
   remaining?: Recipe;
   /** Phase base: the base load that finished after the answer. Phase export: the export that finished. */
   awaited?: DoneOutcome;
+  /** F-92: the notes of the variant's scene clear before the stop. */
+  sceneClear?: string[];
+  /**
+   * Phase recipe, a stopped step that never ran: what its commands noted before the stop (F-92: the base step's
+   * delete_avatar notes), for that step when it runs again.
+   */
+  carried?: { step: string; notes: string[] };
 }
 
 /**
@@ -230,6 +256,8 @@ export interface BatchStopDetail {
   answered?: string;
   /** This variant's steps, including the WAIT step. */
   steps: StepResult[];
+  /** F-92: the notes of this variant's scene clear so far (ManifestVariant.scene_clear). */
+  sceneClear?: string[];
   remaining?: Recipe;
   /** A finished export whose budget check was blocked: the continuation reuses it. */
   exported?: DoneOutcome;
@@ -255,23 +283,157 @@ export interface BatchOptions {
 }
 
 /** Where a variant stopped on a CC5 window: the part of BatchStopDetail the variant itself knows. */
-type VariantStop = Omit<BatchStopDetail, "variant" | "steps" | "notStarted" | "settings" | "variantDef">;
-/** Why a variant could not finish: a CC5 window (continue_after goes on), or an export that needs an injuries choice. */
-type Halt = { stop: VariantStop } | { needsInjuries: InjuryReport | undefined };
+type VariantStop = Omit<BatchStopDetail, "variant" | "steps" | "sceneClear" | "notStarted" | "settings" | "variantDef">;
+/**
+ * Why a variant could not finish: a CC5 window (continue_after goes on), an export that needs an injuries choice, or a
+ * delete delete_avatar refused (F-92: CC5's selection could not be cleared), with its text and the step that deleted:
+ * the batch's scene clear, or the base step of the variant's own recipe.
+ */
+type Halt = { stop: VariantStop } | { needsInjuries: InjuryReport | undefined } | { refused: string; step: string };
 
-/** undo_history_cleared (F-86) is typed here, so the batch reads it with or without src/types.ts knowing it. */
+/** What an export_for_unity job returns, as far as the batch reads it. */
 type ExportResult = {
   success?: boolean; error?: string; fbx?: string; folder?: string; notes?: string[];
-  needs_choice?: boolean; injuries?: InjuryReport; undo_history_cleared?: boolean;
+  needs_choice?: boolean; injuries?: InjuryReport;
 };
-
-/** Manifests whose run exported at least once with CC5 clearing its undo history (F-86); never written to the file. */
-const exportsClearedUndo = new WeakSet<Manifest>();
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const listOrNone = (names: string[]): string => (names.length ? names.join(", ") : "none");
 /** A stop text on one line: the timed-out call's stop adds the open window's description on lines of its own. */
 const oneLine = (text: string): string => text.replace(/\s*\n\s*/g, " ").trim();
+const count = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? "" : "s"}`;
+
+/**
+ * Review #3: a window the user closes, or answers in CC5, rather than one to answer with answer_cc5_dialog: one with no
+ * buttons (F-94), or one whose buttons the bridge cannot read (a QML dialog such as CC5's Export FBX, F-99). Not one
+ * whose text could not be read (review #8): it may be the crash-recovery prompt, which is answered, never just closed.
+ */
+const answerOrClose = (q?: CC5Dialog): boolean =>
+  q !== undefined && (isWindowToClose(q) || (q.buttons_unreadable === true && q.text_read !== false));
+
+/**
+ * Review #3 (F-94, F-99): when a stopped batch goes on, in the words of its reply. A command waits in a question (after
+ * the answer), in a window with no buttons that the user closes in CC5, or in one whose buttons the bridge cannot read,
+ * which the user answers or closes there. A step that never ran waits for whichever window kept it from running.
+ */
+function goOnWhen(stop: Pick<BatchStopDetail, "jobId" | "question">): string {
+  if (stop.jobId && !answerOrClose(stop.question)) return "after the answer";
+  return stop.jobId && stop.question && isWindowToClose(stop.question) ? "once the window is closed in CC5"
+    : "once the window is answered or closed in CC5";
+}
+
+/** F-91: words of CC5's question before a content load ends the SkinGen session a SkinGen or makeup preset started. */
+const SKINGEN_WORDS = "deactivate the current skingen session";
+
+/** F-91: whether a stop's question is that one: its title or text names it (case and line breaks ignored). */
+function isSkinGenQuestion(q?: CC5Dialog): boolean {
+  const names = (s?: string): boolean => (s ?? "").replace(/\s+/g, " ").toLowerCase().includes(SKINGEN_WORDS);
+  return q !== undefined && (names(q.title) || names(q.text));
+}
+
+/**
+ * F-98: the job's CC5 question that was answered Cancel (the `answers` of its job_status: [{button, title}], JSON from
+ * the plugin, so their shape is checked), worded for the variant's line, or undefined. CC5 reports such a command done,
+ * though it may not have done what was asked (live: an eye preset whose Replace / Material Only question was answered
+ * Cancel applied nothing). The batch's own lines (baseNotLoaded, the export's) say only that it may not have (batch F
+ * review #11).
+ */
+function cancelledQuestion(answers: unknown): string | undefined {
+  const list: unknown[] = Array.isArray(answers) ? answers : [];
+  const cancel = list.find((a): a is Record<string, unknown> => isRecord(a) && typeof a.button === "string" &&
+    a.button.replace(/&/g, "").trim().toLowerCase() === "cancel");
+  if (!cancel) return undefined;
+  const title = typeof cancel.title === "string" && cancel.title ? ` (the "${cancel.title}" window)` : "";
+  return `CC5's question${title} was answered 'Cancel'`;
+}
+
+/** F-98: a base load done after its question was answered Cancel; the variant goes no further. */
+const baseNotLoaded = (cancelled: string): string =>
+  `base load: ${cancelled}, so the base may not have loaded; this variant's recipe and export were not run`;
+
+/** What a step that finished after the answer (continue_after) is called: the stopped step's name, then this. */
+const AFTER_ANSWER = " (after the answer)";
+
+/** The base step of a variant's own recipe, also as it finished after an answer. */
+const isBaseStep = (s: StepResult): boolean => s.step === "base" || s.step === `base${AFTER_ANSWER}`;
+
+/**
+ * Batch F review #7 (F-98): whether a stop's command was the variant's base load (the batch's own, or the base step of
+ * the variant's recipe, which CC5 started) and it finished after the answer as failed, or with its question answered
+ * Cancel, so the base may not have loaded. The scene clear, or that base step, deleted every character before the
+ * load, so the scene may hold none. runVariant fails such a variant without exporting it, and the batch goes on.
+ */
+function baseLoadFailed(d: Pick<BatchStopDetail, "phase" | "step" | "ran">, awaited?: DoneOutcome): boolean {
+  const baseLoad = d.phase === "base" || (d.phase === "recipe" && d.step === "base" && d.ran);
+  if (!baseLoad || !awaited) return false;
+  const result: Record<string, unknown> = isRecord(awaited.result) ? awaited.result : {};
+  return awaited.failed || result.success === false || cancelledQuestion(awaited.answers) !== undefined;
+}
+
+/**
+ * A variant whose own recipe's base step failed, or was answered Cancel in CC5 (F-98), other than F-92's refusal (which
+ * stops the batch): the scene may not hold that base, and an export would be the character it holds instead.
+ */
+const baseNotExported = (s: StepResult): string =>
+  `not exported: its recipe's base step ${s.cancelled ? "was cancelled" : "failed"} (${oneLine(s.detail)}), so the ` +
+  "scene may not hold its base";
+
+/** F-92: what an earlier try of a step noted (the base step's delete_avatar notes), before its own notes, each once. */
+function keepNotes(step: StepResult, notes: string[]): void {
+  if (notes.length) step.notes = [...new Set([...notes, ...(step.notes ?? [])])];
+}
+
+/**
+ * F-100: the variant's injuries lines in one line of the reply (the lines themselves stay in the manifest): the choice,
+ * then what was written beside the FBX (how many overlay images, and the sidecar), baked or left out, and how many items
+ * did not reach the export or are not verified to reach Unity. Undefined for a character without any, and for an export
+ * without a report (the reply names those apart).
+ */
+function injurySummary(report?: InjuryReport): string | undefined {
+  if (!report) return undefined;
+  const { choice, done, failed, unverified } = report;
+  const notCarried = report.not_carried;
+  const parts: string[] = [];
+  if (choice === "separate" && done.length) {
+    // done: "<image> (<material>, <strength>%)" per overlay image, and "<name>_injuries.json: ..." for skin values.
+    const sidecar = report.sidecar?.split(/[\\/]/).pop();
+    const images = done.filter((d) => !sidecar || !d.startsWith(`${sidecar}:`)).length;
+    const written = [...(images ? [count(images, "overlay image")] : []), ...(sidecar ? [sidecar] : [])];
+    parts.push(`${written.join(" and ")} written beside the FBX`);
+  } else if (choice === "bake" && done.length) {
+    parts.push(`baked into ${count(done.length, "diffuse texture")} of this export` +
+      (report.calibrated ? "" : " (the bake formula is not yet checked against CC5's look)"));
+  } else if (choice === "omit" && notCarried.length) {
+    parts.push("left out of the FBX, as asked");
+  } else if (!choice && notCarried.length) {
+    parts.push(`${count(notCarried.length, "item")} not in the FBX`);
+  }
+  if (failed.length) parts.push(`${count(failed.length, "item")} did not reach the export`);
+  if (unverified.length) parts.push(`${count(unverified.length, "item")} not verified to reach Unity`);
+  return parts.length ? `injuries${choice ? ` '${choice}'` : ""}: ${parts.join("; ")}` : undefined;
+}
+
+/**
+ * F-100: the lines under a variant's line in the reply, one per item: what delete_avatar noted in the scene clear and
+ * in a recipe base step (F-92), each step with something to say (a CC5 question the batch answered itself, and with
+ * what; a step that failed or was answered Cancel in CC5 (F-98), and why), and what the export did with the injuries.
+ * The WAIT step, and a failed step the variant's own error already gives (F-92's refusal, a failed base step that kept
+ * the variant from its export), are the variant's line already.
+ */
+function variantDetails(e: ManifestVariant): string[] {
+  const lines = (e.scene_clear ?? []).map((n) => `scene clear: ${oneLine(n)}`);
+  for (const s of e.steps) {
+    for (const n of s.notes ?? []) lines.push(`${s.step}: ${oneLine(n)}`);
+    if (s.stopped || s.detail === e.error || (isBaseStep(s) && e.error === baseNotExported(s))) continue;
+    if (!s.ok) {
+      lines.push(`${s.cancelled ? "CANCELLED" : "FAIL"} ${s.step}${s.detail ? `: ${oneLine(s.detail)}` : ""}`);
+    } else if (s.detail) {
+      lines.push(`${s.step}: ${oneLine(s.detail)}`);
+    }
+  }
+  if (e.injuries_summary) lines.push(e.injuries_summary);
+  return lines.map((l) => `     ${l}`);
+}
 
 /** A stop with its optional fields only when they are set. */
 function variantStop(s: VariantStop): Halt {
@@ -372,6 +534,7 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
 
   /** One variant up to its verdict in `entry`: where it stopped, or undefined once it finished. Throws on a failure. */
   const runVariant = async (v: BatchVariant, entry: ManifestVariant, label: string, r0?: BatchResume): Promise<Halt | undefined> => {
+    if (r0?.sceneClear?.length) entry.scene_clear = [...r0.sceneClear];
     // a. An empty scene with the base loaded. A continuation that stopped later goes on with the scene as it is.
     if (!r0 || r0.phase === "scene") {
       try {
@@ -380,6 +543,10 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
           signal?.throwIfAborted();
           const d = await bridge.deleteAvatar(a.name);
           if (d?.success === false) throw new Error(`could not remove existing avatar ${a.name}: ${d.error ?? "failed"}`);
+          // F-92: delete_avatar clears CC5's selection first and says so; when it cannot, it deletes nothing (below).
+          const notes: unknown = d?.notes;
+          const said = Array.isArray(notes) ? notes.filter((n): n is string => typeof n === "string" && n !== "") : [];
+          if (said.length) entry.scene_clear = [...(entry.scene_clear ?? []), ...said];
         }
       } catch (e) {
         // D1: behind a window nobody answered, each of these calls waited 30 s and failed, variant after variant.
@@ -387,6 +554,12 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
         if (info) {
           return variantStop({ phase: "scene", step: "scene clear", ran: info.ran, jobId: info.jobId, question: info.question,
             waitMs: STEP_JOB_WAIT_MS, text: info.text });
+        }
+        // F-92: delete_avatar deleted nothing because CC5's selection could not be cleared; every later scene clear
+        // would be refused the same way.
+        const message = e instanceof Error ? e.message : String(e);
+        if (!signal?.aborted && message.includes(SELECTION_NOT_CLEARED)) {
+          return { refused: message, step: "scene clear" };
         }
         throw e;
       }
@@ -402,6 +575,8 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
         return variantStop({ phase: "scene", step: "base load", ran: false, waitMs: BASE_LOAD_WAIT_MS, text: loaded.error ?? "" });
       }
       if (loaded.success === false) throw new Error(`base load failed: ${loaded.error}`);
+      const cancelled = cancelledQuestion(loaded.answers);
+      if (cancelled) throw new Error(baseNotLoaded(cancelled));
     } else if (r0.phase === "base") {
       // The base load waited in a question and finished after the answer.
       const loadedBase = r0.awaited;
@@ -409,12 +584,16 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
       if (!loadedBase || loadedBase.failed || result.success === false) {
         throw new Error(`base load failed: ${typeof result.error === "string" ? result.error : "failed"}`);
       }
+      const cancelled = cancelledQuestion(loadedBase.answers);
+      if (cancelled) throw new Error(baseNotLoaded(cancelled));
     }
 
     // b. The recipe, or what is left of it.
     const recipeOptions = {
       signal, layerAnswer, fileExists,
-      onStep: (s: StepResult) => onProgress?.(`${label}: ${s.stopped ? "WAIT" : s.ok ? "OK" : "FAIL"} ${s.step}`),
+      // F-98: a step whose job was answered Cancel in CC5 is CANCELLED here too, as in the reply, not FAIL.
+      onStep: (s: StepResult) =>
+        onProgress?.(`${label}: ${s.stopped ? "WAIT" : s.ok ? "OK" : s.cancelled ? "CANCELLED" : "FAIL"} ${s.step}`),
     };
     let applied: Recipe | undefined;
     let segment: StepResult[] = [];
@@ -424,6 +603,8 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
     } else if (r0?.phase === "recipe") {
       applied = r0.remaining ?? {};
       segment = await applyRecipe(bridge, applied, recipeOptions);
+      // F-92: what the stopped step noted before a window kept it from running stays with it, now that it ran again.
+      if (r0.carried && segment[0]?.step === r0.carried.step) keepNotes(segment[0], r0.carried.notes);
       // The whole variant's steps: a preset's skin-colour CHECK before the stop is no surprise when skin_rgb ran after it.
       steps = supersedeChecks([...r0.steps, ...segment]);
     } else {
@@ -439,6 +620,15 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
         asset: last.stopped.asset, answered: last.stopped.answered, text: last.detail,
         remaining: remainingRecipe(applied, segment) });
     }
+    // F-92: the base step of the variant's own recipe could not delete the character in the scene, so an export would
+    // be that character; and every later scene clear would be refused the same way.
+    const refusedBase = segment.find((s) => s.step === "base" && !s.ok && s.detail.includes(SELECTION_NOT_CLEARED));
+    if (refusedBase) return { refused: refusedBase.detail, step: refusedBase.step };
+    // Any other failed base step (its file gone, a delete or a load that failed, a load answered Cancel: F-98), also
+    // one that finished after an answer: the scene may not hold this variant's base, so an export would be the
+    // character the scene holds instead. The next variant's scene clear starts from the batch's base again.
+    const failedBase = steps.find((s) => isBaseStep(s) && !s.ok && !s.stopped);
+    if (failedBase) throw new Error(baseNotExported(failedBase));
     signal?.throwIfAborted();
 
     // c. The export (a continuation that stopped at it uses the export that finished after the answer).
@@ -459,7 +649,6 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
       throw new Error(`export still running in CC5 as job ${out.job_id}`);
     }
     const r = (isRecord(out.result) ? out.result : {}) as ExportResult;
-    if (r.undo_history_cleared === true) exportsClearedUndo.add(manifest);
     // F-75: refused before anything was exported; the user chooses how the injuries reach Unity.
     if (r.needs_choice) return { needsInjuries: r.injuries };
     const failed = out.failed || !r.success;
@@ -476,6 +665,10 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
     if (failed) throw new Error(r.error ?? "export failed");
     entry.fbx = r.fbx;
     entry.injuries = injuryLines(r.injuries);
+    const summary = injurySummary(r.injuries);
+    if (summary) entry.injuries_summary = summary;
+    // F-98: CC5 reports an export done after a question of it was answered Cancel.
+    const exportCancelled = cancelledQuestion(out.answers);
 
     // d. The Quest budget, read from the scene the export was made from.
     signal?.throwIfAborted();
@@ -506,8 +699,10 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
     const reported = r.injuries && Array.isArray(r.injuries.failed) ? r.injuries.failed : [];
     const injuriesFailed = reported.length ? reported
       : allWarnings.filter((n) => n.startsWith(INJURY_WARNING_PREFIX)).map((n) => n.slice(INJURY_WARNING_PREFIX.length));
-    entry.ok = steps.every((s) => s.ok) && !warnings.length && !checks.length && !injuriesFailed.length;
+    entry.ok = steps.every((s) => s.ok) && !warnings.length && !checks.length && !injuriesFailed.length && !exportCancelled;
     const problems = [
+      ...(exportCancelled
+        ? [`export: ${exportCancelled}, so CC5 may not have written the FBX as asked: check it before using it`] : []),
       ...(warnings.length ? [`exported without some of its settings: ${warnings.join("; ")}`] : []),
       ...(injuriesFailed.length ? [`injuries not carried: ${injuriesFailed.join("; ")}`] : []),
       ...(checks.length ? [checksProblem(checks)] : []),
@@ -537,16 +732,24 @@ export async function runBatch(bridge: CC5Bridge, input: BatchInput, writeManife
         : message;
     }
     if (halt) {
-      // D1 and F-75: nothing more goes to CC5 until the user has answered.
+      // D1, F-75 and F-92: nothing more goes to CC5 until the user has answered (or cleared CC5's selection).
       const notStarted = names.slice(index + 1);
       if ("stop" in halt) {
         const s = halt.stop;
-        const id = onStop?.({ ...s, variant: v.name, steps: entry.steps, notStarted, settings, variantDef: v });
+        const id = onStop?.({ ...s, variant: v.name, steps: entry.steps, notStarted, settings, variantDef: v,
+          ...(entry.scene_clear ? { sceneClear: entry.scene_clear } : {}) });
         entry.stopped = true;
         entry.error = `stopped: ${s.text}; ${entry.fbx ? "exported, but the Quest budget was not checked" : "not exported"}`;
-        manifest.stopped = `Stopped at ${v.name} (${s.step}): ` +
-          (s.jobId ? "CC5 is waiting for an answer nobody has given yet" : "it could not run while CC5 shows a window nobody has answered") +
-          `, so nothing more was sent to CC5. Not started: ${listOrNone(notStarted)}.` + (id ? ` continue_after: "${id}".` : "");
+        // Review #3: a window with no buttons, or whose buttons the bridge cannot read, is closed (or answered) in CC5.
+        const why = !s.jobId ? "it could not run while CC5 shows a window nobody has answered or closed"
+          : answerOrClose(s.question) ? "CC5 is waiting in a window nobody has answered or closed yet"
+            : "CC5 is waiting for an answer nobody has given yet";
+        manifest.stopped = `Stopped at ${v.name} (${s.step}): ${why}, so nothing more was sent to CC5. ` +
+          `Not started: ${listOrNone(notStarted)}.` + (id ? ` continue_after: "${id}".` : "");
+      } else if ("refused" in halt) {
+        entry.error = halt.refused;
+        manifest.stopped = `Stopped at ${v.name} (${halt.step}): CC5 refused to delete a character in the scene, so ` +
+          `nothing more was sent to CC5. Not started: ${listOrNone(notStarted)}.`;
       } else {
         entry.error = injuryQuestion(halt.needsInjuries, INJURIES_AGAIN);
         manifest.stopped = `Stopped at ${v.name}: it has skin overlays or a skin condition and no injuries choice was ` +
@@ -596,16 +799,20 @@ function findContinuation(input: BatchParsed, id: string): Continuation | string
 }
 
 /**
- * The reply once the batch has run: one line per variant of this run, then how to go on. manifestError: why the
- * last write of patients_manifest.json failed (RB-4), so the reply says the file does not show this run.
+ * The reply once the batch has run: one line per variant of this run, each with the lines of variantDetails under it
+ * (F-100), then how to go on. manifestError: why the last write of patients_manifest.json failed (RB-4), so the reply
+ * says the file does not show this run.
  */
 function summarize(input: BatchParsed, m: Manifest, manifestPath: string, earlier: Manifest | null,
   recorded: BuildStop | undefined, replaced: BuildStop | undefined, manifestError?: string): ToolResult {
-  const lines = m.variants.map((e) => `${e.stopped ? "WAIT" : e.ok ? "OK  " : "FAIL"} ${e.name}` +
-    (e.export_base_unchanged ? " (the base, unchanged on purpose)" : "") +
-    (e.error ? `: ${e.error}` : "") +
-    (e.budget_pass === false ? " (over Quest budget)" : "") +
-    (e.budget && e.budget_pass === undefined ? ` (triangle budget not checked: sub_d_level ${input.sub_d_level})` : ""));
+  const lines = m.variants.flatMap((e) => [
+    `${e.stopped ? "WAIT" : e.ok ? "OK  " : "FAIL"} ${e.name}` +
+      (e.export_base_unchanged ? " (the base, unchanged on purpose)" : "") +
+      (e.error ? `: ${e.error}` : "") +
+      (e.budget_pass === false ? " (over Quest budget)" : "") +
+      (e.budget && e.budget_pass === undefined ? ` (triangle budget not checked: sub_d_level ${input.sub_d_level})` : ""),
+    ...variantDetails(e),
+  ]);
   // TS-5: a variant whose FBX was written (and kept) is exported, also when it is not OK: CHECK lines, settings CC5
   // did not apply, injuries that did not reach it, or a budget check a window blocked. The OK count comes apart.
   const exported = m.variants.filter((e) => e.fbx !== undefined || e.ok).length;
@@ -633,19 +840,28 @@ function summarize(input: BatchParsed, m: Manifest, manifestPath: string, earlie
   if (timelineLeft.length) parts.push(timelineLine(timelineLeft));
   if (recorded) {
     const d = recorded.data as BatchStopDetail;
-    parts.push("To go on after the answer: call batch_generate_patients again with the same base_character, unity_dir, " +
-      `sub_d_level, texture_size and injuries, continue_after "${recorded.id}", and these variants: ${d.variant} first ` +
-      "and unchanged (it is finished from where it stopped; its recipe is not run again), then " +
+    // Review #3: a window with no buttons (F-94) or unreadable buttons (F-99) has no answer to wait for.
+    parts.push(`To go on ${goOnWhen(recorded)}: call batch_generate_patients again with the same base_character, ` +
+      `unity_dir, sub_d_level, texture_size and injuries, continue_after "${recorded.id}", and these variants: ` +
+      `${d.variant} first and unchanged (it is finished from where it stopped; its recipe is not run again), then ` +
       `${d.notStarted.length ? d.notStarted.join(", ") : "nothing else"}.`);
-    if (recorded.layer) parts.push(LAYER_STOP_TEXT);
+    if (recorded.layer) {
+      parts.push(LAYER_STOP_TEXT);
+    } else if (isSkinGenQuestion(recorded.question)) {
+      // F-91: for a load the user asked for, CC5's question before it ends the SkinGen session is a plain confirmation.
+      parts.push(SKINGEN_QUESTION_RULE);
+    }
   } else if (m.stopped) {
-    // F-75: no continue_after; the fix is a parameter, so the variants not finished run again.
-    const unfinished = input.variants.slice(Math.max(0, m.variants.length - 1)).map((v) => v.name);
-    parts.push("To go on: ask the user how skin overlays and skin conditions should reach Unity for these patients " +
-      "('bake', 'separate' or 'omit'; there is no default), then run batch_generate_patients again with injuries (or a " +
-      `variant's own injuries) and the variants not finished: ${unfinished.join(", ")}.`);
+    // F-75 and F-92: no continue_after; the fix is a parameter, or CC5's selection, so the variants not finished run
+    // again.
+    const unfinished = input.variants.slice(Math.max(0, m.variants.length - 1)).map((v) => v.name).join(", ");
+    parts.push(m.variants.at(-1)?.error?.includes(SELECTION_NOT_CLEARED)
+      ? "To go on: clear CC5's selection (clear_selection, or deselect in Character Creator 5), then run " +
+        `batch_generate_patients again with the variants not finished: ${unfinished}.`
+      : "To go on: ask the user how skin overlays and skin conditions should reach Unity for these patients " +
+        "('bake', 'separate' or 'omit'; there is no default), then run batch_generate_patients again with injuries (or a " +
+        `variant's own injuries) and the variants not finished: ${unfinished}.`);
   }
-  if (exportsClearedUndo.has(m)) parts.push(UNDO_CLEARED);
   if (replaced) {
     parts.push(`Note: the earlier ${replaced.kind} that stopped at ${replaced.step} (continue_after "${replaced.id}") ` +
       "was not continued; that stop is forgotten.");
@@ -695,8 +911,13 @@ async function runLocked(ctx: RunContext, input: BatchParsed, manifestPath: stri
     if (out.answered !== undefined) cont.stop.answered = out.answered;
     if (!out.done) {
       if (out.dialog) {
-        return errorResult(`${out.dialog}\nAnswer it first, then call batch_generate_patients with continue_after ` +
-          `"${id}" again. Nothing else was sent to CC5.`);
+        // Review #3: a window with no buttons (F-94), or whose buttons the bridge cannot read (F-99), is answered or
+        // closed in CC5; answer_cc5_dialog refuses a question whose text could not be read (review #8), so the user
+        // answers that one in CC5 (as apply_character_recipe's continue_after says).
+        const first = answerOrClose(out.question) ? "Answer or close it first"
+          : out.question?.text_read === false ? "Ask the user to answer it in CC5 first" : "Answer it first";
+        return errorResult(`${out.dialog}\n${first}, then call batch_generate_patients with continue_after "${id}" ` +
+          "again. Nothing else was sent to CC5.");
       }
       if (signal?.aborted) {
         return errorResult(`Cancelled by the client: nothing else was sent to CC5; continue_after "${id}" still works.`);
@@ -721,9 +942,12 @@ async function runLocked(ctx: RunContext, input: BatchParsed, manifestPath: stri
 
   // 4. A scene changed during the pause is never exported as the stopped patient. A variant whose own base step has
   // not run yet is rebuilt from that file (the base step comes first and deletes every character), so its scene,
-  // possibly emptied by that step before a window stopped it, does not matter.
+  // possibly emptied by that step before a window stopped it, does not matter. Nor does the scene of a variant whose
+  // stopped base load then failed or had its question answered Cancel (batch F review #7, F-98): the scene clear or
+  // base step before it deleted every character, so the scene may hold none; runVariant fails that variant without
+  // exporting it, and the next variant's scene clear starts from the batch's base again.
   const rebuildsFromBase = cont?.data.phase === "recipe" && cont.data.remaining?.base !== undefined;
-  if (cont && cont.data.phase !== "scene" && !rebuildsFromBase) {
+  if (cont && cont.data.phase !== "scene" && !rebuildsFromBase && !baseLoadFailed(cont.data, awaited)) {
     let count: number;
     try {
       count = ((await bridge.getAvatars()) ?? []).length;
@@ -744,10 +968,15 @@ async function runLocked(ctx: RunContext, input: BatchParsed, manifestPath: stri
   if (cont) {
     const d = cont.data;
     const steps = d.steps.filter((s) => !s.stopped);
+    // F-92: what the stopped step's commands noted (the base step's delete_avatar notes) stays with that step: with the
+    // step that finished after the answer, or with the step run again when it never ran (runVariant).
+    const notes = d.phase === "recipe" ? (d.steps.find((s) => s.stopped)?.notes ?? []) : [];
     if (d.phase === "recipe" && d.ran) {
-      steps.push(awaited
-        ? stepFromJob(`${d.step} (after the answer)`, awaited, d.asset, cont.stop.answered)
-        : { step: `${d.step} (after the answer)`, ok: false, detail: UNKNOWN_JOB });
+      const after: StepResult = awaited
+        ? stepFromJob(`${d.step}${AFTER_ANSWER}`, awaited, d.asset, cont.stop.answered)
+        : { step: `${d.step}${AFTER_ANSWER}`, ok: false, detail: UNKNOWN_JOB };
+      keepNotes(after, notes);
+      steps.push(after);
     }
     const resumeAwaited = d.phase === "export" ? d.exported ?? awaited : d.phase === "base" ? awaited : undefined;
     resume = {
@@ -756,6 +985,8 @@ async function runLocked(ctx: RunContext, input: BatchParsed, manifestPath: stri
       steps,
       ...(d.remaining ? { remaining: d.remaining } : {}),
       ...(resumeAwaited ? { awaited: resumeAwaited } : {}),
+      ...(d.sceneClear ? { sceneClear: d.sceneClear } : {}),
+      ...(d.phase === "recipe" && !d.ran && notes.length ? { carried: { step: d.step, notes } } : {}),
     };
     cont.build.stop = undefined;
   }
@@ -797,8 +1028,9 @@ async function runLocked(ctx: RunContext, input: BatchParsed, manifestPath: stri
     // RB-4: a stop recorded before the error is kept: CC5 still waits in its question, and continue_after finishes it.
     const stop = stopped.stop;
     if (stop) {
-      return errorResult(`${message}\nThe batch had stopped at ${stop.step} before that: ${stop.text}\nAfter the answer, ` +
-        `call batch_generate_patients with continue_after "${stop.id}".`);
+      const when = goOnWhen(stop);
+      return errorResult(`${message}\nThe batch had stopped at ${stop.step} before that: ${stop.text}\n` +
+        `${when.charAt(0).toUpperCase()}${when.slice(1)}, call batch_generate_patients with continue_after "${stop.id}".`);
     }
     finishBuild(build);
     return errorResult(message);

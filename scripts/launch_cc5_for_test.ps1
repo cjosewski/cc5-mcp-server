@@ -41,24 +41,30 @@ if (-not (Get-Process -Name CharacterCreator -ErrorAction SilentlyContinue)) {
 } else {
     Write-Host "[launch] CharacterCreator.exe already running (maybe on splash/chooser)."
 }
+# The wait is measured from the launch (or from here, when CC5 was already running), not counted from the 2 s sleeps:
+# each poll also waits for its request, up to 2 s.
+$clock = [System.Diagnostics.Stopwatch]::StartNew()
 
-# Poll for the bridge (plugin loads only in 3D Creator mode; can take 30-60s).
+# Poll for the bridge (plugin loads only in 3D Creator mode; live starts took about 70s). It stops as soon as the
+# bridge answers; 240s is only the limit (F-93).
+$waitSeconds = 240
 $up = $false
-for ($i = 0; $i -lt 60; $i++) {
+for ($i = 0; $i -lt ($waitSeconds / 2); $i++) {
     try {
         $r = Invoke-RestMethod -Uri $health -TimeoutSec 2
         if ($r.result.status -eq "ok") { $up = $true; break }
     } catch {}
     Start-Sleep -Seconds 2
 }
+$waited = [math]::Floor($clock.Elapsed.TotalSeconds)
 
 if ($up) {
-    Write-Host "[launch] bridge UP at http://127.0.0.1:5101"
+    Write-Host "[launch] bridge UP at http://127.0.0.1:5101 after ${waited}s"
     # CC5's startup questions are the user's to answer: this script sends no keys or clicks to CC5.
     Write-Host '[launch] If CC5 shows "Unsaved project data found", answer it yourself: OK restores the auto-saved changes, Cancel discards them.'
     exit 0
 } else {
-    Write-Host "[launch] bridge DOWN after 120s - CC5 may be stuck on the '3D Creator / AI Studio' chooser."
+    Write-Host "[launch] bridge DOWN after ${waited}s - CC5 may be stuck on the '3D Creator / AI Studio' chooser."
     Write-Host "[launch] Click '3D Creator' (left button) on the CC5 window, then re-run this script."
     exit 1
 }

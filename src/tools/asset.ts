@@ -8,9 +8,18 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, bridgeErrorResult, errorResult } from "../util.js";
 import { pendingResult, runJob } from "../jobs.js";
-import { formatLoadResult, type LoadJobResult } from "../change-report.js";
+import { formatLoadResult, type CancelWords, type LoadJobResult } from "../change-report.js";
+import { answeredCancel, CANCELLED_CHANGED, CANCELLED_NOTHING, CANCELLED_UNSURE } from "../recipe.js";
 import { FIT_RULE, NOT_A_CHECK, PICK_RULE, PRESET_RULE } from "../prompts/content-rules.js";
-import { withUndoHistoryLine } from "./unity.js";
+
+/**
+ * F-98 (batch F review #8, #28): how load_asset and job_status word a load whose job was answered Cancel in CC5, in the
+ * words a recipe gives such a step (recipe.ts). It applied nothing only when its before/after comparison ran in full
+ * and found no change (comparedNothing, as batch F review #11 asks of a recipe); otherwise CC5 may not have done it.
+ */
+export const CANCELLED_LOAD: CancelWords = {
+  changed: CANCELLED_CHANGED, nothing: CANCELLED_NOTHING, unsure: CANCELLED_UNSURE,
+};
 
 const LOAD_ASSET_DESCRIPTION =
   "Load a CC5 asset file into the scene. Supports .iAvatar, .ccm (character), .iClothes (clothing), .rlHair " +
@@ -81,14 +90,17 @@ export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
       }
       // A job, not the direct call: a dressed .ccAvatar can outlast the bridge's 30 s limit, and a question CC5 asks
       // (Replace / Material Only) comes back as the job's dialog. A load still running returns its job id; job_status
-      // then shows the same report (F-34: what the load changed besides what it was for).
+      // then shows the same report (F-34: what the load changed besides what it was for). F-98 (batch F review #8,
+      // #28): CC5 reports a load done after answer_cc5_dialog clicked Cancel in its question, so the job's answers
+      // decide whether it reads as loaded or as cancelled in CC5.
       try {
         const out = await runJob(bridge, "load_asset", target === undefined ? { file_path } : { file_path, target },
           { signal: extra?.signal });
         if (!out.done) return pendingResult(out);
         const raw = out.result;
         const result = (typeof raw === "object" && raw !== null ? raw : {}) as LoadJobResult;
-        return formatLoadResult(out.failed ? { ...result, success: false } : result, file_path);
+        return formatLoadResult(out.failed ? { ...result, success: false } : result, file_path,
+          answeredCancel(out.answers) ? CANCELLED_LOAD : undefined);
       } catch (err) {
         return bridgeErrorResult(err);
       }
@@ -140,8 +152,7 @@ export function registerAssetTools(server: McpServer, bridge: CC5Bridge) {
         (result) => {
           if (!result.success) return `Export failed: ${result.error}${result.notes ? `\nNotes: ${result.notes.join("; ")}` : ""}`;
           const notes = result.notes && result.notes.length ? `\nNotes: ${result.notes.join("; ")}` : "";
-          // F-86: the last line says when CC5 cleared its undo history with this export.
-          return withUndoHistoryLine(`FBX exported to: ${output_path} (target=${result.target_tool ?? "default"})${notes}`, result);
+          return `FBX exported to: ${output_path} (target=${result.target_tool ?? "default"})${notes}`;
         },
       );
     }

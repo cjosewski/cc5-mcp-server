@@ -5,7 +5,8 @@
  * A recipe that meets a CC5 question nobody has answered stops there (D1): its report shows the question and the
  * continue_after call that finishes the stopped step and runs the rest after the answer. A recipe does not start
  * while a CC5 window is open. CC5's "Replace / Material Only" has no standing answer (D3): the user's button,
- * passed as layer_answer with continue_after, answers the identical question for the rest of that recipe only.
+ * passed as layer_answer with continue_after, answers the identical question for the rest of that recipe only. A step
+ * whose question was answered Cancel is reported CANCELLED, never OK (F-98).
  */
 
 import path from "node:path";
@@ -17,8 +18,8 @@ import { bridgeCall, bridgeErrorResult, errorResult, progressReporter, type Tool
 import { isLocalAbsolute } from "./unity.js";
 import { formatDialog } from "./dialog.js";
 import {
-  applyRecipe, checkRecipeFiles, formatReport, recipeStepCount, remainingRecipe, stepFromJob, supersedeChecks,
-  RecipeSchema, HEADSHOT_DISABLED, type Recipe, type RecipeStopData, type StepResult,
+  applyRecipe, checkRecipeFiles, formatReport, recipeStepCount, remainingRecipe, stepFromJob, supersedeChecks, waitKind,
+  RecipeSchema, HEADSHOT_DISABLED, type Recipe, type RecipeStopData, type StepResult, type WaitKind,
 } from "../recipe.js";
 import { claimScene } from "../scene-lock.js";
 import { awaitJob, lostJobMessage, type JobOutcome } from "../jobs.js";
@@ -156,7 +157,32 @@ const TOOL_FOR: Record<Build["kind"], string> = { recipe: "apply_character_recip
 
 type RunContext = { bridge: CC5Bridge; signal?: AbortSignal; report: (message: string) => void };
 
-const progressLine = (s: StepResult): string => `${s.stopped ? "WAIT" : s.ok ? "OK" : "FAIL"} ${s.step}`;
+const progressLine = (s: StepResult): string =>
+  `${s.stopped ? "WAIT" : s.cancelled ? "CANCELLED" : s.ok ? "OK" : "FAIL"} ${s.step}`;
+
+/**
+ * What a run stopped on, and when it goes on, for a new recipe's note (F-94: a window with no buttons is closed, not
+ * answered; F-99: one whose buttons the bridge cannot read is answered or closed in CC5; review #8: a question whose
+ * text could not be read is still a question, which the user answers in CC5).
+ */
+const STOPPED_ON: Record<WaitKind, [string, string]> = {
+  question: ["question", "after the answer"],
+  unread: ["question", "after the answer"],
+  close: ["window", "once it is closed"],
+  unreadable: ["window", "once it is answered or closed"],
+};
+
+/**
+ * What continue_after asks for first while the stopped job still waits in its window: answer_cc5_dialog can click
+ * neither a window with no buttons (F-94) nor one whose buttons the bridge cannot read (F-99), and it refuses a question
+ * whose text could not be read (review #8), which the user answers in CC5.
+ */
+const FIRST: Record<WaitKind, string> = {
+  question: "Answer it first",
+  unread: "Ask the user to answer it in CC5 first",
+  close: "Answer or close it first",
+  unreadable: "Answer or close it first",
+};
 
 /**
  * The reply once a recipe (or a continuation's segment) has run: a stop is recorded so continue_after can finish it,
@@ -199,7 +225,8 @@ async function runNewRecipe(ctx: RunContext, recipe: Recipe): Promise<ToolResult
       : "\nNothing was sent to CC5: answer or close it first, then run the recipe again.");
     const pending = currentStop();
     if (pending?.jobId && pending.jobId === d.waiting_job) {
-      text += `\nThe last ${pending.kind} stopped on this question at ${pending.step}: after the answer, go on with ` +
+      const [what, when] = STOPPED_ON[waitKind(d.dialog)];
+      text += `\nThe last ${pending.kind} stopped on this ${what} at ${pending.step}: ${when}, go on with ` +
         `${TOOL_FOR[pending.kind]} continue_after "${pending.id}".`;
     }
     return errorResult(text);
@@ -266,12 +293,13 @@ async function continueRecipe(ctx: RunContext, id: string, recipe: Recipe, layer
           `apply_character_recipe with continue_after "${id}" again to go on.`);
       }
       if (out.dialog) {
-        return errorResult(`${out.dialog}\nAnswer it first, then call apply_character_recipe with continue_after ` +
-          `"${id}" again. Nothing else was sent to CC5.`);
+        return errorResult(`${out.dialog}\n${FIRST[waitKind(out.question)]}, then call apply_character_recipe with ` +
+          `continue_after "${id}" again. Nothing else was sent to CC5.`);
       }
       return errorResult(`${stop.step} is still running in CC5 (job ${stop.jobId}). Call apply_character_recipe with ` +
         `continue_after "${id}" again in a moment; nothing else was sent to CC5.`);
     }
+    // F-98: the job's answers say whether CC5 was answered Cancel (stepFromJob reports that step CANCELLED).
     if (stop.ran) after = stepFromJob(`${stop.step} (after the answer)`, out, stop.asset, stop.answered);
   } else if (stop.ran) {
     after = {
@@ -283,6 +311,11 @@ async function continueRecipe(ctx: RunContext, id: string, recipe: Recipe, layer
   const segment = await applyRecipe(ctx.bridge, data.remaining, {
     signal: ctx.signal, onStep: (s) => ctx.report(progressLine(s)), layerAnswer: build.layerAnswer,
   });
+  // F-92: what the stopped step's commands noted (the base step's delete_avatar notes) stays with that step: with the
+  // step that finished after the answer, or with the step run again when it never ran.
+  const carried = data.results[data.results.length - 1]?.notes;
+  const again = stop.ran ? after : segment[0]?.step === stop.step ? segment[0] : undefined;
+  if (carried?.length && again) again.notes = [...new Set([...carried, ...(again.notes ?? [])])];
   const all = supersedeChecks([...data.results.slice(0, -1), ...(after ? [after] : []), ...segment]);
   const prefix = `Continued after the answer (continue_after "${id}"): this report covers the whole recipe.\n`;
   return finishRecipe(ctx, build, all, data.remaining, segment, prefix);
@@ -310,7 +343,12 @@ export function registerBuilderTools(server: McpServer, bridge: CC5Bridge) {
           return { content: [{ type: "text" as const, text: `No content matched '${query}' in the installed content ` +
             `(CC5's templates and the user's Custom content). Try other words or browse_content. ${STORE_HINT}${note}` }] };
         }
-        const lines = hits.slice(0, limit).map((h) => `[${h.folder}] ${h.path}`);
+        // I-07: Lite Hair hairstyles are labelled and come after the other hairstyles, so the hits shown are full
+        // quality first; hits of other categories keep their places. content.ts imports this module, so its helpers
+        // are imported when the tool runs, not while the modules load (no import cycle).
+        const { liteHairLabel, liteHairLast } = await import("./content.js");
+        const lines = liteHairLast(hits, (h) => (h.folder === "hair" ? h.path : undefined)).slice(0, limit)
+          .map((h) => `[${h.folder}] ${h.path}${h.folder === "hair" ? liteHairLabel(h.path) : ""}`);
         return { content: [{ type: "text" as const, text: `${hits.length} match(es):\n${lines.join("\n")}${note}` }] };
       } catch (e) {
         // TS-1: CC5 could list none of the folders; its own answer says why (no store hint: nothing was searched).

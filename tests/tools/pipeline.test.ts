@@ -2,12 +2,12 @@ import fs from "node:fs";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   registerPipelineTools, IMPORT_CHARACTER_DISABLED, IMAGE_TYPES_TEXT, EXPORT_OBJ_DESCRIPTION, EXPORT_GOZ_DESCRIPTION,
-  REPLACE_MESH_DESCRIPTION, REPLACE_MESH_ANIMATION_RULE, OBJ_Y_UP,
+  REPLACE_MESH_DESCRIPTION, REPLACE_MESH_ANIMATION_RULE, OBJ_Y_UP, OBJ_NEUTRAL_FACE, OBJ_EXPRESSION_PREFIX,
+  REPLACE_RETRY_MS,
 } from "../../src/tools/pipeline.js";
 import { RecipeSchema } from "../../src/recipe.js";
-import {
-  TIMELINE_LEFT_LINE, TIMELINE_NOT_RESTORED_PREFIX, TIMELINE_USABLE_LINE, UNDO_HISTORY_CLEARED,
-} from "../../src/tools/unity.js";
+import { BridgeUnreachableError } from "../../src/cc5-bridge.js";
+import { TIMELINE_LEFT_LINE, TIMELINE_NOT_RESTORED_PREFIX, TIMELINE_USABLE_LINE } from "../../src/tools/unity.js";
 import { createMockBridge, mockJobs } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import { createMockServer } from "../helpers/mock-server.js";
@@ -129,6 +129,18 @@ const TPOSE_NOTE = "The OBJ is in CC5's T-pose (arms horizontal). Sculpt it with
   "replace_mesh_from_obj removes the character's pose to read it back.";
 const POSE_REMOVED = "The character's pose was removed so that CC5 reads the OBJ in the T-pose; it stands in a T-pose " +
   "now. Apply a pose again with apply_pose if needed.";
+// F-88 (live CC5 5.13): the OBJ carries the facial expression, and a replace with it set baked it into the mesh.
+const EXPRESSION_NOTE = `${OBJ_EXPRESSION_PREFIX}Brow_Compress_L 0.6, Brow_Compress_R 0.6, Eye_Squint_L 0.3 and 3 more ` +
+  "(this reply lists every slider with its weight). Do not bring this OBJ back with replace_mesh_from_obj, not even " +
+  "after reset_expression: the expression is part of this OBJ, and the replace would make it part of the mesh without " +
+  "noticing (its check would pass). For a round trip, run reset_expression, export again with export_obj and edit that " +
+  "OBJ; after the replace, set the expression again with these weights.";
+// Review #5: the note and the refusal name three sliders; the result's expression_weights hold every one (the six
+// sliders of the live F-88 case), which the reply gives as one line to set the expression again.
+const EXPRESSION_WEIGHTS = { Brow_Compress_L: 0.6, Brow_Compress_R: 0.6, Eye_Squint_L: 0.3, Eye_Squint_R: 0.3,
+  Mouth_Frown_L: 0.4, Mouth_Frown_R: 0.4 };
+const SET_AGAIN = "To set the expression again: set_expression with Brow_Compress_L 0.6, Brow_Compress_R 0.6, " +
+  "Eye_Squint_L 0.3, Eye_Squint_R 0.3, Mouth_Frown_L 0.4, Mouth_Frown_R 0.4";
 const description = (tool: string) => server.tool.mock.calls.find((c) => c[0] === tool)?.[1] as string;
 
 describe("export_obj", () => {
@@ -151,11 +163,84 @@ describe("export_obj", () => {
     expect(r.content[0].text).toBe(`Exported C:/x/a.obj\n${TPOSE_NOTE}`);
   });
 
-  it("says the OBJ is in CC5's T-pose, that the pose stays while sculpting, and that the round trip needs Y-up", () => {
+  it("says the OBJ is in CC5's T-pose, that the pose stays while sculpting, and that the round trip needs Y-up and a neutral face", () => {
     expect(description("export_obj")).toBe(EXPORT_OBJ_DESCRIPTION);
     expect(EXPORT_OBJ_DESCRIPTION).toBe("Export the current character as OBJ in CC5's T-pose (arms horizontal), for " +
       "sculpting in ZBrush or Blender. Keep the pose while sculpting, then bring the mesh back with replace_mesh_from_obj, " +
-      "which needs a Y-up OBJ (export with y_up true, and save Y-up from the sculpting tool).");
+      "which needs a Y-up OBJ (export with y_up true, and save Y-up from the sculpting tool) and a neutral face " +
+      "(reset_expression before export_obj; set the expression again after the replace).");
+    // F-88: the same clause in replace_mesh_from_obj's description.
+    expect(OBJ_NEUTRAL_FACE).toBe("a neutral face (reset_expression before export_obj; set the expression again after the replace)");
+  });
+
+  // F-88: the export ran as asked; the OBJ may be wanted for other uses, but replace_mesh_from_obj refuses it.
+  it("passes on the plugin's note on the expression the OBJ carries, as a result", async () => {
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)",
+      notes: [TPOSE_NOTE, EXPRESSION_NOTE] });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe(`Exported C:/x/a.obj\n${TPOSE_NOTE}\n${EXPRESSION_NOTE}`);
+    expect(r.content[0].text).not.toContain("not as asked");
+  });
+
+  it("ends with every slider's weight, as one line to set the expression again (review #5)", async () => {
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)",
+      notes: [TPOSE_NOTE, EXPRESSION_NOTE], expression_weights: EXPRESSION_WEIGHTS });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe(`Exported C:/x/a.obj\n${TPOSE_NOTE}\n${EXPRESSION_NOTE}\n${SET_AGAIN}`);
+  });
+
+  it("gives that line after the expression note when a weaker call form was used, and adds none for no weights", async () => {
+    const formWarning = "WARNING: CC5 rejected (avatar, path, option) and (avatar, path) was used instead, so the OBJ " +
+      "options (Y-up axis, body and clothing parts, materials) were NOT applied, and the OBJ may not be in CC5's T-pose";
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path)",
+      notes: [formWarning, EXPRESSION_NOTE], expression_weights: EXPRESSION_WEIGHTS });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(`Exported C:/x/a.obj with (avatar, path), not as asked:\n${formWarning}\n` +
+      `Do not sculpt on this OBJ or bring it back with replace_mesh_from_obj.\n${EXPRESSION_NOTE}\n${SET_AGAIN}`);
+    for (const expression_weights of [{}, { Brow_Compress_L: "0.6", Mouth_Frown_L: null }, [0.6], null]) {
+      bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)",
+        notes: [TPOSE_NOTE], expression_weights });
+      const plain = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+      expect(plain.content[0].text).toBe(`Exported C:/x/a.obj\n${TPOSE_NOTE}`);
+    }
+  });
+
+  it("shows CC5's float32 weights to 4 decimals at most, as set_expression does", async () => {
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)",
+      notes: [], expression_weights: { Brow_Raise_Inner_L: 0.6000000238418579, Jaw_Open: 0.123456 } });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+    expect(r.content[0].text).toBe("Exported C:/x/a.obj\nTo set the expression again: set_expression with " +
+      "Brow_Raise_Inner_L 0.6, Jaw_Open 0.1235");
+  });
+
+  it("passes on the plugin's note when it could not read the expression", async () => {
+    const notRead = "Could not read the facial expression: the OBJ carries any expression the face shows, and " +
+      "replace_mesh_from_obj refuses while the expression cannot be read.";
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path, option)",
+      notes: [TPOSE_NOTE, notRead] });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe(`Exported C:/x/a.obj\n${TPOSE_NOTE}\n${notRead}`);
+  });
+
+  it("keeps the expression note out of the options a weaker call form dropped", async () => {
+    const formWarning = "WARNING: CC5 rejected (avatar, path, option) and (avatar, path) was used instead, so the OBJ " +
+      "options (Y-up axis, body and clothing parts, materials) were NOT applied, and the OBJ may not be in CC5's T-pose";
+    bridge.exportObj.mockResolvedValue({ success: true, path: "C:/x/a.obj", signature: "(avatar, path)",
+      notes: [formWarning, EXPRESSION_NOTE] });
+    const r = await server.getRegisteredTool("export_obj")({ output_path: "C:/x/a.obj" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(`Exported C:/x/a.obj with (avatar, path), not as asked:\n${formWarning}\n` +
+      `Do not sculpt on this OBJ or bring it back with replace_mesh_from_obj.\n${EXPRESSION_NOTE}`);
+  });
+
+  it("tells the expression note apart by the plugin's prefix (cc5_pipeline.py)", () => {
+    const plugin = fs.readFileSync(new URL("../../cc5-plugin/cc5_pipeline.py", import.meta.url), "utf-8");
+    expect(/^OBJ_EXPRESSION_PREFIX = "([^"]*)"/m.exec(plugin)?.[1]).toBe(OBJ_EXPRESSION_PREFIX);
+    expect(OBJ_EXPRESSION_PREFIX).toBe("WARNING: the OBJ carries the facial expression: ");
   });
 
   it("passes on the plugin's note that a Z-up OBJ cannot come back, as a result: the axis was asked for", async () => {
@@ -334,19 +419,64 @@ describe("replace_mesh_from_obj", () => {
     expect(r.content[0].text).not.toContain("Checked:");
   });
 
-  it("is an error naming why it refused or undid the replace", async () => {
+  it("is an error naming why it undid the replace, after trying once more 3 s later (F-101)", async () => {
     const error = "CC5 did not read body.obj as expected (the mesh differs by up to 2.00 cm from the OBJ); the replace was undone.";
-    mockJobs(bridge, { replace_mesh_from_obj: { success: false, error } });
+    const started = mockJobs(bridge, { replace_mesh_from_obj: { success: false, error } });
+    vi.useFakeTimers();
+    try {
+      const pending = replace();
+      await vi.advanceTimersByTimeAsync(REPLACE_RETRY_MS);
+      const r = await pending;
+      expect(started).toHaveLength(2);
+      expect(r.isError).toBe(true);
+      expect(r.content[0].text).toBe(`First try: ${error} CC5 can still be busy for a moment after an undo of a texture ` +
+        `load (F-101), so the replace ran once more 3 s later.\nFailed: ${error}`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // F-101 (live): right after an undo of a texture load, CC5 read the OBJ in the old pose (95.44 cm off) and the plugin
+  // undid the replace; the same replace a few seconds later matched (0.00 cm).
+  it("runs a replace CC5 read differently once more 3 s later, and says so (F-101)", async () => {
+    const error = "CC5 did not read body.obj as expected (the mesh differs by up to 95.44 cm from the OBJ); the replace was undone.";
+    let tries = 0;
+    const started = mockJobs(bridge, {
+      replace_mesh_from_obj: () => (++tries === 1 ? { success: false, error }
+        : { success: true, mesh: "CC_Base_Body", pose_removed: true, check_max_cm: 0, notes: [POSE_REMOVED] }),
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = replace();
+      await vi.advanceTimersByTimeAsync(REPLACE_RETRY_MS - 1);
+      expect(started).toHaveLength(1);  // the second try waits the full 3 s
+      await vi.advanceTimersByTimeAsync(1);
+      const r = await pending;
+      expect(started).toHaveLength(2);
+      expect(r.isError).toBeUndefined();
+      expect(r.content[0].text).toBe(`First try: ${error} CC5 can still be busy for a moment after an undo of a texture ` +
+        `load (F-101), so the replace ran once more 3 s later.\nReplaced CC_Base_Body with body.obj\n` +
+        `Checked: the mesh matches the OBJ (max 0.00 cm).\n${POSE_REMOVED}`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tries no replace again when undoing the first one failed (F-101)", async () => {
+    const error = "CC5 did not read body.obj as expected (the mesh differs by up to 95.44 cm from the OBJ); undoing the " +
+      "replace failed (SWIG): undo it in Character Creator 5.";
+    const started = mockJobs(bridge, { replace_mesh_from_obj: { success: false, error } });
     const r = await replace();
-    expect(r.isError).toBe(true);
+    expect(started).toHaveLength(1);
     expect(r.content[0].text).toBe(`Failed: ${error}`);
   });
 
-  it("says it needs a Y-up OBJ from export_obj, removes the pose, refuses an animation, a topology, pose or axis mismatch, and checks the result", () => {
+  it("says it needs a Y-up OBJ from export_obj and a neutral face, removes the pose, refuses an animation, a topology, pose or axis mismatch, and checks the result", () => {
     expect(description("replace_mesh_from_obj")).toBe(REPLACE_MESH_DESCRIPTION);
     expect(REPLACE_MESH_DESCRIPTION).toContain("an edited OBJ from export_obj (same topology, in CC5's T-pose)");
-    // TS-8 (DT-3): the plugin refuses a Z-up OBJ naming the axis; the description says so before the call.
-    expect(REPLACE_MESH_DESCRIPTION).toContain(`It needs ${OBJ_Y_UP}.`);
+    // TS-8 (DT-3): the plugin refuses a Z-up OBJ naming the axis; F-88: it refuses while a facial expression is set.
+    // The description says both before the call.
+    expect(REPLACE_MESH_DESCRIPTION).toContain(`It needs ${OBJ_Y_UP} and ${OBJ_NEUTRAL_FACE}.`);
     expect(REPLACE_MESH_DESCRIPTION).toContain("CC5 reads the OBJ in the character's current pose, so the tool first " +
       "removes the character's pose");
     expect(REPLACE_MESH_DESCRIPTION).toContain(REPLACE_MESH_ANIMATION_RULE);
@@ -358,10 +488,14 @@ describe("replace_mesh_from_obj", () => {
     expect(shape.obj_path.description).toBe("Absolute path to the edited .obj (from export_obj, sculpted in the same pose, saved Y-up)");
   });
 
-  it("passes on the plugin's refusals of a Z-up OBJ and of a replace CC5 did not apply", async () => {
+  it("passes on the plugin's refusals of a Z-up OBJ, of a set facial expression and of a replace CC5 did not apply", async () => {
     for (const error of [
       "body.obj is a Z-up OBJ (export_obj with y_up false); replace_mesh_from_obj reads only Y-up OBJs: export it with " +
         "y_up true (the default), sculpt, then replace.",
+      "Kevin's facial expression is set (Brow_Compress_L 0.6, Brow_Compress_R 0.6, Eye_Squint_L 0.3 and 3 more), so " +
+        "nothing was replaced: an OBJ exported with the expression set carries it, and the replace would bake it into " +
+        "the mesh. Run reset_expression, export the OBJ again with export_obj, make the edit on that OBJ, replace, then " +
+        "set the expression again.",
       "CC5 did not apply body.obj to CC_Base_Body; nothing was changed (the replace was undone)",
     ]) {
       mockJobs(bridge, { replace_mesh_from_obj: { success: false, error } });
@@ -369,6 +503,43 @@ describe("replace_mesh_from_obj", () => {
       expect(r.isError).toBe(true);
       expect(r.content[0].text).toBe(`Failed: ${error}`);
     }
+  });
+
+  // Review #5: the refusal names three of the six sliders; the expression is to be set again after the round trip.
+  it("ends a refusal over a set facial expression with every slider's weight, as one line (review #5)", async () => {
+    const error = "Kevin's facial expression is set (Brow_Compress_L 0.6, Brow_Compress_R 0.6, Eye_Squint_L 0.3 and 3 " +
+      "more; this reply lists every slider with its weight), so nothing was replaced: an OBJ exported with the " +
+      "expression set carries it, and the replace would bake it into the mesh. If body.obj was exported while this " +
+      "expression was set, run reset_expression, export the OBJ again with export_obj and make the edit on that OBJ. If " +
+      "it was exported with a neutral face, run reset_expression and replace it again. After the replace, set the " +
+      "expression again with the weights listed.";
+    mockJobs(bridge, { replace_mesh_from_obj: { success: false, error, expression_weights: EXPRESSION_WEIGHTS } });
+    const r = await replace();
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(`Failed: ${error}\n${SET_AGAIN}`);
+  });
+
+  it("still shows CC5's question, the job id of a slow replace and an unreachable CC5 as before", async () => {
+    const question = 'CC5 is waiting for an answer to "Replace?" (the "Character Creator 5" window). Buttons: OK. ' +
+      'The command is still running as job cmd_9: answer it with answer_cc5_dialog, then job_status("cmd_9").';
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_9" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_9", action: "replace_mesh_from_obj", status: "running", dialog_message: question });
+    const asking = await replace();
+    expect(asking.isError).toBe(true);
+    expect(asking.content[0].text).toBe(question);
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_9", action: "replace_mesh_from_obj", status: "running" });
+    vi.useFakeTimers();
+    try {
+      const pending = replace();
+      await vi.advanceTimersByTimeAsync(30_000);
+      const running = await pending;
+      expect(running.isError).toBeUndefined();
+      expect(running.content[0].text).toContain('job_status with job_id "cmd_9"');
+    } finally {
+      vi.useRealTimers();
+    }
+    bridge.startJob.mockRejectedValue(new BridgeUnreachableError("fetch failed"));
+    expect((await replace()).content[0].text).toBe("CC5 bridge error: fetch failed. Is CC5 running with the MCP Bridge plugin?");
   });
 
   it("refuses an animation longer than the plugin's pose clip (DEC-9, cc5_pipeline.py)", () => {
@@ -479,25 +650,25 @@ describe("export_textures", () => {
     expect(r.content[0].text).not.toContain("undo history");
   });
 
-  // F-86 (live CC5 5.13): an FBX export clears CC5's undo history, and this tool exports an FBX.
-  it("ends with the undo-history line when the plugin says the export cleared it", async () => {
+  // F-89 (live CC5 5.13, corrects F-86): an FBX export does not clear CC5's undo history, so the reply says nothing
+  // about it, also for a result from a plugin installed before the fix that still sends undo_history_cleared.
+  it("says nothing about CC5's undo history after the export", async () => {
     bridge.startJob.mockResolvedValue({ job_id: "cmd_5" });
     bridge.getJob.mockResolvedValue({ job_id: "cmd_5", action: "export_textures", status: "done",
       result: { success: true, folder: "C:/SP/P1", files: [], undo_history_cleared: true } });
     const r = await server.getRegisteredTool("export_textures")({ output_dir: "C:/SP", character_name: "P1" });
     expect(r.isError).toBeUndefined();
-    expect(r.content[0].text).toBe(`Exported mesh and 0 files to C:/SP/P1\n${UNDO_HISTORY_CLEARED}`);
+    expect(r.content[0].text).toBe("Exported mesh and 0 files to C:/SP/P1");
   });
 
-  it("keeps the undo-history line on an export that ran and then failed a check", async () => {
+  it("says nothing about it after an export that ran and then failed a check", async () => {
     bridge.startJob.mockResolvedValue({ job_id: "cmd_5" });
     bridge.getJob.mockResolvedValue({ job_id: "cmd_5", action: "export_textures", status: "done",
       result: { success: false, error: "CC5 reported success but did not write C:/SP/P1/P1.fbx",
         undo_history_cleared: true } });
     const r = await server.getRegisteredTool("export_textures")({ output_dir: "C:/SP", character_name: "P1" });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe("Texture export failed: CC5 reported success but did not write C:/SP/P1/P1.fbx\n" +
-      UNDO_HISTORY_CLEARED);
+    expect(r.content[0].text).toBe("Texture export failed: CC5 reported success but did not write C:/SP/P1/P1.fbx");
   });
 
   it("flags an export CC5 made without some of its settings", async () => {
@@ -521,33 +692,32 @@ describe("export_textures", () => {
     };
 
     it("is a line of its own after an export that worked, not an error", async () => {
-      const r = await exportWith({ success: true, folder: "C:/SP/P1", files: [], notes: [TIMELINE_NOTE],
-        undo_history_cleared: true });
+      const r = await exportWith({ success: true, folder: "C:/SP/P1", files: [], notes: [TIMELINE_NOTE] });
       expect(r.isError).toBeUndefined();
       expect(r.content[0].text).toBe("Exported mesh and 0 files to C:/SP/P1\nThe FBX is usable; CC5's timeline was left " +
-        `at one frame: set its length in Character Creator 5.\n${UNDO_HISTORY_CLEARED}`);
+        "at one frame: set its length in Character Creator 5.");
       expect(r.content[0].text).toContain(TIMELINE_USABLE_LINE);
       expect(r.content[0].text).not.toContain("did not apply every export setting");
     });
 
     it("stays out of the export settings CC5 did not apply, and does not call that FBX usable", async () => {
-      const r = await exportWith({ success: true, folder: "C:/SP/P1", files: [], undo_history_cleared: true,
+      const r = await exportWith({ success: true, folder: "C:/SP/P1", files: [],
         notes: [TIMELINE_NOTE, "WARNING: EnableExportMotion failed: x"] });
       expect(r.isError).toBe(true);
       expect(r.content[0].text).toBe("Exported mesh and 0 files to C:/SP/P1, but CC5 did not apply every export setting:\n" +
         "WARNING: EnableExportMotion failed: x\nCC5's timeline was left at one frame: set its length in Character " +
-        `Creator 5.\n${UNDO_HISTORY_CLEARED}`);
+        "Creator 5.");
       expect(r.content[0].text).toContain(TIMELINE_LEFT_LINE);
       expect(r.content[0].text).not.toContain(TIMELINE_NOT_RESTORED_PREFIX);
       expect(r.content[0].text).not.toContain("usable");
     });
 
     it("is the plain timeline line beside a failed export, which it does not call usable", async () => {
-      const r = await exportWith({ success: false, error: "ExportFbxFile reported an error status", undo_history_cleared: true,
+      const r = await exportWith({ success: false, error: "ExportFbxFile reported an error status",
         notes: [TIMELINE_NOTE, "WARNING: SetTextureSize failed: y"] });
       expect(r.isError).toBe(true);
       expect(r.content[0].text).toBe("Texture export failed: ExportFbxFile reported an error status\n" +
-        `WARNING: SetTextureSize failed: y\n${TIMELINE_LEFT_LINE}\n${UNDO_HISTORY_CLEARED}`);
+        `WARNING: SetTextureSize failed: y\n${TIMELINE_LEFT_LINE}`);
       expect(r.content[0].text).not.toContain("usable");
     });
   });

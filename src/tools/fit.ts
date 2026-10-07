@@ -14,7 +14,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BridgeHttpError, type CC5Bridge } from "../cc5-bridge.js";
 import type { CC5Avatar, CC5Dialog } from "../types.js";
-import { bridgeErrorResult, errorResult, progressReporter } from "../util.js";
+import { bridgeErrorResult, errorResult, progressReporter, warningNotes } from "../util.js";
 import { claimScene } from "../scene-lock.js";
 import { pngSize } from "../image-info.js";
 import { formatDialog } from "./dialog.js";
@@ -58,6 +58,23 @@ const NOT_READ = "(not read)";
 // util.ts's ToolResult is text-only; check_fit also returns images.
 type FitContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 type FitResult = { content: FitContent[]; isError?: true };
+
+/**
+ * Text blocks that follow each other joined into one, a newline between them: Claude Code shows adjacent text blocks
+ * with no separator (F-95). The header goes in with the first view's label, which stays just before its image.
+ */
+function joinTexts(content: FitContent[]): FitContent[] {
+  const joined: FitContent[] = [];
+  for (const block of content) {
+    const last = joined[joined.length - 1];
+    if (block.type === "text" && last?.type === "text") {
+      joined[joined.length - 1] = { type: "text", text: `${last.text}\n${block.text}` };
+    } else {
+      joined.push(block);
+    }
+  }
+  return joined;
+}
 
 /**
  * The dialog CC5 has open, read on the dialog lane (which never touches RLPy). A failed read counts as no dialog:
@@ -194,14 +211,14 @@ export function registerFitTools(server: McpServer, bridge: CC5Bridge): void {
         let previous: string | undefined;
         const incomplete = (i: number, view: FitView, reason: string): FitResult => ({
           isError: true,
-          content: [
+          content: joinTexts([
             { type: "text", text: `INCOMPLETE: the fit check of ${name} stopped at view '${view}' (${i}/${n}); ` +
               `${taken > 0 ? "the images taken before it are below" : "no image was taken"}. ` +
               `Do not treat this as a pass.\nWhy: ${reason}` },
             { type: "text", text: header },
             ...entries,
             { type: "text", text: footer },
-          ],
+          ]),
         });
 
         // At the first view that fails, is blocked or is cancelled, stop: nothing more is sent to CC5 (D1).
@@ -217,23 +234,27 @@ export function registerFitTools(server: McpServer, bridge: CC5Bridge): void {
               return incomplete(i, view, `CC5 framed ${f.framed ? `'${f.framed}'` : "no character"} instead of ${name}`);
             }
             const c = await bridge.captureViewport(file, RENDER_WIDTH, RENDER_HEIGHT);
-            if (!c?.success) return incomplete(i, view, `capture_viewport failed: ${c?.error ?? "no reason given"}`);
+            // F-104: the plugin's WARNING notes on this capture (its undo took back more than the render) go with this
+            // view: under its label, or under the reason it stopped at.
+            const warnings = warningNotes(c);
+            const stopHere = (reason: string) => incomplete(i, view, [reason, ...warnings].join("\n"));
+            if (!c?.success) return stopHere(`capture_viewport failed: ${c?.error ?? "no reason given"}`);
             if (!c.base64) {
-              return incomplete(i, view,
+              return stopHere(
                 `CC5 sent no image for this view${c.path ? ` (${c.path}${c.warning ? `: ${c.warning}` : ""})` : ""}`);
             }
             // When RenderImage fails, the plugin copies CC5's window area of the screen (or the whole screen), which
             // can show other windows. Only its size tells it from a render, and it is never returned as an image.
             const size = pngSize(Buffer.from(c.base64, "base64"));
-            if (!size) return incomplete(i, view, `the '${view}' image is not a PNG render (${c.path ?? file})`);
+            if (!size) return stopHere(`the '${view}' image is not a PNG render (${c.path ?? file})`);
             if (size.width !== RENDER_WIDTH || size.height !== RENDER_HEIGHT) {
-              return incomplete(i, view, `the '${view}' image is a screenshot of CC5's window ` +
+              return stopHere(`the '${view}' image is a screenshot of CC5's window ` +
                 `(${size.width}x${size.height}), not a render: RenderImage is not working (it stops after a .ccProject ` +
                 "is loaded); restart CC5 or check the fit by hand");
             }
             const same = c.base64 === previous ? " WARNING: identical to the previous view: the camera did not move." : "";
             entries.push(
-              { type: "text", text: `View ${i}/${n}: ${view} (${c.path ?? file})${same}` },
+              { type: "text", text: [`View ${i}/${n}: ${view} (${c.path ?? file})${same}`, ...warnings].join("\n") },
               { type: "image", data: c.base64, mimeType: "image/png" },
             );
             taken += 1;
@@ -249,7 +270,7 @@ export function registerFitTools(server: McpServer, bridge: CC5Bridge): void {
             return incomplete(i, view, reason);
           }
         }
-        return { content: [{ type: "text", text: header }, ...entries, { type: "text", text: footer }] };
+        return { content: joinTexts([{ type: "text", text: header }, ...entries, { type: "text", text: footer }]) };
       } finally {
         release();
       }

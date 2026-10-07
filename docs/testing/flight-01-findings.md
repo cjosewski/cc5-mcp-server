@@ -41,7 +41,7 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-25 | bug | retest | `get_camera_info` placed the camera at the side right after the home view |
 | F-26 | minor | retest | The home view cropped Kevin's feet |
 | F-27 | minor | fixed, live (Batch C) | `set_light_shadow` with no settings is only refused inside CC5 |
-| F-28 | gap | fixed (Batch D), live check pending | Every second character preset stops on "Replace / Material Only"; batch runs need a preset answer |
+| F-28 | gap | fixed (`f03cf52`), live-checked 2026-10-07: recipe and batch stop at the question (D1), the user's button answers the rest of that run (D3), a new run asks again, a Cancel is not carried | Every second character preset stops on "Replace / Material Only"; batch runs need a preset answer |
 | F-29 | doc | runbook | Runbook placeholders ("‹first jaw ID›") are ambiguous; give real IDs |
 | F-30 | doc | runbook | Value checks need a tolerance (float32 and 0-255 storage) |
 | F-31 | retest | open | Worn accessory selection (duplicate-name risk) untested: Kevin has no accessories |
@@ -64,7 +64,7 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-48 | doc + gap | fixed, live (Batch A) | `import_fbx` description says to answer Import Settings in CC5 (the dialog tools now do it); no tool moves, scales or deletes a prop |
 | F-49 | blocker | fixed, live (Batch A) | Add a "Delete object" tool: nothing can delete a prop (or other scene object) today |
 | F-50 | bug | fixed (Batch A; not run live: FBX imports crash a fresh session, F-51) | `import_fbx` as clothing always dresses the first character: no `target`, ignores the selection (unlike `load_asset`) |
-| F-51 | bug | open | CC5 crashed during an FBX prop import, right after "Convert All" (second session, box_01.fbx that imported fine before) |
+| F-51 | bug | open; not reproduced 2026-10-07 (two prop imports with Convert All, no crash) | CC5 crashed during an FBX prop import, right after "Convert All" (second session, box_01.fbx that imported fine before) |
 | F-52 | blocker | fixed, live (Batch A) | The crash-recovery prompt stops an unattended run: only the user may answer it. Chad: Claude-launched CC5 answers Cancel automatically |
 | F-53 | blocker | fixed, live (Batch A) | `capture_viewport` adds an undo step (it re-sets the render size), so `undo` after any capture reverses the capture, not the change |
 | F-54 | bug (CC5) | open | CC5 crashed on its own 2-3 minutes after a launch, before any MCP command; Chad: CC5 often crashes on the first launch attempt |
@@ -74,32 +74,51 @@ inconsistent or awkward) · doc (description, docs or runbook wrong) · gap (mis
 | F-58 | bug | fixed, live (C2) | A capture over 10 MB (e.g. 8K) is overwritten by a full-screen desktop screenshot; a unit test takes a real screenshot on every npm test |
 | F-59 | doc | fixed, live (C2) | check_cc5_connection overstates what an open dialog does and never shows the automatic recovery answer |
 | F-60 | bug | fixed, live (C2) | describe_character's "no body-shape slider set: the template's own build" can be false (light presets, negative sliders, non-templates) |
-| F-61 | minor | fixed (Batch D), live check pending | With no character in the scene, list_clothes / list_hair / list_accessories say "No clothes are applied." (as for a character wearing nothing) |
-| F-62 | minor | fixed (Batch D), live check pending | `get_avatar_info` still prints raw float32 morph weights (0.3499999940395355): F-13's fix covered get_morph_value and expressions only |
-| F-63 | minor | fixed (Batch D), live check pending | Failed bridge requests (4xx/5xx) are still printed from HTTP threads, into CC5's console and a running exec_python's output |
-| F-64 | minor | fixed (Batch D), live check pending | The CC5-window screenshot fallback starts PowerShell without CREATE_NO_WINDOW: a console window may flash over CC5 and land in the capture |
-| F-65 | minor | partly fixed (Batch D): stale read-backs are reported; the refresh waits for a live probe | An overlay's strength reads back stale (0.0) until CC5 renders; `apply_skin_overlay` reports the strength it was asked for, not a read-back |
-| F-66 | bug | fixed (Batch D), live check pending | `load_texture` into `diffuse_blend` never sets the channel's strength: on a skin material that never had an overlay (0.0) the image does not show, yet the tool reports success; `remove_skin_overlay` leaves the old strength behind |
+| F-61 | minor | fixed (`f03cf52`), live-checked 2026-10-07 | With no character in the scene, list_clothes / list_hair / list_accessories say "No clothes are applied." (as for a character wearing nothing) |
+| F-62 | minor | fixed (`f03cf52`), live-checked 2026-10-06 | `get_avatar_info` still prints raw float32 morph weights (0.3499999940395355): F-13's fix covered get_morph_value and expressions only |
+| F-63 | minor | fixed (`f03cf52`), live-checked 2026-10-06 | Failed bridge requests (4xx/5xx) are still printed from HTTP threads, into CC5's console and a running exec_python's output |
+| F-64 | minor | fixed (`f03cf52`), live-checked 2026-10-06 | The CC5-window screenshot fallback starts PowerShell without CREATE_NO_WINDOW: a console window may flash over CC5 and land in the capture |
+| F-65 | minor | partly fixed (`f03cf52`): stale read-backs are reported; live, SetTime(GetTime()) and one frame forward and back do not refresh the read, only a render does, so the refresh stays off | An overlay's strength reads back stale (0.0) until CC5 renders; `apply_skin_overlay` reports the strength it was asked for, not a read-back |
+| F-66 | bug | fixed (`f03cf52`), live-checked 2026-10-06 | `load_texture` into `diffuse_blend` never sets the channel's strength: on a skin material that never had an overlay (0.0) the image does not show, yet the tool reports success; `remove_skin_overlay` leaves the old strength behind |
 | F-67 | bug | open | `set_skin_condition` tints are weak: cyanotic at full strength barely changes the skin (a little darker and less orange) and does not read as cyanosis; flushed and jaundiced at 0.7 are mild and body-wide |
-| F-68 | doc | partly fixed (Batch D): every accepted type is listed; BMP and TIFF overlays still untested live | `apply_skin_overlay` says PNG/JPG/TGA but also accepts .jpeg, .bmp, .tif and .tiff; whether CC5 loads BMP or TIFF overlays is untested |
-| F-69 | minor | fixed (Batch D), live check pending | `get_shader_parameters` lists `SSS Metallic Threshold = []` (no value) and `padding1` / `padding Last4` (shader filler) as if they were settings |
-| F-70 | doc + gap | fixed (Batch D): described as expression wrinkles; aging a resting face needs I-05 | `set_wrinkle_strength` is described as aging a patient, but it scales CC5's expression wrinkles: at a neutral face, 1 changed nothing visible; no read-back exists |
-| F-71 | bug | fixed (Batch D), live check pending | The `create_character` prompt receives only the first word of its description in Claude Code (`"Adult`); the rest of the patient description is lost from the prompt text |
-| F-72 | bug | fixed (Batch D), live check pending | `browse_content` / `search_content` never list CC5's Custom tab (Reallusion Custom): the user's own US Army uniform was invisible, and the search said "No content matched 'army'" |
-| F-73 | minor | partly fixed (Batch D): identical copies are named with the merged count, and remove_tearline_occlusion added; slots or distinct materials still to be decided | The Unity export writes a copy of identical textures for each of the uniform's three same-named materials, and `check_quest_budget` failed the soldier at 22/20 material slots; Unity itself imports them as one shared material (20 distinct), so whether the Quest limit counts slots or distinct materials must be decided |
+| F-68 | doc | fixed (`f03cf52`), live-checked 2026-10-06: BMP and TIFF overlays work; the "not yet tested" wording removed in batch E | `apply_skin_overlay` says PNG/JPG/TGA but also accepts .jpeg, .bmp, .tif and .tiff; whether CC5 loads BMP or TIFF overlays is untested |
+| F-69 | minor | fixed (`f03cf52`), live-checked 2026-10-06 | `get_shader_parameters` lists `SSS Metallic Threshold = []` (no value) and `padding1` / `padding Last4` (shader filler) as if they were settings |
+| F-70 | doc + gap | fixed (`f03cf52`), live-checked 2026-10-06: wrinkle 1 vs 0 changes the forehead during a brow raise; aging a resting face needs I-05 | `set_wrinkle_strength` is described as aging a patient, but it scales CC5's expression wrinkles: at a neutral face, 1 changed nothing visible; no read-back exists |
+| F-71 | bug | fixed (`f03cf52`), live-checked 2026-10-07 | The `create_character` prompt receives only the first word of its description in Claude Code (`"Adult`); the rest of the patient description is lost from the prompt text |
+| F-72 | bug | fixed (`f03cf52`), live-checked 2026-10-06 | `browse_content` / `search_content` never list CC5's Custom tab (Reallusion Custom): the user's own US Army uniform was invisible, and the search said "No content matched 'army'" |
+| F-73 | minor | partly fixed (`f03cf52`), live-checked 2026-10-06: the merge hint and remove_tearline_occlusion work; slots or distinct materials still to be decided | The Unity export writes a copy of identical textures for each of the uniform's three same-named materials, and `check_quest_budget` failed the soldier at 22/20 material slots; Unity itself imports them as one shared material (20 distinct), so whether the Quest limit counts slots or distinct materials must be decided |
 | F-74 | minor | open | The uniform rendered glossy right after the recipe and matte 13 minutes later (after save and the first FBX export), with nothing done to it; cause unknown |
-| F-75 | blocker | partly fixed (Batch D): the export reports what the FBX cannot carry and asks bake, separate or omit; bake calibration pending | `export_for_unity` drops the injury overlay (Diffuse Blend): the FBX and its textures carry no trace of it, so the Unity patient has no injuries; the pale condition does not reach the Unity export either (P9-13: skin diffuse files byte-identical at pale 0.6 / 0.8 / 0.9; no exported file carries the shader offsets; not rendered in Unity) |
-| F-76 | minor | fixed (Batch D), live check pending | `export_for_unity` accepts any path with an `Assets` folder in it, even where no Unity project exists, and creates the folders |
-| F-77 | bug | partly fixed (Batch D): the expression is reported; the pose (P8-10) is named, not read back | A character saved with `save_character` (`.ccAvatar`) and loaded again with `load_asset` (recipe or batch base) comes back with a neutral face (read back) and standing (one capture; whether the save or CC5's load drops the pose is untested), so every batch variant made from a saved base comes out neutral-faced while the batch reports OK |
+| F-75 | blocker | partly fixed (`f03cf52`), live-checked 2026-10-06: ask, omit, separate (bridge record and GetImage) and bake work; a stale record fails closed; the bake matches its formula within JPEG noise; calibration against CC5's look pending | `export_for_unity` drops the injury overlay (Diffuse Blend): the FBX and its textures carry no trace of it, so the Unity patient has no injuries; the pale condition does not reach the Unity export either (P9-13: skin diffuse files byte-identical at pale 0.6 / 0.8 / 0.9; no exported file carries the shader offsets; not rendered in Unity) |
+| F-76 | minor | fixed (`f03cf52`), live-checked 2026-10-06 | `export_for_unity` accepts any path with an `Assets` folder in it, even where no Unity project exists, and creates the folders |
+| F-77 | bug | partly fixed (`f03cf52`): the save reply lists the expression (live-checked 2026-10-06); the pose (P8-10) is named, not read back | A character saved with `save_character` (`.ccAvatar`) and loaded again with `load_asset` (recipe or batch base) comes back with a neutral face (read back) and standing (one capture; whether the save or CC5's load drops the pose is untested), so every batch variant made from a saved base comes out neutral-faced while the batch reports OK |
 | F-78 | doc | runbook | Part 7's Unity paths use `C:\CC5Test\UnityTest\Assets\...`, which does not exist; the project is `C:\CC5Test\unity\UnityTest_6.2` |
-| F-79 | gap | fixed (Batch D), live check pending | `batch_generate_patients` accepts a variant with an empty recipe: it exported an unchanged copy of the base ("Refused", `steps: []`) and reported OK |
-| F-80 | bug | fixed (Batch D), live check pending | A second batch into the same folder overwrites `patients_manifest.json`: the earlier variants' entries vanish while their exports stay |
-| F-81 | bug | fixed (Batch D), live check pending | `apply_character_recipe`'s base step deletes every character in the scene before it checks that the base file exists, so a mistyped base empties the scene |
-| F-82 | minor | fixed (Batch D), live check pending | Applying a pose file sets the character's motion clip and CC5's project length to 0, so a Unity export without include_current_pose writes a zero-length "Default" take and Unity warns "contains animation clip 'Default' which has length of 0 frames"; a standing character's export has a one-frame take and no warning. Live: a one-frame project length during the export fixes it |
-| F-83 | blocker | fixed (Batch D), live check pending | The `export_obj` → `replace_mesh_from_obj` round trip distorts the body: CC5 reads the OBJ as the mesh in the character's current pose, but `export_obj` writes the bind pose (no OBJ option writes the current pose), so with no edit the body stands arms-out (or contorts when posed); the tool reports success. Live: a T-pose OBJ replaced while the character has no motion clip (it then stands in the T-pose) round-trips exactly |
-| F-84 | bug | fixed (Batch D), live check pending | `bake_skin_textures` triggers SkinGen's About box (a buttonless modal: until it is closed by hand, every later command except exec_python, the export/mixer status reads and the dialog tools fails after 5 s) and reports "Skin Editor / Skin Gen panel was opened"; its "Skin bake initiated at Npx" header, success:true and texture-size note are also false |
-| F-85 | bug | fixed (Batch D), live check pending | Dialog messages (the queue-guard error, the waiting error, job_status, get_cc5_dialog, check_cc5_connection) repeat a window's label text (errors up to 300/400 characters, the dialog tools all of it), so SkinGen's About box puts its licence serial into the conversation and the MCP server's stderr log |
-| F-86 | bug | fixed (Batch D), live check pending | An FBX export clears CC5's undo history: afterwards `undo` cannot take back any earlier change and still reports "Undo successful"; nothing says so |
+| F-79 | gap | fixed (`f03cf52`), live-checked 2026-10-06 | `batch_generate_patients` accepts a variant with an empty recipe: it exported an unchanged copy of the base ("Refused", `steps: []`) and reported OK |
+| F-80 | bug | fixed (`f03cf52`), live-checked 2026-10-07: merge, rerun, earlier_export after a stopped rerun | A second batch into the same folder overwrites `patients_manifest.json`: the earlier variants' entries vanish while their exports stay |
+| F-81 | bug | fixed (`f03cf52`), live-checked 2026-10-06 | `apply_character_recipe`'s base step deletes every character in the scene before it checks that the base file exists, so a mistyped base empties the scene |
+| F-82 | minor | fixed (`f03cf52`), live-checked 2026-10-06 | Applying a pose file sets the character's motion clip and CC5's project length to 0, so a Unity export without include_current_pose writes a zero-length "Default" take and Unity warns "contains animation clip 'Default' which has length of 0 frames"; a standing character's export has a one-frame take and no warning. Live: a one-frame project length during the export fixes it |
+| F-83 | blocker | fixed (`f03cf52`), live-checked 2026-10-06; an active facial expression is baked in (F-88) | The `export_obj` → `replace_mesh_from_obj` round trip distorts the body: CC5 reads the OBJ as the mesh in the character's current pose, but `export_obj` writes the bind pose (no OBJ option writes the current pose), so with no edit the body stands arms-out (or contorts when posed); the tool reports success. Live: a T-pose OBJ replaced while the character has no motion clip (it then stands in the T-pose) round-trips exactly |
+| F-84 | bug | fixed (`f03cf52`), live-checked 2026-10-06; the bake command it then missed is F-87 | `bake_skin_textures` triggers SkinGen's About box (a buttonless modal: until it is closed by hand, every later command except exec_python, the export/mixer status reads and the dialog tools fails after 5 s) and reports "Skin Editor / Skin Gen panel was opened"; its "Skin bake initiated at Npx" header, success:true and texture-size note are also false |
+| F-85 | bug | fixed (`f03cf52`), live-checked 2026-10-06 | Dialog messages (the queue-guard error, the waiting error, job_status, get_cc5_dialog, check_cc5_connection) repeat a window's label text (errors up to 300/400 characters, the dialog tools all of it), so SkinGen's About box puts its licence serial into the conversation and the MCP server's stderr log |
+| F-86 | bug | refuted live 2026-10-06: an FBX export does not clear CC5's undo history (F-89) | An FBX export clears CC5's undo history: afterwards `undo` cannot take back any earlier change and still reports "Undo successful"; nothing says so |
+| F-87 | minor | fixed in batch E and F, live-checked 2026-10-07 (batch F); the bake itself not yet seen (needs SkinGen layers applied in the Appearance Editor) | `bake_skin_textures` misses CC5 5.13's real bake command, "Bake All &Skin Textures" (`qtBakeAllSkinTextureAction`, Character menu): the '&' and "All" defeat its phrase match; the command stayed disabled in every state tried |
+| F-88 | bug | fixed in batch E (uncommitted), live-checked 2026-10-07 | The OBJ round trip bakes an active facial expression into the mesh: the T-pose OBJ carries it, the replace makes it part of the body and the expression applies on top again (head up to 0.36 cm off); the post-check's 0.5 cm tolerance passes it as a match |
+| F-89 | bug | fixed in batch E (uncommitted); plugin side live-checked 2026-10-07, tool texts pending | Batch D's F-86 line is false: an FBX export does not clear CC5's undo history (morph and skin-shader changes undo across exports; only a light's intensity change before an export did not). Every export reply, export_fbx's failure text and the undo description say it does |
+| F-90 | bug | fixed in batch E and F; plugin side live-checked 2026-10-07 (batch F) (the colour just set read back with its note, a shoe load after skin_rgb without a skin-colour CHECK) | The F-34 comparison reads a material colour CC5 reports late (until it renders): a colour set just before a load (a recipe's skin_rgb) shows up as that load's CHECK line |
+| F-91 | minor | cause found 2026-10-07 (a SkinGen session); fixed in batch E and F, live-checked 2026-10-07 (batch F) | A SkinGen makeup preset (Red Velvet) hides hair, brows and ALL clothing in the viewport; the items stay worn and are exported, set_item_visible does not bring them back, and the NOT CHECKED line names only hair or brows |
+| F-92 | bug | cause found 2026-10-07; workaround in batch E, live-checked 2026-10-07 (delete, recipe base, batch clear); batch F: delete_avatar deletes nothing unless CC5's selection reads empty after the clear, the recipe base step and batch scene clear show its notes, a .ccProject load clears the selection first; live check pending | CC5 crashes (CCAvatarShaping.dll, access violation) when a character is deleted while one of its worn items that carries its own shaping morphs (the custom US Army uniform) is selected; load_asset leaves the loaded item selected, so delete_avatar right after loading the uniform crashed 5 of 5 times |
+| F-93 | minor | cause found and fixed 2026-10-07 (batch E), live-checked | `scripts/cc5-restart.ps1` reported "The bridge did not answer within 120 s" on every launch, although the bridge was up after about 70 s: its health check never succeeded (Invoke-WebRequest without -UseBasicParsing throws in Windows PowerShell 5.1) |
+| F-94 | minor | fixed in batch E (formatDialog) and batch F (the waiting texts, job_status, recipe and batch stops), live check pending | The recipe's open-dialog pre-check shows CC5's Welcome page as an "(untitled)" dialog "no MCP command is waiting on ... ask the user before answering it", while the queue guard names it and says to close it |
+| F-95 | minor | fixed in batch E (uncommitted), live-checked 2026-10-07 (new build, load_asset) | load_asset's reply runs its first line into the report in Claude Code: "... (applied to Kevin)Compared before and after: ..." (two text blocks shown without a separator) |
+| F-96 | doc | fixed in batch E (uncommitted): the docs, and tests/py/test_py38_compat.py | CC5 5.13 runs Python 3.8.8 (sys.version; python38.dll in the crash dumps), while CLAUDE.md and .claude/rules say 3.10: plugin code using 3.9+ features would pass the tests (run under Python 3.14) and fail only inside CC5 |
+| F-97 | minor | fixed in batch F, live-checked 2026-10-07 (batch F) | An eye preset's own cornea opacity (Std_Cornea_R/L 1 -> 0.8 after _Blue1 Eyes) is reported as a CHECK line, a side effect, instead of as what the load is for |
+| F-98 | minor | fixed in batch F, live-checked 2026-10-07 (batch F) (a single load through job_status, and a recipe) | After the user's Cancel in Replace / Material Only, the recipe reports the step as "OK ... (after the answer)" and "All 2 steps succeeded", though CC5 applied nothing |
+| F-99 | minor | fixed in batch F, live-checked 2026-10-07 (batch F) | Dialogs built in QML (CC5's Export FBX dialog, IC::CFbxExportDialog, one QQuickWidget) report "Buttons: none found": their buttons are QML items the bridge cannot see or click |
+| F-100 | minor | fixed in batch F, live-checked 2026-10-07 (batch F) | batch_generate_patients' reply says only "OK <variant>": a layer question answered with the run's carried answer, and the injury files written beside the FBX, appear only in patients_manifest.json |
+| F-101 | minor | two causes found 2026-10-07: a replace while CC5 still loads a texture's images (fixed by F-104's gate) and a replace right after an undo of a texture load (the tool tries it once more after 3 s); both live-checked 2026-10-07 (batch F) | In scripts/live_smoke_test.py, replace_mesh_from_obj refused its unedited OBJ after the script's other steps ("the mesh differs by up to 95.44 cm", undone); run again on the same character it matched (0.00 cm) |
+| F-102 | minor | fixed in batch F, live-checked 2026-10-07 (batch F) | set_shader_parameter echoes raw float32 values ("set to [0.019999999552965164, ...]") |
+| F-103 | minor | fixed in batch F, live-checked 2026-10-07 (batch F) | search_morphs on an empty scene replies "No morphs found matching 'height'" instead of saying that no character is loaded |
+| F-104 | blocker | fixed in batch F, live-checked 2026-10-07 (batch F) | capture_viewport takes back a load that CC5 has not finished: its one undo (F-53) undoes the load too, so the loaded item is gone (live: Box_001 after a capture sent while its load job ran) |
+| F-105 | minor (CC5) | known CC5 behaviour (Chad, 2026-10-07): CC5 leaks memory; restarting CC5 usually fixes it | In a long session CC5 grows to many gigabytes and slows down: 5.9 GB when a delete took over 30 s and a SkinGen preset load about 3.5 minutes (then Chad's machine had to restart); 9.3 GB after this afternoon's probes |
 
 ## Details
 
@@ -249,6 +268,7 @@ still showed "Hair is not a searchable category" while the server searched hair.
 After the MCP server restarts, the `load_asset` schema Claude Code showed had no `target` option, while
 `build/tools/asset.js` has it and the server runs `build/index.js`. The dialog tools loaded fine. Check whether
 Claude Code caches tool schemas across restarts.
+Seen again 2026-10-06 20:40 after the Batch D build, the reinstall and a Claude Code restart that resumed the session: ToolSearch served the old schemas and descriptions of apply_character_recipe (no continue_after, no layer_answer), export_for_unity (no injuries, wait_seconds 25), export_obj, replace_mesh_from_obj and undo, while search_content, load_asset, bake_skin_textures, answer_cc5_dialog and check_fit came back new. A fresh instance of build/index.js listed 89 tools with the new schemas, and the client still passed continue_after to the server. So the model is shown stale text, likely from the resumed transcript; start a new session, not a resumed one, after a build.
 
 **F-33: hair could not be loaded** (P4-77) · blocker · fixed
 "Apply a short cropped hairstyle to Kevin": all 233 hairstyles under `Reallusion Templates/Hair` are `.rlHair`, and
@@ -891,6 +911,7 @@ have caught either look. Check: load the uniform, capture at once and again two 
 the material values each time, then export and read again.
 The second export (10:28) left the values unchanged (glossiness 0/0/25, specular 31/25/25, Diffuse and Bump images),
 so at least a later export does not change them. The first export is still a suspect.
+Live 2026-10-06 21:13-21:23 (not reproduced): US_Army_Uniform_Shirt/Pants/Boots read glossiness 25 / specular 25 and showed the sheen at once, two minutes later, after an export, after save_character, and in a fresh CC5 session after its first export. The other shirt file, "US Army Uniform Shirt.ccCloth", reads glossiness 0 (matte). Part 7's 0/0/25 and 31/25/25 remain unexplained.
 
 **F-75: the Unity export drops the injury overlay** (P7-10) · blocker for "injured patient in Unity". After
 `apply_skin_overlay(overlay.png, arms, 60)`, the hands rendered red-pink in CC5 and Std_Skin_Arm's Diffuse Blend
@@ -1298,6 +1319,7 @@ says it succeeded (its description already says CC5 reports success when nothing
 CC5 cleared its undo history and that changes made before the export can no longer be undone (save_character
 first to keep a way back); the `undo` tool's description says the same. Untested: whether CC5's own File > Export
 does this too, and whether the flags overload of ExportFbxFile does.
+Refuted live 2026-10-06 21:05 (see F-89): with morph and skin-shader markers, one undo after an FBX export (the job path and the exec_python path) took the change back. The light marker this probe used is the exception.
 
 ### Batch D (2026-10-06, fixes for Parts 6-10; live check pending)
 
@@ -1442,6 +1464,460 @@ that a patient can override; a batch patient with CHECK lines is not OK; 'bake' 
 checked" line; the 'separate' sidecar ships as format 1; a Cancel is not carried; no extras in this batch;
 replace_mesh_from_obj removes a pose and refuses an animation.
 
+### Batch D live check (2026-10-06 20:40-21:40, automated part; run by Claude alone)
+
+Chad chose "automated only today" (the checks that need his answers, hands or eyes wait for the next session).
+Setup: plugin `f03cf52` installed by Chad (every .py equal to the repo); CC5 launched by Claude with
+scripts/cc5-restart.ps1 (CC5_RECOVERY_ANSWER=cancel) and CC5_ALLOW_EXEC=1; tools whose schema the resumed
+session showed stale (F-32) were called through a fresh instance of build/index.js over stdio. Evidence:
+`C:\CC5Test\evidence\flight-01\batch-d-live\` (results.md, captures, f64.png); probe files in
+`C:\CC5Test\probe\live`; exports in `UnityTest_6.2\Assets\Patients\LiveCheck*`. CC5 crashed twice (F-92) and was
+relaunched; after the second relaunch its Welcome page blocked the rest, and Chad chose to stop for today.
+
+| Check | Result | What happened |
+|---|---|---|
+| WP-1 #1 schema | FAIL (client, F-32) | Resumed Claude Code session served apply_character_recipe's OLD schema (only `recipe`, old description) via ToolSearch; search_content, bake_skin_textures, check_fit came back new. A fresh instance of build/index.js lists 89 tools, instructions 1,979 chars, apply_character_recipe with recipe, continue_after, layer_answer and the new description. Start a NEW (not resumed) session before the D1/D3 checks. |
+| WP-6 #1 | PASS (server) | Fresh server: 89 tools incl. check_fit; instructions 1,979 chars; the session's cc5 instructions are complete (no truncation) |
+| WP-6 #4 | PASS | browse_content('character'): 124 files, Reallusion Custom/Actor/Character/Avatar.ccAvatar first, then templates; folders seen: root (CC4 Camila/Kevin/Susan, IF-Men40_*, Sanjay_V1/V2), _Mixer Ready, ActorCore Crowd, Base (Neutral_F/M, Toon Neutral_F/M), Business, Casual, ... |
+| WP-1 #9 | PASS | search_content('xyzzy'): "No content matched ... you can search the Reallusion store ...", not an error |
+| WP-2 #7 F-72 | PASS | GetCustomContentFolder for all 31 EContentRootFolder enums browse_content uses returns a category folder under Reallusion Custom (Cloth/Shirts ... Hair/Group, Actor/Eye), never the root (GetCustomDataPath = ...\Reallusion Custom). search_content('army'): 4 hits under Reallusion Custom/Cloth (2 shirts, pants, boots). browse_content('cloth_other') starts with Reallusion Custom/Cloth/Others/Body Armor.ccCloth; character with Reallusion Custom/Actor/Character/Avatar.ccAvatar; gloves lists its 14 templates; hair search finds Buzz Cut |
+| WP-2 #10 F-63 | PASS | exec_python GET /avatars without the token: 401; %LOCALAPPDATA%\CC5_MCP_Bridge\requests.log created with `2026-10-06 20:51:04 "GET /avatars HTTP/1.1" 401 -`; the exec_python output held only the probe's own line |
+| F-84 bake | PASS, plus a new gap | bake_skin_textures(2048): error "No skin bake command found ... nothing was opened", the manual step, and "Commands looked at" (15 skin-related actions); no dialog opened. The list shows CC5 5.13 DOES have "Bake All &Skin Textures" (qtBakeAllSkinTextureAction, Character menu; disabled with no character): the matcher looks for "bake skin" / "bake texture" and the '&' mnemonic plus "All" defeat it (new finding) |
+| F-85 About box | PASS | About box opened with exec_python (standing in for by hand). list_avatars: 'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character Creator 5 (no MCP tool can close it), then try again.' get_cc5_dialog and check_cc5_connection: "S/N :" and the serial are separate labels live; the serial reads "(serial)". Closed with exec_python |
+| WP-1 #6 F-81 | PASS | Kevin (ID 5888206335744) in the scene; base C:/CC5Test/unity/UnityTest_6.2/saves/TestPatient.ccAvatar: "base not found: ... Nothing was changed in CC5: the characters in the scene were left as they were." Kevin still listed |
+| WP-2 #8 F-69 | PASS | get_shader_parameters(CC_Base_Body, Std_Skin_Head): 53 params and "Left out (not settings): SSS Metallic Threshold (CC5 returns no value for it, so it cannot be set); padding1, padding Last4 (shader padding)". set_shader_parameter on each of the three is refused with its reason; read-back 53 params, same values |
+| WP-2 #9 F-62 | PASS | apply_body_preset('heavy', 0.5): get_avatar_info shows pack_full_body1 0.35 and embed_full_body6 0.1 (plus Kevin's two identity morphs at 1); one undo removes both |
+| WP-2 #11 F-64 | PASS | exec_python cc5_api._capture_window_screenshot: 1.8 s, 2575x1407 PNG of CC5's window (CC5 happened to be in front), no console window in it (f64.png) |
+| WP-2 #11 typo | PASS | set_skin_shader and set_shader_parameter with 'Original Roughnes Strength': refused, "Close matches: Original Roughness Strength" (only that one) |
+| WP-3 #11 F-77 | PASS | Six sliders set (Brow_Compress_L/R 0.6, Mouth_Frown_L/R 0.4, Eye_Squint_L/R 0.3); save_character C:\CC5Test\saves\LiveCheck_Kevin.ccAvatar: "Not saved: the facial expression (6 sliders: ...)", "A .ccAvatar keeps neither the facial expression nor the pose", and a ready expression step for batch variants |
+| WP-3 #2 F-76 | PASS | export_for_unity('C:/CC5Test/UnityTest/Assets/Patients', 'F76'): refused, naming C:\CC5Test\UnityTest\ProjectSettings\ProjectVersion.txt; C:\CC5Test\UnityTest not created. The real project exports (next row) |
+| First export / F-75 / F-86 | PASS | Session's first FBX export (after the save) survived: LiveCheck_Kevin, 40 files, 44.9 MB, 9 s. "Skin overlays and skin condition: none on this character." (no false positive, no tint line); the reply ends with the F-86 undo-history line |
+| WP-7 F-82 | PASS (Unity check below) | apply_pose Sitting_Floor: project length and end time 0. export_for_unity LiveCheck_F82 without include_current_pose: take one frame (LocalStop 769,769,300); timeline reads 0 / 0 again afterwards |
+| WP-7 F-83 export_obj | PASS | On the seated Kevin: "The OBJ is in CC5's T-pose (arms horizontal) ..."; the file's body spans x +-88.7 cm (bind pose +-79.7) |
+| WP-7 F-83 replace, expression active | PASS by the code, NEW FINDING | Seated Kevin with the six expression sliders: success, pose removed, "Checked: the mesh matches the OBJ (max 0.36 cm)". A bind export afterwards: every moved vertex is in the head (1,952 over 0.05 cm, max 0.36 cm at the inner brows, y 155-180 cm): the OBJ carried the expression, and it now applies on top of a mesh that already has it. The 0.5 cm tolerance passed it; an exact round trip gives 0.00 |
+| WP-7 F-83 undo | PASS | One undo restored the mesh (bind export equal, 0.00 cm in every group) and the seated pose clip (DeleteClip and ReplaceMesh in one undo step) |
+| WP-7 F-83 bind-pose OBJ | PASS | C:\CC5Test\exports\obj\TestPatient.obj (9.25, bind pose): refused "does not match the character's T-pose: 29.8% of CC_Base_Body's vertices are more than 10 cm ... Likely causes: another pose ..., another axis, or a changed vertex order"; the pose clip is still there |
+| WP-7 F-83 reference order | PASS | export_obj's file and a T-pose export without ExportMaterial: same vertices in the same order (0.00 cm in all 7 groups) |
+| Review: edited OBJ | PASS | Expression reset, export_obj, one body vertex moved 2 cm forward: replace succeeds, "max 0.00 cm"; in the bind pose exactly that vertex moved 2.0 cm, no other over 0.01 cm. Undone afterwards |
+| WP-3 #4 Qt formats | PASS | QImageReader: jpg, jpeg, png, tga, tif, tiff (and more); QImageWriter: jpg, png, tif, not tga (as expected) |
+| WP-3 #5 / F-65 apply | PASS | Fresh Kevin; apply_skin_overlay(overlay.png, arms, 60): "CC5 still reads a different strength on Std_Skin_Arm (0%) until it next renders"; set_skin_condition(pale, 0.6) on the four skin materials |
+| WP-3 #5 Inj_Ask | PASS | No injuries choice: "Not exported" with the overlay (Std_Skin_Arm, 60%) and pale (+0.036 / -0.150) lines and the three choices; no Inj_Ask folder |
+| WP-3 #5 Inj_Omit | PASS | 'omit': exported (40 files); "Left out of this export, as asked" lists both; note that CC5 read 0 and the bridge's 60% was used; Std_Skin_Arm_Diffuse.jpg averages (149.1, 108.4, 90.2) (unbaked) |
+| WP-3 #5 Inj_Sep | PASS | 'separate': Injuries/Std_Skin_Arm_DiffuseBlend.png 1024x1024 at (128, 48, 48); Inj_Sep_injuries.json format 1, blend Multiply, overlay strength 0.6, four pallor entries (0.036 / -0.15), no tints; all 39 .fbm textures byte-identical to Inj_Omit's |
+| WP-3 #5 Inj_Bake | PASS (JPEG noise) | Skin back to normal, 'bake': only Std_Skin_Arm_Diffuse.jpg differs from Inj_Omit's; "The bake formula has not been checked against CC5 yet". Against Inj_Omit x (0.701, 0.513, 0.513) on a 64x64 grid: median 1.35/255, 99th percentile 3.6/255, max 8.2/255 (134 of 4,096 samples above the check's 3/255: the bake is saved as JPEG q95 from a JPEG source) |
+| WP-3 #5 rebake to omit | PASS | 'omit' under the bake's name: Std_Skin_Arm_Diffuse.jpg byte-identical to Inj_Omit's again |
+| Review: separate after undo | PASS | One undo, then 'separate' (Inj_SepStale): "Std_Skin_Arm: the overlay image is not known after an undo or a change made in CC5: re-apply it ..."; no image shipped; reply is an error; note that CC5's read is used for the strength |
+| F-86 undo history | FAIL: claim refuted, NEW FINDING | That undo also brought the pale offsets back (it undid set_skin_condition(normal) across two FBX exports). Controlled: heavy 0.5, export_for_unity (job), one undo: the morphs are gone; the same through cc5_api.export_fbx in exec_python: gone. Light marker: Back 4 -> 4.5, export, two undos: still 4.5; without an export in between (light 5, morph, two undos) the light comes back. So an FBX export does NOT clear CC5's undo history; only a light's intensity change before an export was not undone. Batch D's "CC5 cleared its undo history with this export ..." line (every export reply), the export_fbx failure sentence and the undo description are false for morph and shader changes |
+| WP-3 #5 GetImage path | PASS | TestPatient.ccAvatar loaded (overlay on all skin at 60 and pale 0.6 saved in it, no bridge record); 'separate' (Inj_SepGetImage): four Injuries/<Material>_DiffuseBlend.png, each 1024x1024 at (128, 48, 48), strength 60% from CC5's own read, sidecar with the pallor values |
+| WP-3 #8 F-66 | PASS | load_texture(CC_Base_Body, Std_Skin_Leg, diffuse_blend, overlay.png): "at 100% (CC5 reads the strength back only after it renders)", legs dark red (f66_legs_100.png). remove_skin_overlay(legs), capture: GetTextureWeights[7] 0.0, HasImage false, legs normal. strength 30: "at 30%"; strength with channel normal: refused "strength is only for channel 'diffuse_blend'". One undo after the 30% load removes image and strength together |
+| WP-3 #9 F-68 | PASS | overlay.bmp and overlay.tif (written from overlay.png with Qt): each on the arms at 100 turns them dark red (after a removal in between: f68_bmp.png, f68_removed.png, f68_tif.png). The "BMP and TIFF are not yet tested" wording can go |
+| WP-3 #10 F-70 | PASS | Brow raise (inner and outer, L/R, 1.0): wrinkle 0 vs 1 face captures differ on the forehead (mean 6.9/255, 18% of pixels over 10/255; creases visible), chin and background identical (f70_wrinkle0/1.png) |
+| WP-3 #7 F-65 refresh | PASS (refresh stays off) | With refresh off: "CC5 still reads a different strength on Std_Skin_Head (60%) until it next renders" (an apply at 30% over 60%). Probes: RGlobal.SetTime(GetTime()) -> still 0.6; SetTime one frame forward and back -> still 0.6; one capture (a render) -> 0.3. No cheap refresh works, so REFRESH_METHOD stays None |
+| WP-3 #12 F-73 | PASS | Soldier_Pale_01.ccAvatar loaded; check_quest_budget on Assets/CC5Patients/Soldier_Pale_01: FAIL, Materials 22/20 with the remove_tearline_occlusion hint and "M_BipPMilUniform_US is exported 3 times with byte-identical textures (Diffuse, Normal): merge these in Unity: the count would be 20". export_for_unity with remove_tearline_occlusion (Soldier_NoTear, injuries omit): 36 files instead of 40; check_quest_budget with the flag: PASS, Materials 18/20, "4 materials and 560 triangles not counted", Triangles 45,214. Unity renderers checked below |
+| WP-2 #1 / WP-1 #8 F-34 | PASS | Fresh Kevin, load_asset US_Army_Uniform_Pants.ccCloth: "Compared before and after: 2 worn items, 14818 shaping morphs, 19 materials (3.3 s)", "CHECK removed Boxers (clothing): CC5 may have swapped it out for this item", "Applied: added Pants (clothing)", NOT CHECKED fit line; no material lines for either item; list_clothes: Pants only |
+| WP-2 #3 F-34 | PASS | Buzz Cut on bald Kevin: "Applied: added Buzz_Cut (hair)" and nothing else (3.3 s) |
+| WP-2 #5 F-34 | PASS | Dressed Kevin (pants, shirt, boots, Buzz Cut): shirt load 3.2 s (22 materials), boots load 3.3 s (4 worn items, 14878 shaping morphs, 23 materials), nothing skipped |
+| WP-5 refusals | PASS | Through a fresh server instance: an empty variant is refused at input ("Variant Refused has an empty recipe ... set export_base_unchanged: true for a control patient"); a missing base: "base_character not found ... Nothing was sent to CC5."; C:/CC5Test/UnityTest/Assets/Patients: "not inside a Unity project ... ProjectVersion.txt does not exist ... Nothing was sent to CC5."; an overlay variant without injuries: "Choose injuries ... for this batch or for variants Hurt ... Nothing was sent to CC5." No folder created |
+| WP-4 setup / Unity | PASS | Unity 6000.2.10f1 headless (21:15): LiveCheck_F82 (posed, mesh-only): 0 errors, 0 warnings (F-82 fixed in Unity); Soldier_NoTear: 0/0, 16 distinct materials, 8 renderers, no TearLine or EyeOcclusion (F-73 flag works); LiveCheck_Kevin 0/0 |
+| WP-3 #13 F-74 | NOT REPRODUCED | US_Army_Uniform_Shirt/Pants/Boots on fresh Kevin: strong sheen at once (21:13:46: glossiness 25, specular 25 on all three), the same at 21:16:12 (no export), after an export (F74_Uniform, 21:16:47) and after save_character (21:17:09). Part 7 read 0/0/25 and 31/25/25: maybe the other shirt file ("US Army Uniform Shirt.ccCloth", spaces) or the session's FIRST export, which needs a CC5 restart to retest |
+| CC5 crash | OBSERVED | 21:18:04: CC5 crashed (dump %LOCALAPPDATA%\CrashDumps\CharacterCreator.exe.16388.dmp) during apply_character_recipe's base step (delete the dressed Kevin, load CC4 Kevin.ccAvatar), right after save_character and an export. Same step ran cleanly 6 times earlier today. Three other CC5 dumps today (15:58, 16:39, 19:06) are from other sessions. Relaunched with the launcher (recovery Cancel, CC5_ALLOW_EXEC=1) |
+| Recovery prompt after the crash | PASS | The relaunch met "Unsaved project data found"; the plugin answered Cancel (21:19:25) and get_cc5_dialog reports it. The bridge took over 120 s to come up both times today: the launcher's 120 s wait is too short now (it says to check the window) |
+| F-74 second shirt + first export | NOT REPRODUCED | Relaunched CC5 (fresh session): "US Army Uniform Shirt.ccCloth" (spaces) reads glossiness 0 / specular 25 (matte); the underscore file reads 25 / 25 (glossy); pants and boots 25 / 25. The session's FIRST export (F74b_FirstExport) and a save changed nothing (values and capture). Part 7's 0/0/25 and 31/25/25 remain unexplained |
+| WP-2 #2 F-34 Red Velvet | PASS for the report, NEW FINDING | Kevin with Buzz Cut and skin colour (0.8, 0.6, 0.5), then Red Velvet.ccSkinGenPreset: no CHECK line, only "NOT CHECKED: what CC5 shows but cannot report (hair or brows hidden, makeup or skin layers): capture the face ... and the whole body". Captures: the viewport now hides the Buzz Cut, the brows and ALL clothing (shirt, pants, boots: Kevin shows bare, rv_home_after.png); list_hair/list_clothes still list every item; skin colour still reads 0.800/0.600/0.502; set_item_visible(Shirt, true) changes nothing. An export of that state still contains Pants, Shirt, Boots, Buzz_Cut and the brows (FBX mesh models). The NOT CHECKED line names only hair or brows: it should name clothing too. qtBakeAllSkinTextureAction stays disabled with the preset on |
+| WP-1 #5 D2 / D1 | PASS | Recipe {base CC4 Kevin, skin_rgb (0.8, 0.6, 0.5), assets [Sport Sneakers.ccShoes, Red Velvet.ccSkinGenPreset]}: order base, Red Velvet, skin_rgb, sneakers (D2). The sneakers' load opened CC5's "Failed to load the file." (OK only): the recipe stopped (D1): "Stopped at asset Sport Sneakers.ccShoes: CC5 is waiting for an answer nobody has given yet", continue_after "cmd_2cbba807_43"; a parallel direct call got the 504 "Timed out before CC5 started the command". Claude answered OK (a plain acknowledgement, no choice) with expect; apply_character_recipe continue_after (the session client passed the parameter although its stale schema lacks it): "Continued after the answer ... this report covers the whole recipe", sneakers FAIL "(CC5 reported an error, but it changed 5 things)" with "NOTE Applied: added Sport sneakers (clothing)" (TS-3; the sneakers are on). Skin head colour 0.8015/0.6016/0.5035 (within 0.004) |
+| F-34 stale colour | NEW FINDING | That continuation also shows "CHECK skin colour on Std_Skin_Head/Body/Arm/Leg: (1, 1, 1) -> (0.8, 0.6, 0.502)" under the sneakers: skin_rgb's change, made before the sneakers' load. Probe: right after cc5_api.set_skin_color(0.5, 0.5, 0.5), GetDiffuseColor still reads 0.802/0.602/0.504; after one capture (a render) 0.504. CC5 reports a material colour stale until it renders (like F-65's weights), so a load's "before" read can miss a change made just before it, and its report blames the load |
+| WP-4 #1 check_fit gate | PASS | Fresh Kevin + Hat_DarkBlue.ccAcc ("Applied: added Hat (accessory)"); set_diffuse_color(Std_Skin_Body, 0.2, 0.4, 0.9); check_fit default: 5 views (face, left, right, back, front), each 1280x720 in one check_ folder, all shown; afterwards Std_Skin_Body reads 0.200/0.400/0.902 (no capture undid the change); one undo -> 1.000/1.000/1.000 (read after a render) and the Hat still listed: exactly one step undone |
+| WP-4 #2 | PASS | The crown scalp patch shows as a skin-coloured patch on the hat's front in the face view (and small in the front view); the rubric says such a patch is the body showing through, not a logo |
+| WP-4 #3 | PASS | Change, undo, check_fit(['face']), redo: refused "Nothing of yours to redo: a viewport capture taken after the undo replaced CC5's redo history ..." |
+| WP-4 #5 | PASS | Hat selected before the check: get_selection afterwards still "Hat" |
+
+Not run today: the checks that need Chad (D1 stops on real choices and D3 Replace / Material Only, dialogs opened
+by hand, the full create_character run, the F-75 calibration by eye, F-71's typed prompt, F-61 on an empty project,
+CC5_CHANGE_CHECK=0), and, because of the second crash and the Welcome page, the batch manifest merge and rerun
+(F-80), a base carrying an overlay in a batch, scripts/live_smoke_test.py and the clothes test for F-92.
+
+**F-87: bake_skin_textures misses CC5's real bake command** (live) · minor. The tool's "Commands looked at" list
+shows "Bake All &Skin Textures" (`qtBakeAllSkinTextureAction`, Character menu) besides SkinGen's About, Online
+Manual and Video Tutorial: F-84's "CC5 5.13 has no bake command" came from the old keyword search. The allowlist
+matches "bake skin" / "bake texture", which neither the text (the '&' mnemonic and "All" in between) nor the
+camel-case objectName contains. The action was disabled with no character, with Kevin, and with Kevin wearing a
+SkinGen preset, so today the tool would skip it anyway. Fix: strip '&', split camel case, match the words bake and
+skin or texture; before the tool triggers it, find out when it enables and what it does (it bakes, rather than
+opening a panel, so the reply's "bake it by hand" would change).
+Live 2026-10-07 (batch E plugin): 'No skin bake command found: CC5's "Bake All Skin Textures" and "Bake All
+Substance Textures" commands are disabled right now, so nothing was run', then the manual step and "Commands looked
+at: ...", a list that leaves out Bake All Substance Textures. The word rule (bake with skin, skingen, texture or
+textures) also takes the Substance bake, and would take an objectName such as qtBakeLightTextureAction: require the
+word skin or skingen. The reply's first words contradict the rest: reword. Chad (asked when the command enables): once
+the character has SkinGen layers applied in the Appearance Editor; whether it then bakes at once or opens a dialog is
+not known, so nobody has seen the tool trigger it.
+
+**F-88: the OBJ round trip bakes an active facial expression into the mesh** (live) · bug. Seated Kevin with six
+expression sliders (brow compress, frown, squint): export_obj, then replace_mesh_from_obj with that unedited OBJ
+replied "Checked: the mesh matches the OBJ (max 0.36 cm)". A bind-pose export afterwards differed from the one
+before only in the head: 1,952 vertices over 0.05 cm, at most 0.36 cm at the inner brows. The OBJ carried the
+expression, the replace made it part of the body, and the expression now applies on top again; resetting the
+expression would leave the face in it. With the expression reset first, the round trip is exact (0.00 cm, and a
+2 cm edit to one vertex arrives as exactly that). Fix: refuse at export_obj and at the replace while expression
+weights are not 0 (say to reset_expression, sculpt, replace, then set the expression again), and tighten
+ROUND_TRIP_TOLERANCE_CM (exact round trips read 0.00) so a doubled expression fails the post-check.
+
+**F-89: an FBX export does not clear CC5's undo history** (live; corrects F-86) · bug. Morph marker: heavy 0.5,
+export_for_unity (job), one undo: the morphs were gone; the same with cc5_api.export_fbx in exec_python. Skin
+shader: set_skin_condition(normal), two exports, one undo: the pale offsets came back. Light marker: Back 4 -> 4.5,
+an export, two undos: still 4.5 (the F-86 probe's marker); with an ordinary step instead of the export (light 5,
+heavy, two undos) the light came back. So only a light change before an export was not undone. Batch D's
+UNDO_HISTORY_CLEARED line (export_fbx, export_for_unity, export_textures, a batch once), export_fbx's failure
+sentence (cc5_api.with_undo_history_sentence) and the undo description tell the agent that earlier work cannot be
+undone, which is false for morph and shader changes. Fix: remove them, or narrow them to what was seen ("an undo
+after an FBX export did not take back a light's intensity change"); the undo_history_cleared flag goes too.
+
+**F-90: the F-34 comparison reads a material colour CC5 reports late** (live) · bug. Recipe {base, skin_rgb (0.8,
+0.6, 0.5), assets [Sport Sneakers.ccShoes, Red Velvet]}: the sneakers' report carried "CHECK skin colour on
+Std_Skin_Head/Body/Arm/Leg: (1, 1, 1) -> (0.8, 0.6, 0.502)", the change skin_rgb had made just before. Probe:
+right after cc5_api.set_skin_color(0.5, 0.5, 0.5), GetDiffuseColor still read 0.802/0.602/0.504, and 0.504 only
+after a capture. CC5 reports a material colour as it was until it renders, like F-65's texture weights, so a load's
+"before" read misses a colour change made since the last render. Fix options: in a recipe, a later load's skin
+colour CHECK whose "after" equals what an earlier skin_rgb or skin_condition set becomes a NOTE ("set by skin_rgb
+earlier; CC5 reports colours late"); or the comparison marks colour facts as unverified when no render happened
+since the last colour change.
+Built (batch E): the bridge records every diffuse colour and opacity it writes (cc5_api._writes_since_render, keyed
+by character, mesh and material; colours on CC5's 0-255 steps), load_asset hands the record to cc5_changes, which
+compares a recorded field from the value written and takes out of the record what CC5 reads fresh (_settle); a
+capture whose RenderImage wrote the file empties the record, and so do undo and redo. Batch F (batch E review #0,
+#1, #20): export_for_unity's tint read and get_diffuse_color use the record too; a recorded field whose reads did
+not move gets a NOT CHECKED note instead of nothing; after an undo or redo, colour and opacity differences on the
+characters present at that moment are NOT CHECKED until a capture renders.
+
+**F-91: a SkinGen makeup preset hides hair, brows and all clothing in the viewport** (live) · minor. After
+Red Velvet.ccSkinGenPreset on Kevin (uniform, boots, Buzz Cut), the viewport showed him bare and bald
+(rv_home_after.png). list_hair and list_clothes still list every item, the skin colour read is unchanged,
+set_item_visible(Shirt, true) reports success and changes nothing, and an export still contains Pants, Shirt,
+Boots, Buzz_Cut and the brows. The load's report has no CHECK line, only "NOT CHECKED: ... (hair or brows hidden,
+makeup or skin layers): capture ...". Fix: name clothing in that NOT CHECKED line; find with Chad which CC5 setting
+hides them and how to show them again (the MCP cannot see or change it).
+Cause (2026-10-07): SkinGen editing (Chad, asked which CC5 mode hides clothing: "SkinGen editing mode"). A
+.ccSkinGenPreset load starts what CC5 calls a SkinGen session: while it lasts the viewport hides hair, brows and
+clothing (still worn and exported); no SkinGen window or dock is open. After Cordial.ccSkinGenPreset Kevin showed
+bare (T-shirt and Boxers hidden); clear_selection and select_objects changed nothing. The next content load (a
+Box_001.iProp) asked "Applying this content will deactivate the current SkinGen session. Would you like to
+continue?" (OK / Cancel, window "Character Creator 5"); after OK the clothing showed again and the makeup stayed;
+once CC5 then showed the progress window "Update morph data..." and the load finished about 19 s after the OK.
+After a prop was deleted (no question) the clothing also showed again. A load with no session active asked
+nothing. To build: a SkinGen preset's load report says that CC5 hides hair, brows and clothing until the next
+content load ends its SkinGen session; the deactivate question is a plain confirmation of a load the user asked
+for (answer OK and say so). Not tested: whether another SkinGen preset loaded during a session asks.
+
+**F-92: CC5 crashes when a character is deleted while one of its uniform items is selected** (live) · bug (CC5),
+cause found 2026-10-07. Overnight, CC5 crashed twice: 21:18:04 in apply_character_recipe's base step (delete Kevin
+wearing the uniform shirt, pants, boots and Buzz Cut, load CC4 Kevin.ccAvatar), and 21:34:00 in
+batch_generate_patients' scene clear (deleting variant B's Kevin, who wore the uniform pants). Chad (21:38): "You may
+want to test other clothes. That uniform is a custom asset." Isolation on 2026-10-07, CC4 Kevin, through the MCP tools,
+each delete a call of its own:
+
+| Run | Worn, and how it was loaded | Export before | Result |
+|---|---|---|---|
+| 1 | uniform pants (the scene Chad left) | no | ok |
+| 2 | Basic T-shirts + Slim Jeans (template), load_asset | no | ok |
+| 3 | uniform shirt, pants, boots + Buzz Cut, load_asset; save_character | yes | CRASH 07:53:38 |
+| 4 | the same outfit from the saved F92_Uniform.ccAvatar (Kevin selected) | no | ok |
+| 5 | the same, from the .ccAvatar | yes | ok |
+| 6 | Basic T-shirts + Slim Jeans, load_asset | yes | ok |
+| 7 | uniform pants only, load_asset | yes | CRASH 07:59:21 |
+| 8 | uniform pants, load_asset, CC5 started with CC5_CHANGE_CHECK=0 (no before/after reads) | yes | CRASH 08:01:19 |
+| 9 | uniform pants, load_asset | no | CRASH 08:03:31 |
+| 10 | uniform pants, load_asset, then clear_selection | no | ok |
+| 11 | uniform pants, load_asset, then in ONE exec_python command: BeginAction, RScene.ClearSelectObjects(), RScene.RemoveObject(Kevin), EndAction | no | ok |
+| 12 | uniform pants, load_asset, then remove_scene_item("Pants") while the pants were selected | no | ok |
+
+After load_asset, CC5 leaves the loaded item selected (get_selection: "Pants (Cloth)"; run 11 read the selection:
+['Pants']). The uniform pieces carry shaping morphs of their own (the shaping-morph count rose 14802 -> 14878 with the
+uniform and boots; the template clothes added none), and all six dumps (%LOCALAPPDATA%\CrashDumps\CharacterCreator.exe
+.16388 and .61572 overnight, .122272, .77380, .32116 and .100096 today) have the same stack, read with cdb: RLPy RScene.RemoveObject -> ICPluginQt
+IC::CEventSender::ObjectDeleted -> CCAvatarShaping.dll -> access violation. So the trigger is deleting a character
+while one of its worn items with its own shaping morphs is selected; an export, a save and the F-34 comparison play no
+part. Both overnight crashes went through bridge.deleteAvatar -> cc5_api.delete_avatar. Fix (batch E): delete_avatar
+clears CC5's selection before it removes characters, as run 11 did. A user deleting such a character in CC5's own UI
+while the item is selected is not covered.
+
+**F-93: the launcher never saw the bridge come up** (live) · minor, cause found 2026-10-07. cc5-restart.ps1 printed
+"The bridge did not answer within 120 s" on all three launches on 2026-10-06 and all five on 2026-10-07, while the
+bridge was up after about 70 s each time. The first reading (starts slower than 120 s) was wrong: in Windows
+PowerShell 5.1, Invoke-WebRequest without -UseBasicParsing throws "Object reference not set to an instance of an
+object" on every answer, and the loop's empty catch hid it, so the check never succeeded. Fixed (batch E):
+-UseBasicParsing, and the wait limit raised to 240 s (it ends as soon as the bridge answers); the next launch printed
+"Bridge up after 16s". launch_cc5_for_test.ps1 uses Invoke-RestMethod and was not affected.
+
+**F-94: the recipe's pre-check words CC5's Welcome page as a dialog to ask about** (live) · minor. With the Welcome
+/ What's New page open, apply_character_recipe replied 'CC5 dialog "(untitled)": Buttons: none found / No MCP
+command is waiting on this dialog: it may be the user's own, so ask the user before answering it.', while
+load_asset's guard error said "CC5's Welcome / What's New page (or another untitled CC5 window) is open - close
+it in Character Creator 5 ...". Fix: formatDialog uses the guard's wording for an untitled window with no
+buttons.
+Batch F (batch E review #3, #4, #7, #8, #19): the same rule for every text about a window with no buttons, or with
+buttons the bridge cannot read (F-99): the plugin's waiting text (409 and job_status), job_status with an older
+plugin, the recipe and batch stop reports, continue_after and check_cc5_connection say to close it (or answer or
+close it) in CC5, never to answer it with answer_cc5_dialog. The Welcome page is named only for an untitled window
+with no text and no buttons whose text was read; a window whose text could not be read goes to the user as a
+question everywhere.
+
+### Batch D live check, part 2, and batch E partial check (2026-10-07 07:43-10:15, with Chad)
+
+Setup: plugin `f03cf52` unchanged; a new Claude Code session (fresh tool schemas: apply_character_recipe offered
+continue_after and layer_answer). The CC5 left running overnight had Kevin wearing the uniform pants (Chad's). After
+each crash Claude relaunched CC5 with scripts/cc5-restart.ps1 (recovery Cancel, answered by the plugin each time),
+CC5_ALLOW_EXEC=1 and CC5_DEV_MODE=1.
+
+| Check | Result | What happened |
+|---|---|---|
+| F-92 isolation | CAUSE FOUND | 12 runs on CC4 Kevin (table under F-92): deleting a character while one of its worn items with its own shaping morphs (the custom uniform) is selected crashes CC5's CCAvatarShaping; load_asset leaves the loaded item selected. An export, a save and the F-34 comparison play no part; clearing the selection first, in the same command or before it, avoided the crash; remove_scene_item on the selected pants did not crash. Four crashes today, six dumps with one stack |
+| CC5_CHANGE_CHECK=0 | PASS | CC5 launched with it: load_asset replied "NOT CHECKED: WARNING: the before/after comparison is switched off (CC5_CHANGE_CHECK=0): nothing was compared" |
+| F-90 refresh probe | no cheap refresh | Right after cc5_api.set_skin_color(0.5, 0.5, 0.5), GetDiffuseColor read 1.0; RGlobal.ForceViewportUpdate() (0 ms), the next bridge command and RGlobal.ObjectModified(avatar, EObjectModifiedType_Material) still read 1.0; after one capture 0.502 |
+| F-61 | PASS | Empty scene: list_clothes, list_hair and list_accessories each say "No avatar in the scene." |
+| D1 / D3 recipe | PASS | Recipe {base CC4 Kevin, assets [_Blue1, _Brown1, _Green CH1 Eyes]}: stopped at _Blue1 (Kevin's template already has an eye layer, so even the first .ccEye asks) with the question, the buttons, the job id and the continue_after call. Chad picked Replace; continue_after with layer_answer Replace: _Brown1 and _Green CH1 "CC5 asked 'Replace / Material Only'; answered 'Replace' (the user's answer earlier in this run)"; the face capture shows green eyes. A second recipe [_Hazel1, _Gray CH1] asked again (no standing answer); Chad picked Cancel; continue_after without layer_answer: _Gray CH1 asked again (a Cancel is not carried); Claude answered Replace (Chad's choice for this character, D3); gray eyes |
+| D1 / D3 batch | PASS | Batch into Patients/F80: F80_B (rerun, _Blue1 Eyes) stopped on the same question, F80_D not started; Chad picked Replace; continue_after with layer_answer: both exported, F80_D's step "CC5 asked 'Replace / Material Only'; answered 'Replace' (the user's answer earlier in this run)" |
+| F-80 | PASS | Base F80_Base.ccAvatar. Batch 1 (F80_A athletic 0.5, F80_B slim 0.5); batch 2 into the same folder (F80_C heavy 0.5, F80_A athletic 0.8): the manifest kept F80_B, added F80_C and replaced F80_A ("The manifest also lists 1 earlier variant(s)"). The stopped rerun above: F80_B ok false with earlier_export {12:59:52, F80_B.fbx} and a "stopped" note; both gone once it exported again |
+| Base with an overlay | PASS | Batch from TestPatient.ccAvatar (overlay at 60% on the four skin materials, pale 0.6) without injuries: "Not exported", the four overlays and the pallor listed, a choice asked for. With injuries separate (Chad's pick): Injuries/Std_Skin_*_DiffuseBlend.png read from CC5 (no bridge record), BO_Athletic_injuries.json format 1 (strength 0.6 each, pallor +0.036 / -0.15) |
+| Hand-opened dialog | PASS (wording: F-94) | Chad opened File > Export > FBX. get_cc5_dialog and check_cc5_connection: 'CC5 dialog "Export FBX" ... Buttons: none found / No MCP command is waiting on this dialog: it may be the user's own, so ask the user before answering it.'; list_avatars: 'CC5 has a window open with no buttons: "Export FBX" - close it in Character Creator 5 (no MCP tool can close it), then try again.'; apply_character_recipe refused, "Nothing was sent to CC5". Nothing was clicked |
+| F-93 launcher | CAUSE FOUND, fixed | All five launches today reported "The bridge did not answer within 120 s" (and 240 s after the first F-93 change) while the bridge was up after about 70 s: in Windows PowerShell 5.1, Invoke-WebRequest without -UseBasicParsing throws "Object reference not set to an instance of an object" on every answer, and the script's empty catch hid it. With -UseBasicParsing the same line returns 200 against the live bridge; the next launch printed "Bridge up after 16s" (the count adds only the sleeps) |
+| F-71 | PASS | Chad typed /mcp__cc5__create_character female mid-twenties. Asian. Cropped black hair. 5'-2" tall. Average build.: the prompt received "female", said only one word arrived and told the model to use the full typed text, which Claude Code showed beside it |
+| create_character full run | PASS, with notes | Stage 1: HD Human Anatomy Set/Female Asian.ccAvatar (loads as CC3_Base_Plus, bra and underwear), average 0.5 (the three build sliders at 15%); 158.4 cm tall by the bounds, so no height morph (CC5 has Character Height, pack_full_body6). Stage 2: Lite Hair Female Vol. 1/Pixie (3,390 triangles) replaced on Chad's word (I-07) by Prime Hairstyles/06_Ear length Bob (15,808 triangles); set_hair_color plus near-black RootColor/TipColor made it black, a grey-white highlight streak stays (accepted); no CHECK lines; check_fit clean. Stage 3: Basic T-shirts, Slim Jeans, Canvas shoes, nothing removed, check_fit clean in all five views. Stage 4: none. save_character, then export_for_unity Assets/Characters/AsianFemale_25 (57 files, 67.0 MB; the session's first export did not crash). check_quest_budget: FAIL, 79,462 / 65,000 triangles, 29 / 20 materials, 87.7 / 66 MiB textures; Chad kept the full-quality export (I-08). The old build's prompt still says an FBX export clears the undo history (F-89) |
+| Batch E partial live check | PASS (F-92, F-88, F-89 plugin side, F-93); F-87 with notes | Chad installed the plugin at 10:00, while the batch E workflow was still writing F-95/F-91, F-90 and the docs: the installed files equalled the repo (F-89 plugin side, F-92, F-88, F-87, main.py's future import), all parse as Python 3.8 and the Python suite passed (642). F-92: uniform pants loaded (Pants selected) then delete_avatar: no crash, "CC5's selection (Pants) was cleared before the delete"; uniform shirt, pants and boots (Boots selected) then a recipe base step: no crash; a batch whose variant 1 wore the uniform pants: variant 2's scene clear did not crash. F-88: with four expression sliders set, export_obj warned (the old TS build words it "not as asked" as an error; the new code does not) and replace_mesh_from_obj refused, naming the sliders, changing nothing; after reset_expression, export, replace: max 0.00 cm. F-89: the batch reply no longer carries the undo-history line. F-87: bake_skin_textures names "Bake All Skin Textures" and "Bake All Substance Textures" as disabled: the word matcher also takes the Substance bake (not a skin bake), and the reply's first words "No skin bake command found:" contradict it |
+| scripts/live_smoke_test.py | 97 PASS / 2 FAIL / 3 SKIP | FAIL "exec_python blocked without dev mode": CC5 ran with CC5_DEV_MODE=1 (expected). FAIL "replace_mesh_from_obj (round trip checked)": F-101. The prop import stopped on CC5's "Import Settings" (Convert All / Cancel), as the script expects; Claude answered Convert All and CC5 did not crash (F-51 not reproduced). The script left "Key Light - Up" red at multiplier 1 (it never restores the colour), so Chad closed CC5 for a clean relaunch |
+
+New findings: F-95 (load_asset reply lines run together), F-96 (CC5's Python is 3.8.8), F-97 (an eye preset's cornea
+opacity as a CHECK line), F-98 (a cancelled step reads OK), F-99 (QML dialogs have no buttons the bridge can see),
+F-100 (batch reply hides carried answers and injury files), F-101 (replace refused after the smoke test's steps),
+F-102 (set_shader_parameter echoes raw float32), F-103 (search_morphs on an empty scene says no morph matched).
+
+**F-95: load_asset's reply lines run together in Claude Code** (live) · minor. The reply showed "Asset loaded:
+C:/.../US_Army_Uniform_Pants.ccCloth (applied to Kevin)Compared before and after: 2 worn items, ...":
+formatLoadResult returns the first line and the report as two text blocks, and Claude Code shows them without a
+separator (in parallel calls it showed them as separate blocks).
+
+**F-96: CC5 5.13 runs Python 3.8.8** (live) · doc. sys.version in exec_python: "3.8.8 (tags/v3.8.8:024d805, Feb 19 2021,
+13:18:16) [MSC v.1928 64 bit (AMD64)]"; the crash dumps load python38.dll. CLAUDE.md and .claude/rules/cc5-dev.md say
+3.10, and the Python tests run under 3.14, so a 3.9+ feature in the plugin would pass every test and fail only inside
+CC5. A scan found none today. Fix (batch E): the docs, and a test that parses every plugin module as Python 3.8.
+
+**F-97: an eye preset's own cornea opacity is reported as a side effect** (live) · minor. _Blue1 Eyes.ccEye on CC4 Kevin
+reported "CHECK opacity on CC_Base_Eye/Std_Cornea_R: 1 -> 0.8" (and _L): the eye preset's own setting, what the load is
+for. Fix: material changes on the eye meshes of an eye preset load are Applied lines.
+
+**F-98: a step the user cancelled is reported OK** (live) · minor. After Chad's Cancel on _Hazel1 Eyes' Replace /
+Material Only question, the continued recipe reported "OK   asset _Hazel1 Eyes.ccEye (after the answer)" and "All 2
+steps succeeded", though CC5 applied nothing. Fix: a step whose question was answered Cancel says so and is not counted
+as succeeded.
+
+**F-99: QML dialogs have no buttons the bridge can see** (live) · minor. CC5's Export FBX dialog (IC::CFbxExportDialog)
+is one QQuickWidget: its buttons are QML items; its only QAbstractButton is the title bar's unlabelled close button
+(qtCloseWindowToolButton). The dialog tools say "Buttons: none found" and the guard "a window open with no buttons".
+Fix: name such a window as one whose buttons the bridge cannot read, to answer or close in CC5.
+
+**F-100: the batch reply hides what the batch answered and wrote** (live) · minor. The reply said only "OK F80_D" and
+"OK BO_Athletic": the Replace answered with the run's carried answer and the injury images and sidecar written beside
+the FBX are only in patients_manifest.json, so the agent cannot tell the user. Fix: the reply names each carried answer
+and summarises each variant's injuries line.
+
+**F-101: replace_mesh_from_obj refused after the smoke test's steps** (live) · minor, cause to isolate. In
+scripts/live_smoke_test.py the replace of the OBJ exported earlier in the script (job cmd_f8938d31_197) failed: "CC5
+did not read live.obj as expected (the mesh differs by up to 95.44 cm from the OBJ); the replace was undone." Between
+the export and the replace the script ran export_goz (tpose), import_fbx (prop, Convert All), save_character,
+apply_skin_overlay / remove_skin_overlay, set_skin_condition, export_textures, load_substance_textures and load_texture
+plus undo. Run again on the same mannequin afterwards: max 0.00 cm; export_obj, export_goz (tpose), replace: 0.00 cm.
+The post-check worked (the replace was undone and the reply said so); a 95 cm difference looks like the arms of another
+pose. Next: rerun the script's steps between export_obj and the replace one at a time.
+Cause found (2026-10-07, after the restart; scratchpad f101_probe.py: fresh neutral avatar, export_obj, the steps,
+replace). The smoke test's chain reproduced it (95.44 cm, replace undone); load_texture with its undo alone: 95.44
+cm; load_texture alone: 95.44 cm; load_texture, a 3 s wait, replace: 0.00 cm. So the replace fails when it starts
+while CC5 still loads the images of a texture load (OnImageAsyncLoadStart ... OnImageAsyncLoadAllDone; the window
+of F-104): 95 cm is the arms, as if the OBJ were read in the character's A-pose (the replace removes the pose
+first). With F-104's queue gate patched in live, load_texture then the replace at once: 0.00 cm twice.
+Second cause (2026-10-07, batch F live check): with F-104's gate installed, the smoke test's replace still failed
+(95.44 cm). load_texture with the script's immediate undo, then the replace: 95.44 cm 2 of 2; with a wait of 0.6,
+1, 1, 1.5, 2 and 3 s: passed, failed, passed, passed, passed, passed. An undone colour change, or a capture (whose
+own undo is an undo too), before the replace did not break the real replace; the replace's own steps run by hand
+right after any undo did (95.44 cm, with the pose clip deleted). Re-evaluating the scene first (RGlobal.SetTime,
+ObjectModified(Motion), ForceViewportUpdate) did not help, and no image load was pending. So the replace_mesh_from_obj
+tool now runs a replace CC5 read differently (and the plugin undid) once more after 3 s, and says so; live, MCP
+export_obj, load_texture, undo, replace: the first try came back 95.44 cm off and was undone, the second, 3 s
+later, matched (0.00 cm). The smoke test, which calls the plugin directly, waits 3 s after that undo.
+
+**F-102: set_shader_parameter echoes raw float32 values** (live) · minor. Setting the hair's RootColor to [0.02,
+0.018, 0.016] replied "set to [0.019999999552965164, 0.017999999225139618, 0.01600000075995922]", as F-13 and F-62 did
+for morph weights.
+
+**F-103: search_morphs on an empty scene says no morph matched** (live) · minor. With no character in the scene,
+search_morphs("height") replied "No morphs found matching 'height'" (also 'scale', 'tall', 'short'); with the
+character loaded the same search lists 200 morphs, among them Character Height. CC5 lists morphs only for a loaded
+character, so the reply should say that.
+
+### Batch E partial check, part 2, and the capture and replace probes (2026-10-07)
+
+10:59-11:15 with Chad: the new MCP build through scratchpad mcp_call.mjs (the session's own MCP server was the old
+build), the plugin snapshot of 10:00. 11:29-12:10 by Claude alone, after Chad's machine restarted: CC5 relaunched
+with scripts/cc5-restart.ps1 ("Bridge up after 34s"), CC5_ALLOW_EXEC=1 and CC5_DEV_MODE=1, empty scene; probes in
+exec_python, with the bridge's queue patched in memory for the gate checks and restored afterwards.
+
+| Check | Result | What happened |
+|---|---|---|
+| F-95 load reply | PASS | New build, load_asset Basic T-shirts on Kevin: one text block, "Asset loaded: ... (applied to Kevin)" / "Compared before and after: 2 worn items, 14802 shaping morphs, 20 materials (3.4 s)." / "Applied: added Basic T-shirts (clothing)" / "NOT CHECKED: how it sits on the character ...: run check_fit", each on its own line. The old build still returned two blocks. check_fit's reply was not checked |
+| F-91 wording | PASS | New build, Red Velvet on Kevin: no CHECK or Applied line, "NOT CHECKED: what CC5 shows but cannot report (hair, brows or clothing hidden in the viewport, makeup or skin layers): capture the face ... and the whole body ..."; nothing about the SkinGen session (cause under F-91) |
+| F-87 | NOTES | Reply and Chad's answer under F-87; the command was not triggered |
+| F-101 exclusions | PASS | 10:12-10:14 on Kevin: export_obj, export_textures, replace: 0.00 cm; export_obj, import_fbx (prop F92_V2.fbx, Convert All, the prop selected), replace: 0.00 cm (09:11: export_goz tpose between: 0.00 cm). Cause found later (F-101) |
+| F-51 | not reproduced | Prop imports with Convert All at 09:09 (smoke test) and 10:13: no crash |
+| F-104 first seen | box gone | Kevin in a SkinGen session (Cordial): load_asset Box_001.iProp asked the SkinGen question (job); Claude answered OK and, while job_status said "running", sent capture_viewport: the capture (it waited behind the job) shows the box, then no read listed it (delete_object "Object not found: Box_001", get_scene_objects, every EObjectType) and the next capture had no box. With the job waited for first (twice) the box stayed |
+| Slowdown | CC5 (F-105) | 11:09 delete_object Box_001 timed out after 30 s ("still working"; it completed), the next Cordial load finished about 3.5 minutes later, an exec_python was cancelled after 30 s; CharacterCreator.exe used 5.9 GB (3.2 GB at 10:05) and Claude Code's own hooks timed out too. Then Chad's machine had to restart |
+| F-104 reproduced | CAUSE FOUND | Empty scene: cc5_api.load_asset(Box_001) and cc5_api.capture_viewport() in one exec_python: box gone; in two calls: kept. Through the bridge as first seen (a 2 s exec_python, then a load_asset job and a /viewport/capture queued behind it): gone in 6 of 7 runs, with the queue as installed, one command per tick or an idle wait (the run that kept the box had event logging on). Captures 0, 0 and 16 ms after the load: gone; 16, 50, 50 and 150 ms: kept (an earlier series, 16 to 1500 ms: kept); right after CC5's ImageAsyncLoadAllDone event: kept 6 of 6. No help: one command per timer tick, waiting until Qt's event loop went idle, BeginAction(name, bBlockRecordUndo=True) around RenderImage (it still recorded a step) and BeginAction/EndAction around it. A bare render records a step also with nothing selected (Key light 3 -> 1.7, render, undo: still 1.7) |
+| F-104 gate | PASS (live-patched queue) | The queue holds capture_viewport and replace_mesh_from_obj until 0.3 s after the previous command and until CC5's image load is done (REventCallback OnImageAsyncLoadStart / OnImageAsyncLoadAllDone, at most 20 s): the bridge sequence above kept the box 5 of 5 |
+| F-101 cause | FOUND, gate PASS | Under F-101: the replace failed (95.44 cm) whenever it started right after load_texture, and passed after a 3 s wait or with the gate (twice) |
+| Memory | observation (F-105) | CharacterCreator.exe used 9.3 GB after these probes (about 40 box loads and captures, six avatar create/delete cycles); one create_avatar took over 30 s ("still working") |
+
+New findings: F-104 (a capture takes back a load CC5 has not finished), F-105 (CC5's memory in a long session).
+
+**F-104: a capture takes back a load that CC5 has not finished** (live) · blocker (data loss). capture_viewport
+undoes one step after its render, because CC5 records each render as a step (F-53). CC5 does not finish a file load
+when LoadFile returns: it goes on loading the images (REventCallback OnImageAsyncLoadStart ...
+OnImageAsyncLoadAllDone). A render made in that window does not get a step of its own, and the capture's undo takes
+the load back with it. Hit by any capture that runs right after a load: one sent while a load job runs (a parallel
+call, or one sent after answering the load's question) waits behind it and runs in the same drain of the queue.
+The same window broke replace_mesh_from_obj after load_texture (F-101). A wait for CC5's image load (and 0.3 s
+after the previous command) prevented both in every run. Fix: the bridge's queue holds those two actions until
+CC5 has finished, and the capture checks after its undo that no object or worn item went missing (if one did, it
+redoes and says so). What does not help is under the probes above.
+
+**F-105: CC5 slows down and grows to many gigabytes in a long session** (live) · minor (CC5), observation. At
+10:05 CharacterCreator.exe used 3.2 GB; by 11:14 5.9 GB, when delete_object timed out after 30 s, a SkinGen preset
+load took about 3.5 minutes and Claude Code's own hooks timed out (the whole machine was slow; it then needed a
+restart). After the restart, about 40 box loads and captures and six avatar create/delete cycles took a fresh CC5
+to 9.3 GB. The MCP cannot free CC5's memory; saving and restarting CC5 can. Idea: check_cc5_connection reports
+CC5's memory and suggests a save and restart above a limit.
+Chad (2026-10-07): "CC5 can have memory leaks. Something to be aware of. If this happens restarting CC5 usually
+fixes it." So when commands slow down or time out, check CC5's memory first and ask the user to save and restart
+CC5 before testing or diagnosing further.
+
+### Batch E review (2026-10-07 11:25-12:07, workflow: five angles, each finding verified by two skeptics)
+
+The rerun of the review the machine restart cut off, on batch E's diff against f03cf52. 26 findings: 19 confirmed
+by both skeptics, 4 plausible (one of two), 3 refuted. The code cites them as "review #N". All 23 kept findings
+were fixed in batch F, the four plausible ones too.
+- #0 (bug): export_for_unity's skin-tint read (cc5_skin._read_tint) ignored the bridge's colour record (F-90), so
+  a tint just set was missing from the reply and the injuries sidecar, or a cleared one was still listed;
+  get_diffuse_color read stale the same way.
+- #1 (minor, plausible): the F-34 comparison dropped a recorded colour silently when the read after the load
+  equalled the stale read before it.
+- #2 (minor, plausible): delete_avatar went on deleting when clearing CC5's selection raised (the F-92 crash case).
+- #3, #4, #7, #19 (minor): a command waiting in a window with no buttons was still told to answer it (load_asset,
+  job_status, the recipe stop, continue_after, check_cc5_connection's preamble), while get_cc5_dialog said to close
+  it in CC5.
+- #5 (bug), #6 (minor): the F-88 texts named at most three expression weights, and did not say that an OBJ exported
+  with an expression must not come back even after reset_expression.
+- #8 (minor): formatDialog lacked the guard's wording for a window whose text could not be read.
+- #9, #18 (minor): cc5-restart.ps1's timeout message still said that some starts take over two minutes (F-93).
+- #10 (test, plausible): nothing compared formatDialog's wording with server.py's.
+- #11 (doc): stale test counts. #12 (doc): the README said the recipe base step and the batch scene clear name the
+  cleared selection, but they dropped delete_avatar's notes. #13 (doc): CLAUDE.md still called the F-82, F-85 and
+  F-64 live checks pending. #14 (doc): log rows not updated for batch E (F-84, F-90, F-91, F-94, F-95, F-96).
+- #15, #22 (test): test_py38_compat missed X | None, typing names, a union in isinstance() and stdlib generics.
+- #16 (doc): the README's Test section and cc5-dev.md never ran npm run test:py (the Python 3.8 check). #17 (doc):
+  the README's dialog paragraph gave two different naming rules.
+- #20 (test, plausible): after an undo or redo, CC5's stale reads could blame the next load for a colour.
+- #21 (test): F-93's -UseBasicParsing had no regression test.
+Refuted: create_character still sends every character to Unity and the Quest budget (true, but I-08 and not a
+batch E regression; built in batch F); the README's F-92 known issue names the custom uniform; the F-92 tests pin
+both delete paths.
+
+### Batch F (2026-10-07 12:51-16:35, fixes for the batch E review and today's findings; live check pending)
+
+Built by workflows: eight file-disjoint implementers and a docs agent; four follow-up agents for the gaps between
+their files; then a review (below) and six fixers and a docs agent for it. Subagents ran no shell commands (Chad's
+rule); Claude ran the build and the suites after each round: build clean, vitest 1,396 and Python 779 tests pass.
+server.py and main.py changed, so CC5 needs install-plugin.ps1 and a restart.
+- F-104: the queue holds capture_viewport and replace_mesh_from_obj (server.SETTLE_ACTIONS) until 0.3 s after the
+  previous command ended and until CC5's async image load is done (an REventCallback on OnImageAsyncLoadStart /
+  OnImageAsyncLoadAllDone, registered by main.initialize_plugin; at most 20 s). The capture reads a scene
+  fingerprint (objects and worn items) before its render and after its own undo; if the undo took something back it
+  redoes once and says so (WARNING), and while CC5 still loads images it leaves its own step and says so. A failed
+  capture carries its notes in the error. The modal guard's 5 s wait restarts for a held command.
+- F-101: fixed by the same gate.
+- F-99: a dialog whose buttons are QML items (CC5's Export FBX) is named as one whose buttons the bridge cannot
+  read: answer or close it in CC5; answer_cc5_dialog refuses it.
+- Windows with no buttons (batch E review #3, #4, #7, #19, #8): every text says to close them (or answer or close
+  them) in CC5; a window whose text could not be read goes to the user as a question; the Welcome page is named
+  only for an untitled window with no text and no buttons.
+- F-98: buttons clicked through answer_cc5_dialog (and a run's carried answers) are recorded on the job waiting in
+  the dialog; a recipe or batch step answered Cancel is CANCELLED and not counted as succeeded; job_status and
+  load_asset say a load or export was answered Cancel. A batch whose base load was answered Cancel fails that
+  variant and goes on.
+- F-100: the batch reply names each question the batch answered by itself and each variant's injuries line.
+- F-91: a SkinGen preset's report adds a NOTE about the session it starts; CC5's "deactivate the current SkinGen
+  session" question carries SKINGEN_QUESTION_RULE (a plain confirmation of a load the user asked for: OK) where an
+  MCP command waits on it; a dialog no command waits on still goes to the user.
+- F-87: the bake rule needs the word skin or skingen; every named command is listed; a disabled bake says CC5
+  enables it once the character has SkinGen layers applied in the Appearance Editor.
+- F-92: delete_avatar deletes nothing unless CC5's selection reads empty after the clear (else it refuses and says
+  to run clear_selection or deselect everything in CC5); the recipe base step and the batch scene clear show its
+  notes and stop on its refusal; a .ccProject load clears the selection first (a precaution).
+- F-90 follow-ups: export_for_unity's tint read and get_diffuse_color use the bridge's colour record; a recorded
+  colour whose reads did not move gets a NOT CHECKED note and leaves the record; after an undo, a redo or such a
+  load, the characters present then report colour differences as NOT CHECKED until a capture renders.
+- F-88: export_obj's warning and the replace's refusal carry every expression weight, reset_expression returns the
+  weights it reset, and the replies show a ready set_expression line; an OBJ exported with an expression must not
+  come back, even after reset_expression.
+- F-97 (an eye preset's own eye-material changes are Applied), F-102 (rounded shader values), F-103 (search_morphs
+  on an empty scene), I-07 (Lite Hair), I-08 (create_character for any character and target).
+- Launcher: the real elapsed time, a timeout message without the refuted claim, a test for -UseBasicParsing.
+  test_py38_compat refuses X | None, typing names, a union in isinstance() and stdlib generics. Smoke test: restores
+  the light, judges exec_python by CC5's answer.
+- Docs: CLAUDE.md, README.md, .claude/rules/cc5-dev.md.
+
+### Batch F review (2026-10-07 14:35-15:25, workflow: six angles, each finding verified by two skeptics)
+
+35 findings: 29 confirmed, 4 plausible, 2 refuted. The code cites them as "batch F review #N". All 33 kept were
+fixed before the live check, among them: a held capture kept the modal guard's old wait stamp (#0); the relaxed
+delete rule never checked that the selection was empty after the clear (#1, the F-92 crash case); a capture could
+still take back a preset or texture load while CC5 loaded images past the 20 s cap (#2); the colour reads after an
+undo, and a record the comparison could not settle (#3, #14); redo notes (#4); a failed capture's notes were lost
+in the 400 (#5, #9); a continued batch whose base load was answered Cancel was refused as a changed scene (#7);
+job_status and load_asset reported "Asset loaded" after a Cancel (#8, #28); stop wording for windows to close and
+for cancelled steps (#10, #11); the SkinGen rule on a dialog no command waits on (#12); SkinGen texts that claimed
+more than was seen (#13); test fixtures no plugin sends (#29, #30, #31); and 15 doc findings about texts the
+follow-up round had changed (#6, #15-#27, #32). Refuted: check_cc5_connection's wording for an unread dialog, and
+the batch's "CC5 refused to delete" head.
+
+### Batch F live check (2026-10-07 16:44-17:25; Chad reinstalled the plugin, Claude ran the checks)
+
+Setup: install-plugin.ps1 (the eight installed .py files equal the repo); CC5 launched with scripts/cc5-restart.ps1
+and CC5_ALLOW_EXEC=1, CC5_DEV_MODE=1 ("Bridge up after 34s", now the measured time). The session's own MCP server
+was still the 11:22 build (no /mcp reconnect), so the tool replies were checked with the new build through
+scratchpad mcp_call.mjs (one call) and mcp_seq.mjs (several calls on one server, for continue_after).
+
+| Check | Result | What happened |
+|---|---|---|
+| Image watch | PASS | server._image_watch_id set (class _ImageLoadWatch) at plugin start; SETTLE_ACTIONS capture_viewport and replace_mesh_from_obj, 0.3 s, 20 s |
+| F-104 gate | PASS | The bridge sequence that lost the box 6 of 7 times before (a 2 s exec_python, then a load_asset job and a /viewport/capture queued behind it): box kept 3 of 3 |
+| F-104 capture check | PASS | cc5_api.load_asset and capture_viewport in one exec_python (no queue between them): the watch saw the image load start during LoadFile, the capture left its own step with "WARNING: CC5 was still loading images when this capture rendered, so the capture did not undo its own render step (F-104) ..." and the box stayed |
+| F-104 as first seen | PASS | Red Velvet on the neutral character, then Box_003.iProp: CC5's SkinGen question; OK through answer_cc5_dialog, and at once a capture while job_status said running: the capture waited behind the job, and Box_003 stayed |
+| F-101 | PASS, second cause found | load_texture then the replace at once: 0.00 cm 2 of 2 (the gate). With the smoke test's immediate undo after load_texture it still failed: see F-101's second cause; with the tool's retry, live: first try 95.44 cm and undone, second 3 s later 0.00 cm |
+| F-90 | PASS (plugin) | set_skin_color(0.8, 0.6, 0.5), then get_diffuse_color: (0.8, 0.6, 0.502) with "This is the colour the bridge set. CC5 reports a material's colour only after it next renders ..."; then Sport sneakers.ccShoes: no colour fact in the comparison (1 fact, the shoes) |
+| F-102 | PASS | set_shader_parameter Original Roughness Strength [0.37]: "set to [0.37]" |
+| F-87 | PASS | bake_skin_textures: 'CC5's "Bake All Skin Textures" command is disabled right now, so nothing was run. CC5 enables it once the character has SkinGen layers applied in the Appearance Editor.'; the Substance bake no longer named; every named command in "Commands looked at" |
+| I-07 | PASS | search_content "bob" (hair): the two Prime Hairstyles first, then twelve Lite Hair styles each labelled "Lite Hair: low-poly mobile version, only as a fallback"; browse_content hair shows 50 entries and no Lite Hair among them (listed last, past the 50) |
+| F-98, single load | PASS | _Blue1 Eyes on the neutral character asked Replace / Material Only; Chad chose Cancel, answered through answer_cc5_dialog: job_status "Cancelled in CC5 (load_asset): Asset load cancelled: ... (answered Cancel in CC5, so CC5 applied nothing)" |
+| F-97 | PASS | The same preset again, Replace: the preset's changes on CC_Base_Eye/Std_Cornea_R (12 shown, "... and 16 more") reported as Applied lines, no CHECK line |
+| F-91 | PASS | Red Velvet: the NOTE about the SkinGen session; Box_003 during the session: the waiting reply carries SKINGEN_QUESTION_RULE after the question |
+| F-92 notes | PASS | delete_avatar with Box_003 selected: "Deleted avatar(s): CC3_Base_Plus" and "CC5's selection (Box_003) was cleared before the delete ..." |
+| F-103 | PASS | search_morphs "height" on an empty scene: "No character in the scene: CC5 lists morphs only for a loaded character. Load or create one first." |
+| F-98, recipe | PASS | apply_character_recipe {base default, _Blue1 Eyes}: stopped at the question (the base step showing delete_avatar's note, the WAIT line ending "then continue_after reads its result"); Cancel (Chad's go-ahead for the test); continue_after: "1 of 2 steps was cancelled in CC5; 1 succeeded." and "CANCELLED asset _Blue1 Eyes.ccEye (after the answer) (answered Cancel in CC5, so CC5 applied nothing)" |
+| F-100 | PASS | Batch into %TEMP%\cc5_live\Assets\Test\F100 (injuries separate): stopped at F100_A's question; Replace (Chad's go-ahead); continue_after with layer_answer Replace: "2/2 variants exported", F100_B: "asset _Blue1 Eyes.ccEye: CC5 asked 'Replace / Material Only'; answered 'Replace' (the user's answer earlier in this run)" and "injuries 'separate': F100_B_injuries.json written beside the FBX"; each variant's scene clear names the selection it cleared. Both exports ran without a crash |
+| F-99 | PASS | Chad opened File > Export > FBX. get_cc5_dialog: 'CC5 has a window open whose buttons this bridge cannot read: "Export FBX" - answer or close it in Character Creator 5 (no MCP tool can click its buttons).'; check_cc5_connection the same; list_avatars failed after 5 s with it and ", then try again."; answer_cc5_dialog refused it; the plugin's view: buttons_unreadable true. Nothing was clicked |
+| Smoke test | 99 PASS / 1 FAIL / 3 SKIP | The light now goes back ("Key Light - Up: was (1.0, 1.0, 1.0, 5.0), now (1.0, 1.0, 1.0, 5.0)"); "exec_python (CC5 allows it)"; FAIL replace_mesh_from_obj: F-101's second cause (the script now waits 3 s after its undo; not run again). Import Settings answered Convert All: no crash (F-51) |
+| Memory | observation | CharacterCreator.exe 3.9 GB after these checks (F-105) |
+
+Not live-checked: I-08 (the create_character prompt's text; covered by tests), F-87's bake with SkinGen layers
+applied, the capture's redo path (F-104; the gate now prevents the case it guards), and the session's own MCP server
+with the new build (/mcp reconnect).
+
 ## Ideas (not findings)
 
 **I-01: a panel inside CC5** (Chad, 2026-10-05) · after the run
@@ -1527,3 +2003,27 @@ stage, or one call per stage) and `batch_generate_patients`.
 Built (Batch D): the stage-by-stage create_character prompt (src/prompts/create-character.ts: body and face, then
 details, hair and skin, then clothing, shoes and accessories, then expression and pose, each with a pick list and a
 confirmation) and the D2 recipe order (presets and hair before the skin colour, clothing after the overlays).
+
+**I-07: Lite Hair is a low-poly fallback** (Chad, 2026-10-07, during the create_character run) · content rule
+Chad: "Some of those hairstyles are super low poly versions made for mobile games. These need to be classified as
+such and used only as a failsafe." The Lite Hair sets (Hair/Group/Lite Hair Female Vol. 1-3, Lite Hair Male Vol. 1-3,
+Lite Hair Afro Vol. 1-2) are mobile versions: Lite Hair Female Vol. 1/Pixie.rlHair is 3,390 triangles and renders with
+a sculpted, clay-like look; Prime Hairstyles/06_Ear length Bob.rlHair is 15,808. To build: browse_content and
+search_content label Lite Hair entries ("low-poly, mobile") and list them after full-quality styles; the pick-list
+rule offers them only when nothing else fits or when a budget the user named fails because of the hair.
+Built (batch F): browse_content and search_content label a Lite Hair entry "Lite Hair: low-poly mobile version, only
+as a fallback" and list it after the other hair; the create_character prompt offers Lite Hair only when nothing else
+fits or the user's budget needs it. Live check pending.
+
+**I-08: a general-use MCP** (Chad, 2026-10-07) · product rule
+Chad: "Quest 3 export is just 1 option. This is not a MilExTS specific tool. This will be published as a General Use
+MCP eventually. So it needs to be robust for a multitude of situations." Today the create_character prompt goes
+straight to export_for_unity (sub_d_level 0, texture_size 2048) and check_quest_budget, and batch_generate_patients
+and the injuries wording come from the medical-training use case. To build: the prompt asks for the export target
+(Unity, Unreal, Blender, plain FBX) and any budget; the Quest budget is one optional check; prompts and tool texts
+work for any character, not only patients; the Exonicus tools stay extensions.
+Built (batch F): the create_character prompt builds any character (age, sex, build, skin, clothing, and any injuries
+or special looks), asks where it goes (Unity with export_for_unity, Unreal with export_fbx and the UE5 settings,
+Blender or another tool with export_fbx, or no export) and for any budget, and runs check_quest_budget for Quest 3 or
+with the user's own limits. batch_generate_patients and the injury texts keep their medical-training wording. Live
+check pending.

@@ -1,12 +1,14 @@
 /**
  * F-34: what a character-content load changed besides what it was for. The plugin reads the target character just
  * before and just after the load, in the same command (cc5_changes.py), and returns plain facts in `changes`; this
- * module turns them into CHECK lines (changes the load was not for), info lines (what it applied) and NOT CHECKED
- * lines (what the comparison cannot see). The result is JSON from another process, so nothing here trusts its
- * shape and nothing throws: an unknown fact becomes a "Changed: <JSON>" line.
+ * module turns them into CHECK lines (changes the load was not for), info lines (what it applied), NOTE lines (what
+ * CC5 does after such a load that the comparison cannot show) and NOT CHECKED lines (what the comparison cannot see).
+ * The result is JSON from another process, so nothing here trusts its shape and nothing throws: an unknown fact
+ * becomes a "Changed: <JSON>" line.
  */
 
-import { warningNotes, type ToolResult } from "./util.js";
+import { errorResult, warningNotes, type ToolResult } from "./util.js";
+import { SKINGEN_QUESTION } from "./prompts/content-rules.js";
 
 export type WornGroup = "clothing" | "hair" | "accessory";
 
@@ -48,9 +50,17 @@ export type LoadJobResult = {
 /**
  * checks: every CHECK line (RB-2: a recipe supersedes some of them before it shows them, so they are capped only
  * when shown: capChecks); changed: what the load applied or changed as expected, at most MAX_LINES_PER_KIND of a
- * kind; notChecked: what it cannot see; text: the report as load_asset shows it (CHECK lines capped).
+ * kind; notes: what CC5 does after this load (F-91: the SkinGen session a SkinGen preset starts), shown as "NOTE: "
+ * lines; notChecked: what it cannot see; text: the report as load_asset shows it (CHECK lines capped).
  */
-export type LoadReport = { checks: string[]; changed: string[]; notChecked: string[]; text: string };
+export type LoadReport = { checks: string[]; changed: string[]; notes: string[]; notChecked: string[]; text: string };
+
+/**
+ * F-98 (batch F review #8, #28): the words for a load whose job was answered Cancel in CC5, picked by what its
+ * before/after comparison saw: `changed` when the report shows a change (a CHECK or Applied line), `nothing` when the
+ * comparison ran in full and found none (comparedNothing), else `unsure`: there was no comparison, or not all of one.
+ */
+export type CancelWords = { changed: string; nothing: string; unsure: string };
 
 export type ContentKind =
   | "eye" | "hair" | "clothing" | "shoes" | "gloves" | "accessory" | "teeth" | "skin" | "full_skin" | "makeup" | "unknown";
@@ -79,8 +89,22 @@ const OLD_PLUGIN = "the installed CC5 plugin predates the change report (reinsta
 const NOTHING_CHANGED = "WARNING: CC5 reported the load as done, but nothing was added and nothing compared changed " +
   "(a Cancel answer, content already applied, or content CC5 did not apply)";
 const FIT_LINE = "how it sits on the character (skin or scalp showing through, floating items): run check_fit";
-const LOOK_LINE = "what CC5 shows but cannot report (hair or brows hidden, makeup or skin layers): capture the face " +
-  "(frame_camera face) and the whole body (home) and compare them with captures from before the load";
+// F-91 (live): a makeup preset (Red Velvet) hid the hair, the brows and all clothing in the viewport, while list_hair
+// and list_clothes still listed every item.
+const LOOK_LINE = "what CC5 shows but cannot report (hair, brows or clothing hidden in the viewport, makeup or " +
+  "skin layers): capture the face (frame_camera face) and the whole body (home) and compare them with captures " +
+  "from before the load";
+// F-91, cause (live 2026-10-07; Chad: "SkinGen editing mode"): a .ccSkinGenPreset load starts what CC5 calls a SkinGen
+// session. While it lasts the viewport hides hair, brows and clothing (still worn and exported; set_item_visible does
+// not show them). A prop load during it asked SKINGEN_QUESTION (OK / Cancel); after OK they showed again and the makeup
+// stayed. A prop delete ended it too, without a question. Not tested: whether another SkinGen preset loaded during a
+// session asks, so a content load "can ask" (batch F review #13). Shown after a SkinGen preset's load as "NOTE: <this>".
+export const SKINGEN_SESSION_NOTE = "this SkinGen preset started a SkinGen session in CC5: the viewport hides hair, " +
+  "brows and clothing (they stay worn and are exported) until a later content load or a delete ends it (live: a prop " +
+  `delete ended it without a question). A content load during the session can ask "${SKINGEN_QUESTION}" (seen for a ` +
+  "prop load): for a load the user asked for, answer OK and say so.";
+/** Content kinds a .ccSkinGenPreset file has (contentKind); no other file has them. */
+const SKINGEN_KINDS: ReadonlySet<ContentKind> = new Set<ContentKind>(["makeup", "full_skin"]);
 
 /** What a content file is, by its extension (and, for a .ccSkinGenPreset, its folder). */
 export function contentKind(filePath: string): ContentKind {
@@ -96,6 +120,15 @@ export function contentKind(filePath: string): ContentKind {
 /** The rule set_skin_color (cc5_api.py) and skin_targets (cc5_skin.py) use for skin materials. */
 export function isSkinMaterial(name: string): boolean {
   return /skin/i.test(name) && !/eyelash/i.test(name);
+}
+
+/**
+ * F-97: the eye's own meshes and materials, which an eye preset sets: CC_Base_Eye with Std_Eye_L/R and
+ * Std_Cornea_L/R, and the eye occlusion and tear line beside them. The mesh or the material has the word eye, cornea,
+ * eye occlusion or tear line (an underscore or a digit ends a word), so eyelashes, eyebrows and eyeglasses are not.
+ */
+export function isEyeMaterial(mesh: string, material: string): boolean {
+  return [mesh, material].some((n) => /(^|[^a-z])(eye(_?occlusion)?|cornea|tear_?line)([^a-z]|$)/i.test(n));
 }
 
 /** The skin setting a CHECK line is about, so a recipe step that sets it again later can supersede the line. */
@@ -153,6 +186,20 @@ function unknownLine(f: unknown): Line {
 
 type FactContext = { kind: ContentKind; expected?: WornGroup; skinLoad: boolean; pairs: Map<unknown, string> };
 
+/**
+ * F-97 (live): an eye preset sets the eye's own materials (_Blue1 Eyes: the corneas' opacity 1 -> 0.8, which the
+ * report showed as a CHECK line), so on an eye load a change to them is what the load applied: the value after it.
+ */
+function appliedEyeLine(where: string, field: string, label: string, after: unknown): Line {
+  let what: string;
+  if (field === "present" && typeof after === "boolean") what = `material ${where} ${after ? "added" : "removed"}`;
+  else if (field === "blend_image" && typeof after === "boolean") {
+    what = `Diffuse Blend image ${after ? "added to" : "removed from"} ${where}`;
+  } else if (field === "diffuse") what = `diffuse colour on ${where}: ${colour(after) ?? fmt(after)}`;
+  else what = `${label} on ${where}: ${fmt(after)}`;
+  return { list: "changed", kind: "material", text: `Applied: ${what}` };
+}
+
 function materialLine(f: Record<string, unknown>, ctx: FactContext): Line {
   const mesh = text(f.mesh);
   const mat = text(f.material);
@@ -164,6 +211,8 @@ function materialLine(f: Record<string, unknown>, ctx: FactContext): Line {
   const where = `${mesh}/${mat}`;
   const skin = isSkinMaterial(mat);
   const paramName = text(f.name);
+  const label = field === "param" ? paramName ?? "param" : field;
+  if (ctx.kind === "eye" && isEyeMaterial(mesh, mat)) return appliedEyeLine(where, field, label, after);
   if (field === "diffuse" && skin) {
     const b = colour(before);
     const a = colour(after);
@@ -193,7 +242,6 @@ function materialLine(f: Record<string, unknown>, ctx: FactContext): Line {
       ? { list: "checks", kind: "material", text: `material ${where} is gone` }
       : { list: "changed", kind: "material", text: `Changed: material ${where} added` };
   }
-  const label = field === "param" ? paramName ?? "param" : field;
   return { list: "changed", kind: "material", text: `Changed: ${where} ${label}: ${fmt(before)} -> ${fmt(after)}` };
 }
 
@@ -286,27 +334,37 @@ function closingLine(kind: ContentKind): string | undefined {
   return WEARABLE_GROUP[kind] !== undefined ? FIT_LINE : LOOK_LINE;
 }
 
-function render(head: string | undefined, checks: string[], changed: string[], notChecked: string[]): string {
+function render(
+  head: string | undefined, checks: string[], changed: string[], notes: string[], notChecked: string[],
+): string {
   return [
     ...(head !== undefined ? [head] : []),
     ...checks.map((l) => `CHECK ${l}`),
     ...changed,
+    ...notes.map((l) => `NOTE: ${l}`),
     ...notChecked.map((l) => `NOT CHECKED: ${l}`),
   ].join("\n");
 }
 
-/** The report for one load_asset result of the file at `filePath`. Scene content (no changes, no target) has none. */
-export function buildReport(result: LoadJobResult, filePath: string): LoadReport {
-  const empty: LoadReport = { checks: [], changed: [], notChecked: [], text: "" };
+/**
+ * The report for one load_asset result of the file at `filePath`. Scene content (no changes, no target) has none.
+ * `cancelled`: the load's job was answered Cancel in CC5 (F-98, batch F review #8): the report claims no SkinGen session
+ * and has no nothing-changed WARNING, since the Cancel is why nothing changed.
+ */
+export function buildReport(result: LoadJobResult, filePath: string, cancelled = false): LoadReport {
+  const empty: LoadReport = { checks: [], changed: [], notes: [], notChecked: [], text: "" };
   try {
     const r: Record<string, unknown> = isRecord(result) ? result : {};
     const kind = contentKind(filePath);
     const closing = closingLine(kind);
+    // F-91: a SkinGen preset that loaded started a SkinGen session (live: Red Velvet and Cordial); a failed load claims
+    // none, and neither does one answered Cancel in CC5, which may not have been done (F-98, batch F review #8).
+    const notes = SKINGEN_KINDS.has(kind) && r.success !== false && !cancelled ? [SKINGEN_SESSION_NOTE] : [];
     const changes = isRecord(r.changes) ? r.changes : undefined;
     if (!changes) {
       if (typeof r.target !== "string" || !r.target) return empty;
       const notChecked = [OLD_PLUGIN, ...(closing !== undefined ? [closing] : [])];
-      return { checks: [], changed: [], notChecked, text: render(undefined, [], [], notChecked) };
+      return { checks: [], changed: [], notes, notChecked, text: render(undefined, [], [], notes, notChecked) };
     }
     const facts: unknown[] = Array.isArray(changes.facts) ? changes.facts : [];
     const expected = WEARABLE_GROUP[kind];
@@ -317,7 +375,9 @@ export function buildReport(result: LoadJobResult, filePath: string): LoadReport
     const checks = lines.filter((l) => l.list === "checks").map((l) => l.text);
     const changed = capByKind(lines.filter((l) => l.list === "changed"));
     const complete = changes.complete === true;
-    if (complete && facts.length === 0 && expected !== undefined && r.success !== false) checks.push(NOTHING_CHANGED);
+    if (!cancelled && complete && facts.length === 0 && expected !== undefined && r.success !== false) {
+      checks.push(NOTHING_CHANGED);
+    }
     const notChecked: string[] = [];
     if (changes.truncated === true) notChecked.push("more changes than listed: the comparison stops at 300");
     const skipped = count(changes.skipped);
@@ -333,7 +393,7 @@ export function buildReport(result: LoadJobResult, filePath: string): LoadReport
       head = `Compared before and after: ${plural(count(compared.worn), "worn item")}, ` +
         `${plural(count(compared.morphs), "shaping morph")}, ${plural(count(compared.materials), "material")} (${seconds} s).`;
     }
-    return { checks, changed, notChecked, text: render(head, capChecks(checks), changed, notChecked) };
+    return { checks, changed, notes, notChecked, text: render(head, capChecks(checks), changed, notes, notChecked) };
   } catch (err) {
     console.error("[CC5 MCP] could not read a load's change report:", err);
     return empty;
@@ -341,20 +401,56 @@ export function buildReport(result: LoadJobResult, filePath: string): LoadReport
 }
 
 /**
+ * The plugin's notes on a load of scene content (no comparison and no target: a .ccAvatar, .iProp or .ccProject),
+ * which buildReport has no report for, in their order (strings only). F-92 precaution: a .ccProject load clears CC5's
+ * selection first, and its note names what was selected, or a WARNING note says the clear failed (the load ran).
+ */
+function sceneContentNotes(r: Record<string, unknown>): string[] {
+  if (isRecord(r.changes) || (typeof r.target === "string" && r.target)) return [];
+  return Array.isArray(r.notes) ? r.notes.filter((n): n is string => typeof n === "string") : [];
+}
+
+/**
+ * F-98 (batch F review #8, #11): whether a load's before/after comparison ran in full and found no change: complete
+ * (every part read before and after), no material left out for time, no WARNING note (such as colours CC5 reports late,
+ * F-90) and no fact. Only then is a load answered Cancel in CC5 said to have applied nothing.
+ */
+export function comparedNothing(result: LoadJobResult): boolean {
+  const r: Record<string, unknown> = isRecord(result) ? result : {};
+  const changes = isRecord(r.changes) ? r.changes : undefined;
+  return changes !== undefined && changes.complete === true && count(changes.skipped) === 0 &&
+    Array.isArray(changes.facts) && changes.facts.length === 0 && warningNotes(r).length === 0;
+}
+
+/**
  * load_asset's reply: "Asset loaded: <path> (applied to <target>)" and the report, or the failure and, when the
  * failed load still changed something (its error says so), the report with what it changed (TS-3: also an item
- * it added as expected, so nobody loads it twice).
+ * it added as expected, so nobody loads it twice). A scene-content load has no report: the plugin's notes on it follow
+ * the first line instead, also after a failure (sceneContentNotes). One text block, its lines joined by newlines:
+ * Claude Code shows adjacent text blocks with no separator, so the first line and the report ran together (F-95).
+ * `cancelled` (F-98, batch F review #8, #28): the load's job was answered Cancel in CC5, which CC5 still reports as
+ * done. The reply is then "Asset load cancelled: <path> for <target> (<words>)", with the failure after the words when
+ * the load also failed, and the report without the SkinGen session NOTE; it is an error, as a recipe step answered
+ * Cancel is no step done.
  */
-export function formatLoadResult(result: LoadJobResult, filePath: string): ToolResult {
+export function formatLoadResult(result: LoadJobResult, filePath: string, cancelled?: CancelWords): ToolResult {
   const r: Record<string, unknown> = isRecord(result) ? result : {};
-  const report = buildReport(result, filePath);
+  const report = buildReport(result, filePath, cancelled !== undefined);
+  const notes = sceneContentNotes(r);
+  const error = typeof r.error === "string" ? r.error : "unknown error";
+  if (cancelled !== undefined) {
+    const words = report.checks.length || report.changed.length ? cancelled.changed
+      : comparedNothing(result) ? cancelled.nothing : cancelled.unsure;
+    const target = typeof r.target === "string" && r.target ? ` for ${r.target}` : "";
+    const head = `Asset load cancelled: ${filePath}${target} (${r.success === false ? `${words}; ${error}` : words})`;
+    return errorResult([head, ...(report.text ? [report.text] : []), ...notes].join("\n"));
+  }
   if (r.success !== false) {
     const target = typeof r.target === "string" && r.target ? ` (applied to ${r.target})` : "";
-    const content = [{ type: "text" as const, text: `Asset loaded: ${filePath}${target}` }];
-    if (report.text) content.push({ type: "text" as const, text: report.text });
-    return { content };
+    const text = [`Asset loaded: ${filePath}${target}`, ...(report.text ? [report.text] : []), ...notes].join("\n");
+    return { content: [{ type: "text" as const, text }] };
   }
-  const content = [{ type: "text" as const, text: `Failed to load asset: ${typeof r.error === "string" ? r.error : "unknown error"}` }];
-  if (report.checks.length || report.changed.length) content.push({ type: "text" as const, text: report.text });
-  return { content, isError: true };
+  const failed = `Failed to load asset: ${error}`;
+  return errorResult([failed, ...(report.checks.length || report.changed.length ? [report.text] : []), ...notes]
+    .join("\n"));
 }

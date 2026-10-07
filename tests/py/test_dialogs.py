@@ -20,7 +20,23 @@ LAYER_QUESTION = ("The target object layer already exists.\n"
                   "Do you want to replace the object, or the material only?")
 
 
-class _Label:
+class _QObject:
+    """PySide2's QObject: inherits() answers by Qt class name, as QObject.inherits() does."""
+
+    qt_classes: tuple = ()
+
+    def inherits(self, class_name):
+        return class_name in self.qt_classes
+
+
+class _QmlView(_QObject):
+    """A QQuickWidget, or a QWindowContainer around a QML window: the buttons it shows are QML items (F-99)."""
+
+    def __init__(self, qt_class="QQuickWidget"):
+        self.qt_classes = (qt_class, "QWidget", "QObject")
+
+
+class _Label(_QObject):
     def __init__(self, text, visible=True):
         self._text, self._visible = text, visible
 
@@ -47,15 +63,18 @@ class _Button(_Label):
 
 
 class _CC5Dialog:
-    """CC5's own dialog: a QDialog whose question sits in QLabels (not a QMessageBox)."""
+    """CC5's own dialog: a QDialog whose question sits in QLabels (not a QMessageBox). `children`: its other child
+    objects (a QML view)."""
 
-    def __init__(self, title, labels, buttons):
-        self._title, self._labels, self._buttons = title, labels, buttons
+    def __init__(self, title, labels, buttons, children=()):
+        self._title, self._labels, self._buttons, self._children = title, labels, buttons, list(children)
 
     def windowTitle(self):
         return self._title
 
     def findChildren(self, cls):
+        if cls is _QObject:  # every child object: QObject.findChildren() searches the whole tree
+            return [*self._labels, *self._buttons, *self._children]
         return list(self._labels if cls is _Label else self._buttons)
 
 
@@ -85,7 +104,7 @@ def _fake_qt(singleshot_calls):
             for fn in self._fns:
                 fn()
 
-    core.QTimer = QTimer
+    core.QTimer, core.QObject = QTimer, _QObject
     pkg = types.ModuleType("PySide2")
     pkg.QtWidgets, pkg.QtCore = widgets, core
     return {"PySide2": pkg, "PySide2.QtWidgets": widgets, "PySide2.QtCore": core}
@@ -134,7 +153,8 @@ class DialogTest(BridgeTestCase):
         self.dialog = self.layer_dialog
         self.assertEqual(self.srv._describe_modal(), {
             "title": "Character Creator 5", "text": LAYER_QUESTION,
-            "buttons": ["Replace", "Material Only", "Cancel"], "text_read": True, "progress": False})
+            "buttons": ["Replace", "Material Only", "Cancel"], "text_read": True, "progress": False,
+            "buttons_unreadable": False})
 
     def test_plain_strips_rich_text(self):
         self.assertEqual(self.srv._plain("<p>Save <b>Kevin</b>?</p><p>Tom &amp; Jerry</p>"), "Save Kevin?\nTom & Jerry")
@@ -173,6 +193,8 @@ class DialogTest(BridgeTestCase):
             time.sleep(0.02)
         self.assertEqual(job["status"], "done")
         self.assertEqual(job["result"], {"success": True, "answer": "Material Only"})
+        # F-98: the job the direct call became keeps the answer given in it.
+        self.assertEqual(job["answers"], [{"button": "Material Only", "title": "Character Creator 5"}])
 
     def test_answer_with_an_unknown_button_lists_the_buttons(self):
         self.dialog = self.layer_dialog
@@ -446,7 +468,8 @@ class DialogTest(BridgeTestCase):
     def test_get_dialog_shows_the_about_box_with_its_serial_redacted(self):
         self.dialog = self._about_box()
         r = self.srv.get_dialog()
-        self.assertEqual(r["dialog"], {"title": "CCSkinGen", "text": self.ABOUT_TEXT, "buttons": [], "progress": False})
+        self.assertEqual(r["dialog"], {"title": "CCSkinGen", "text": self.ABOUT_TEXT, "buttons": [], "text_read": True,
+                                       "progress": False})
         self.assertNotIn(self.SERIAL, repr(r))
 
     def test_the_queue_guard_names_the_about_box_and_never_its_text(self):
@@ -457,9 +480,10 @@ class DialogTest(BridgeTestCase):
         self.assertEqual(body["error"], 'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character '
                                         "Creator 5 (no MCP tool can close it), then try again.")
 
-    def test_a_command_that_opens_the_about_box_reports_it_redacted(self):
+    def test_a_command_waiting_in_the_about_box_is_told_to_close_it_with_its_serial_redacted(self):
         # The dialog lane still reports a command's own window with no buttons (_is_question is unchanged); its
-        # text is redacted in the 409 reply and in job_status.
+        # text is redacted in the 409 reply and in job_status. Review #7 / #19: answer_cc5_dialog has nothing to click
+        # there, so the caller is told to close it, as the queue guard words it (F-84: bake_skin_textures opened it).
         about = self._about_box()
 
         def opens_about(p):
@@ -473,17 +497,224 @@ class DialogTest(BridgeTestCase):
         self.srv.ACTION_MAP["opens_about"] = opens_about
         status, body = self.srv._execute_sync("opens_about", {}, timeout=30)
         self.assertEqual(status, 409)
-        self.assertEqual(body["dialog"], {"title": "CCSkinGen", "text": self.ABOUT_TEXT, "buttons": []})
-        self.assertNotIn(self.SERIAL, body["error"])
-        job = self.srv._job_status(body["job_id"])[1]["result"]
+        job_id = body["job_id"]
+        self.assertEqual(body["dialog"], {"title": "CCSkinGen", "text": self.ABOUT_TEXT, "buttons": [], "text_read": True})
+        closing = (f'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character Creator 5 (no MCP tool '
+                   f'can close it). The command is still running as job {job_id}: read its result with '
+                   f'job_status("{job_id}") once it is closed.')
+        self.assertEqual(body["error"], closing)
+        job = self.srv._job_status(job_id)[1]["result"]
         self.assertEqual(job["dialog"]["text"], self.ABOUT_TEXT)
-        self.assertNotIn(self.SERIAL, job["dialog_message"])
+        self.assertEqual(job["dialog_message"], closing)
+        self.assertNotIn(self.SERIAL, repr(body) + repr(job))
         self.dialog = None  # closed in CC5: the command finishes
-        end = time.monotonic() + 5
-        while time.monotonic() < end and job["status"] != "done":
-            job = self.srv._job_status(body["job_id"])[1]["result"]
+        self.assertEqual(self._job_when(job_id, lambda j: j["status"] == "done")["status"], "done")
+
+    def _job_when(self, job_id, ready, seconds=5.0):
+        """The job's status once `ready(job)` holds, or after `seconds`."""
+        end = time.monotonic() + seconds
+        job = self.srv._job_status(job_id)[1]["result"]
+        while not ready(job) and time.monotonic() < end:
             time.sleep(0.02)
+            job = self.srv._job_status(job_id)[1]["result"]
+        return job
+
+    def _wait_in(self, window):
+        """A command that opens `window` and waits in it, as LoadFile waits in CC5's question, until it is closed."""
+        self.dialog = window
+        end = time.monotonic() + 10
+        while self.dialog is not None and time.monotonic() < end:
+            self.srv.process_dialog_lane()  # inside the dialog's nested loop only the dialog timer fires
+            time.sleep(0.01)
+        return {"success": True}
+
+    def _job_waiting_in(self, window):
+        """Start a job whose command opens `window` and waits in it; its id, once job_status reports the window."""
+        self.srv.ACTION_MAP["opens"] = lambda p: self._wait_in(window)
+        job_id = self.srv._start_job("opens", {})[1]["result"]["job_id"]
+        self.assertIn("dialog", self._job_when(job_id, lambda j: "dialog" in j))
+        return job_id
+
+    def _close_and_finish(self, job_id):
+        self.dialog = None  # closed in CC5: the command finishes
+        self.assertEqual(self._job_when(job_id, lambda j: j["status"] == "done")["status"], "done")
+
+    def test_a_job_queued_behind_a_window_to_close_runs_once_it_is_closed(self):
+        self.srv.ACTION_MAP["later"] = lambda p: {"success": True}
+        first = self._job_waiting_in(self._about_box())
+        second = self.srv._start_job("later", {})[1]["result"]["job_id"]
+        job = self._job_when(second, lambda j: "dialog_message" in j)
+        self.assertEqual((job["status"], job.get("blocked_by")), ("queued", first))
+        self.assertEqual(job["dialog_message"], (
+            f'Job {second} has not started: it is queued behind job {first}. CC5 has a window open with no buttons: '
+            f'"CCSkinGen" - close it in Character Creator 5 (no MCP tool can close it). The command is still running as '
+            f'job {first}: read its result with job_status("{first}") once it is closed. Job {second} runs once that '
+            f'window is closed; read its result with job_status("{second}").'))
+        self._close_and_finish(first)
+        self.assertEqual(self._job_when(second, lambda j: j["status"] == "done")["result"], {"success": True})
+
+    def test_a_command_waiting_in_an_untitled_window_names_the_welcome_page(self):
+        # F-94: CC5's Welcome / What's New page is untitled and has no text; worded as the queue guard words it.
+        job_id = self._job_waiting_in(_CC5Dialog("", [], []))
+        self.assertEqual(self.srv._job_status(job_id)[1]["result"]["dialog_message"], (
+            "CC5's Welcome / What's New page (or another untitled CC5 window) is open - close it in Character Creator 5 "
+            f"(tick \"Don't show this again\" so it stays closed). The command is still running as job {job_id}: read "
+            f'its result with job_status("{job_id}") once it is closed.'))
+        self._close_and_finish(job_id)
+
+    def test_a_command_waiting_in_a_dialog_whose_text_could_not_be_read_goes_to_the_user(self):
+        # answer_dialog refuses such a dialog (it may be the crash-recovery prompt), so the caller is not told to use it.
+        class Unreadable(_CC5Dialog):
+            def findChildren(self, cls):
+                if cls is _Label:
+                    raise RuntimeError("wrapped C/C++ object has been deleted")
+                return super().findChildren(cls)
+
+        job_id = self._job_waiting_in(Unreadable("Character Creator 5", [], [_Button("OK")]))
+        job = self.srv._job_status(job_id)[1]["result"]
+        self.assertFalse(job["dialog"]["text_read"])
+        self.assertEqual(job["dialog_message"], (
+            f'CC5 is waiting for an answer to "Character Creator 5". Buttons: OK. The command is still running as job '
+            f'{job_id}: its text could not be read, so ask the user to answer it in CC5, then check its result with '
+            f'job_status("{job_id}").'))
+        self._close_and_finish(job_id)
+
+    def test_an_untitled_window_whose_text_could_not_be_read_is_never_named_the_welcome_page(self):
+        # Only a window whose text was read and is empty is CC5's Welcome page. One whose labels could not be read
+        # may be any question, the crash-recovery prompt too: the queue guard sends it to the user, as the waiting text
+        # does (before, the guard named it the Welcome page and said to close it).
+        class Unreadable(_CC5Dialog):
+            def findChildren(self, cls):
+                if cls is _Label:
+                    raise RuntimeError("wrapped C/C++ object has been deleted")
+                return super().findChildren(cls)
+
+        window = Unreadable("", [], [])
+        self.dialog = window
+        self.assertFalse(self.srv._describe_modal()["text_read"])
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        status, body = self.srv._execute_sync("ping", {}, timeout=5)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], 'CC5 is waiting for an answer to "a dialog" - its text could not be read, so '
+                                        "ask the user to answer it in CC5, then try again.")
+        self.dialog = None  # closed: a window already open when a command is queued holds it (the guard above)
+        job_id = self._job_waiting_in(window)
+        self.assertEqual(self.srv._job_status(job_id)[1]["result"]["dialog_message"], (
+            f'CC5 is waiting for an answer to "a dialog". Buttons: none found. The command is still running as job '
+            f'{job_id}: its text could not be read, so ask the user to answer it in CC5, then check its result with '
+            f'job_status("{job_id}").'))
+        self._close_and_finish(job_id)
+
+    def test_a_command_waiting_in_the_recovery_prompt_is_never_told_to_close_it(self):
+        # Closing it decides about the user's unsaved work: it stays a question even when its buttons could not be read.
+        prompt = _CC5Dialog("Character Creator 5", [_Label("Unsaved project data found. Would you like to update your "
+                                                           "project with the unsaved changes?")], [])
+        with mock.patch.object(self.srv, "RECOVERY_ANSWER", "ask"):
+            job_id = self._job_waiting_in(prompt)
+            message = self.srv._job_status(job_id)[1]["result"]["dialog_message"]
+        self.assertEqual(message, (
+            'CC5 is waiting for an answer to "Unsaved project data found. Would you like to update your project with the '
+            'unsaved changes?" (the "Character Creator 5" window). Buttons: none found. The command is still running as '
+            f'job {job_id}: the user must answer it in CC5, then check its result with job_status("{job_id}").'))
+        self._close_and_finish(job_id)
+
+    # F-99 (live CC5 5.13): CC5's Export FBX dialog (IC::CFbxExportDialog) is one QQuickWidget: its buttons are QML items,
+    # and its only button widget is the title bar's unlabelled close button.
+    def _export_fbx_dialog(self, qt_class="QQuickWidget"):
+        return _CC5Dialog("Export FBX", [], [_Button("")], children=[_QmlView(qt_class)])
+
+    def test_a_qml_dialog_is_one_whose_buttons_cannot_be_read(self):
+        for qt_class in ("QQuickWidget", "QWindowContainer"):
+            with self.subTest(qt_class=qt_class):
+                self.dialog = self._export_fbx_dialog(qt_class)
+                self.assertEqual(self.srv._describe_modal(), {
+                    "title": "Export FBX", "text": "", "buttons": [], "text_read": True, "progress": False,
+                    "buttons_unreadable": True})
+        # A window with a button the bridge can click, or with no QML part (SkinGen's About box), is not.
+        self.dialog = _CC5Dialog("Export FBX", [], [_Button("Export")], children=[_QmlView()])
+        self.assertFalse(self.srv._describe_modal()["buttons_unreadable"])
+        self.dialog = self._about_box()
+        self.assertFalse(self.srv._describe_modal()["buttons_unreadable"])
+
+    def test_get_dialog_says_whether_the_buttons_and_the_text_could_be_read(self):
+        self.dialog = self._export_fbx_dialog()
+        self.assertEqual(self.srv.get_dialog()["dialog"], {"title": "Export FBX", "text": "", "buttons": [],
+                                                           "text_read": True, "buttons_unreadable": True,
+                                                           "progress": False})
+        self.dialog = self.layer_dialog
+        view = self.srv.get_dialog()["dialog"]
+        self.assertNotIn("buttons_unreadable", view)  # only when set
+        self.assertTrue(view["text_read"])
+
+        # Review #8: the tools word a dialog whose text could not be read as the queue guard does.
+        class Unreadable(_CC5Dialog):
+            def findChildren(self, cls):
+                if cls is _Label:
+                    raise RuntimeError("wrapped C/C++ object has been deleted")
+                return super().findChildren(cls)
+
+        self.dialog = Unreadable("Character Creator 5", [], [])
+        self.assertEqual(self.srv.get_dialog()["dialog"], {"title": "Character Creator 5", "text": "", "buttons": [],
+                                                           "text_read": False, "progress": False})
+
+    def test_answer_dialog_refuses_a_qml_dialog(self):
+        window = self._export_fbx_dialog()
+        self.dialog = window
+        self.assertEqual(self.srv.answer_dialog("Export"), {"success": False, "error": (
+            'CC5 has a window open whose buttons this bridge cannot read: "Export FBX" - answer or close it in '
+            "Character Creator 5 (no MCP tool can click its buttons).")})
+        self.assertEqual(window._buttons[0].clicked, 0)
+
+    def test_a_command_waiting_in_a_qml_dialog_is_told_to_answer_or_close_it_in_cc5(self):
+        job_id = self._job_waiting_in(self._export_fbx_dialog())
+        job = self.srv._job_status(job_id)[1]["result"]
+        self.assertEqual(job["dialog"], {"title": "Export FBX", "text": "", "buttons": [], "text_read": True,
+                                         "buttons_unreadable": True})
+        self.assertEqual(job["dialog_message"], (
+            'CC5 has a window open whose buttons this bridge cannot read: "Export FBX" - answer or close it in Character '
+            f"Creator 5 (no MCP tool can click its buttons). The command is still running as job {job_id}: read its "
+            f'result with job_status("{job_id}") once it is closed.'))
+        self._close_and_finish(job_id)
+
+    # F-98 (live): after the user's Cancel in Replace / Material Only, the continued recipe reported the step OK although
+    # CC5 applied nothing. The job waiting in the dialog now keeps what was clicked in it.
+
+    def test_an_answer_is_recorded_on_the_job_waiting_in_the_dialog_and_no_other(self):
+        self.srv.ACTION_MAP["later"] = lambda p: {"success": True}
+        waiting = self.srv._start_job("load_eyes", {})[1]["result"]["job_id"]
+        other = self.srv._start_job("later", {})[1]["result"]["job_id"]
+        self._job_when(waiting, lambda j: "dialog" in j)
+        status, body = self.srv._execute_sync("answer_dialog", {"button": "replace"}, timeout=5)
+        self.assertEqual((status, body["result"]["clicked"]), (200, "Replace"))
+        job = self._job_when(waiting, lambda j: j["status"] == "done")
+        self.assertEqual(job["result"], {"success": True, "answer": "&Replace"})  # the button's raw Qt label
+        self.assertEqual(job["answers"], [{"button": "Replace", "title": "Character Creator 5"}])  # its plain label
+        self.assertNotIn("answers", self._job_when(other, lambda j: j["status"] == "done"))
+        _, polled = self.post("/jobs/status", {"job_id": waiting})  # what the MCP server reads
+        self.assertEqual(polled["result"]["answers"], [{"button": "Replace", "title": "Character Creator 5"}])
+
+    def test_an_answer_with_no_command_waiting_is_recorded_on_no_job(self):
+        self.srv.ACTION_MAP["earlier"] = lambda p: {"success": True}
+        job_id = self.srv._start_job("earlier", {})[1]["result"]["job_id"]
+        self._job_when(job_id, lambda j: j["status"] == "done")
+        self.dialog = self.layer_dialog  # a dialog no command waits in (the user's own)
+        self.assertTrue(self.srv.answer_dialog("Replace")["success"])
+        self.assertNotIn("answers", self.srv._job_status(job_id)[1]["result"])
+
+    def test_the_recovery_prompt_answered_by_the_lane_is_recorded_on_no_job(self):
+        def close(button):
+            self.dialog = None
+
+        prompt = _CC5Dialog("Character Creator 5", [_Label("Unsaved project data found. Would you like to update your "
+                                                           "project with the unsaved changes?")],
+                            [_Button("OK", close), _Button("Cancel", close)])
+        self.srv.ACTION_MAP["opens_prompt"] = lambda p: self._wait_in(prompt)
+        with mock.patch.object(self.srv, "RECOVERY_ANSWER", "cancel"):
+            job_id = self.srv._start_job("opens_prompt", {})[1]["result"]["job_id"]
+            job = self._job_when(job_id, lambda j: j["status"] == "done")
         self.assertEqual(job["status"], "done")
+        self.assertEqual([b.clicked for b in prompt._buttons], [0, 1])  # the lane answered Cancel (F-52)
+        self.assertNotIn("answers", job)
 
     # P-4 / DT-4: a form shows the label and the serial in two labels, and a QMessageBox can end its text with the
     # label and hold the serial in its informative text. Made-up keys only.
@@ -609,6 +840,39 @@ class MainTimersTest(unittest.TestCase):
             with mock.patch.object(main.bridge_server, "stop_server"):
                 main.uninitialize_plugin()
             self.assertIsNone(main._dialog_timer)
+        sys.modules.pop("main", None)
+
+    def test_the_image_watch_starts_after_the_timers_and_stops_before_the_server(self):
+        # F-104: the watch behind the queue's capture gate (server.start_image_watch / stop_image_watch).
+        calls = []
+
+        class QTimer:
+            def __init__(self):
+                self.timeout = types.SimpleNamespace(connect=lambda fn: setattr(self, "fn", fn))
+
+            def start(self, ms):
+                calls.append(f"timer {self.fn.__name__}")
+
+            def stop(self):
+                pass
+
+        core = types.ModuleType("PySide2.QtCore")
+        core.QTimer = QTimer
+        pkg = types.ModuleType("PySide2")
+        pkg.QtCore = core
+        with mock.patch.dict(sys.modules, {"PySide2": pkg, "PySide2.QtCore": core}):
+            sys.modules.pop("main", None)
+            main = _support.fresh_import("main")
+            srv = main.bridge_server
+            with mock.patch.object(srv, "start_server", return_value=mock.Mock()), \
+                    mock.patch.object(srv, "start_image_watch", side_effect=lambda: calls.append("watch") or True):
+                main.initialize_plugin()
+            self.assertEqual(calls, ["timer _on_timer", "timer _on_dialog_timer", "timer _on_health_timer", "watch"])
+            calls.clear()
+            with mock.patch.object(srv, "stop_image_watch", side_effect=lambda: calls.append("stop watch")), \
+                    mock.patch.object(srv, "stop_server", side_effect=lambda: calls.append("stop server")):
+                main.uninitialize_plugin()
+            self.assertEqual(calls, ["stop watch", "stop server"])
         sys.modules.pop("main", None)
 
 

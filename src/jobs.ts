@@ -6,15 +6,21 @@
 import { BridgeHttpError, type CC5Bridge } from "./cc5-bridge.js";
 import type { CC5Dialog, JobStatus } from "./types.js";
 import { bridgeErrorResult, errorResult, type ToolResult } from "./util.js";
+import { formatDialog, isAnsweredOnlyInCC5 } from "./tools/dialog.js";
+import { SKINGEN_QUESTION_RULE } from "./prompts/content-rules.js";
+
+/** The buttons answer_cc5_dialog clicked while a job waited in a CC5 dialog, as its status lists them (F-98). */
+export type JobAnswers = NonNullable<JobStatus["answers"]>;
 
 /**
- * A finished job (with the button the wait clicked, if it answered a CC5 question), or one that has not finished:
- * still running when the wait ended, or waiting on a CC5 question (`dialog` is the ready-to-show text, `question`
- * the dialog itself, `blocked_by` the job whose question it is queued behind). `answered` on a job that has not
- * finished: the button the wait clicked in an earlier question of this job (RB-3).
+ * A finished job (with the button the wait clicked, if it answered a CC5 question, and `answers`, every button
+ * answer_cc5_dialog clicked while it waited: F-98, a Cancel means CC5 did not do what was asked), or one that has not
+ * finished: still running when the wait ended, or waiting on a CC5 question (`dialog` is the ready-to-show text,
+ * `question` the dialog itself, `blocked_by` the job whose question it is queued behind). `answered` on a job that
+ * has not finished: the button the wait clicked in an earlier question of this job (RB-3).
  */
 export type JobOutcome =
-  | { done: true; failed: boolean; result: unknown; answered?: string }
+  | { done: true; failed: boolean; result: unknown; answered?: string; answers?: JobAnswers }
   | { done: false; job_id: string; dialog?: string; question?: CC5Dialog; blocked_by?: string; answered?: string };
 
 /** What the wait does about a CC5 question the job reports: it clicked a button, it waits on, or it stops. */
@@ -76,6 +82,50 @@ export async function startJob(
   return (await bridge.startJob(action, params)).job_id;
 }
 
+/** What a plugin older than batch F (server.py _waiting_dialog_error) tells the agent to do with every window. */
+const ANSWER_WITH_TOOL = "answer it with answer_cc5_dialog";
+
+/**
+ * The text for job `jobId` waiting in a CC5 window, or queued behind one (`job.blocked_by`): the plugin's
+ * dialog_message, except where it says to answer with answer_cc5_dialog a window that tool cannot answer (F-94: no
+ * buttons, such as SkinGen's About box; F-99: buttons the bridge cannot read; review #8: text it could not read).
+ * That window is worded as get_cc5_dialog words it, to answer or close in CC5 (review #3, #7, #19). A plugin from
+ * batch F on words such a window itself, and its text is kept.
+ */
+export function jobDialogMessage(
+  jobId: string,
+  job: Pick<JobStatus, "dialog" | "dialog_message" | "blocked_by">,
+): string | undefined {
+  const { dialog, dialog_message: message, blocked_by: blockedBy } = job;
+  if (typeof message !== "string" || !message.includes(ANSWER_WITH_TOOL) || !dialog || !isAnsweredOnlyInCC5(dialog)) {
+    return message;
+  }
+  if (!blockedBy) return formatDialog(dialog, jobId);
+  return `Job ${jobId} has not started: it is queued behind job ${blockedBy}, which waits in this window:\n` +
+    `${formatDialog(dialog)}\nJob ${jobId} runs once that window has closed; read its result with ` +
+    `job_status("${jobId}").`;
+}
+
+/** F-91: the words of the question CC5 asks before a content load ends a SkinGen session (SKINGEN_QUESTION). */
+const SKINGEN_SESSION_WORDS = "deactivate the current skingen session";
+
+/**
+ * F-91: the text of a reply about a job waiting in a CC5 window (pendingResult: load_asset and every job tool;
+ * job_status), with SKINGEN_QUESTION_RULE on its own line when that window is CC5's question before a content load
+ * ends a SkinGen session: its words are in the dialog's title or text, or in the waiting text (a job status without
+ * the dialog), with case and line breaks ignored. get_cc5_dialog adds the same line (formatDialog). A window the user
+ * answers or closes in CC5 gets none (isAnsweredOnlyInCC5: no MCP tool can click its OK), and a text that has the rule
+ * keeps it once. A recipe's or batch's WAIT line (runJobStep) is left as it was.
+ */
+export function withSkinGenRule(text: string, question?: CC5Dialog | null): string {
+  // The job's record is JSON from the plugin: a text that is not one is shown as it came, never an exception.
+  if (typeof text !== "string" || text.includes(SKINGEN_QUESTION_RULE)) return text;
+  const asked = [question?.title, question?.text, text].some((t) => typeof t === "string" &&
+    t.replace(/\s+/g, " ").toLowerCase().includes(SKINGEN_SESSION_WORDS));
+  if (!asked || (question && isAnsweredOnlyInCC5(question))) return text;
+  return `${text}\n${SKINGEN_QUESTION_RULE}`;
+}
+
 /**
  * The wait's stop at the question `job` reports: its text with the notes (why the wait stopped there, and the button
  * the run clicked in this job before, unless a note names that button already), the question, the job it is queued
@@ -86,10 +136,11 @@ function stopAt(jobId: string, job: JobStatus, notes: string[], answered?: strin
   if (answered !== undefined && !all.some((n) => n.includes(`'${answered}'`))) {
     all.push(`this run already answered 'Replace / Material Only' in this job with '${answered}'`);
   }
+  const message = jobDialogMessage(jobId, job);
   return {
     done: false,
     job_id: jobId,
-    dialog: all.length ? `${job.dialog_message} (${all.join("; ")})` : job.dialog_message,
+    dialog: all.length ? `${message} (${all.join("; ")})` : message,
     ...(job.dialog ? { question: job.dialog } : {}),
     ...(job.blocked_by ? { blocked_by: job.blocked_by } : {}),
     ...(answered !== undefined ? { answered } : {}),
@@ -126,7 +177,11 @@ export async function awaitJob(
       console.error(`[CC5 Bridge] polling job ${jobId} failed; polling again:`, err);
     }
     if (job && (job.status === "done" || job.status === "failed")) {
-      return { done: true, failed: job.status === "failed", result: job.result, ...(answered !== undefined ? { answered } : {}) };
+      return {
+        done: true, failed: job.status === "failed", result: job.result,
+        ...(answered !== undefined ? { answered } : {}),
+        ...(Array.isArray(job.answers) && job.answers.length ? { answers: job.answers } : {}),
+      };
     }
     if (job) asking = job.dialog_message ? job : undefined;
     if (job?.dialog_message) {
@@ -161,10 +216,12 @@ export async function runJob(
 
 /**
  * What a job tool says when its job has not finished: CC5's question when the job waits on a CC5 dialog (runJob
- * returns it as soon as the job reports one), else the usual "still running" note plus any extra hint.
+ * returns it as soon as the job reports one; a window the user answers or closes in CC5 is worded by
+ * jobDialogMessage; CC5's question before a content load ends a SkinGen session gets its rule, F-91:
+ * withSkinGenRule), else the usual "still running" note plus any extra hint.
  */
-export function pendingResult(out: { job_id: string; dialog?: string }, extra = ""): ToolResult {
-  if (out.dialog) return errorResult(out.dialog);
+export function pendingResult(out: { job_id: string; dialog?: string; question?: CC5Dialog }, extra = ""): ToolResult {
+  if (out.dialog) return errorResult(withSkinGenRule(out.dialog, out.question));
   return { content: [{ type: "text" as const, text: `${formatPending(out.job_id)}${extra ? ` ${extra}` : ""}` }] };
 }
 
@@ -174,15 +231,18 @@ export function formatPending(jobId: string): string {
 
 export type JobResult = { success?: boolean; error?: string };
 
-/** A step's job result: the job's own fields (path, target, changes, notes, ...) plus how the step ended. */
-export type StepOutcome = JobResult & { stopped?: StepStop; answered?: string; [key: string]: unknown };
+/**
+ * A step's job result: the job's own fields (path, target, changes, notes, ...) plus how the step ended, and on a
+ * finished job the buttons answer_cc5_dialog clicked while it waited (`answers`, F-98).
+ */
+export type StepOutcome = JobResult & { stopped?: StepStop; answered?: string; answers?: JobAnswers; [key: string]: unknown };
 
 /**
  * One step of a multi-step run (recipe, batch) as a job: a job that failed, or is still running when the wait
  * ends, becomes {success: false, error}. A slow load then cannot hit the bridge's 30 s limit for direct calls,
  * which answers "still running" while CC5 goes on to finish the step. A job that stopped on a CC5 question (also
  * one CC5 still reported when the wait ran out) carries `stopped` (its id, the question, the job it is queued behind
- * and the button the run clicked before), so the run can stop there.
+ * and the button the run clicked before), so the run can stop there. A finished job keeps its status's `answers`.
  */
 export async function runJobStep(
   bridge: Pick<CC5Bridge, "startJob" | "getJob">,
@@ -212,7 +272,11 @@ export async function runJobStep(
   }
   const raw = out.result;
   const result = (typeof raw === "object" && raw !== null ? raw : {}) as StepOutcome;
-  const finished: StepOutcome = out.answered !== undefined ? { ...result, answered: out.answered } : { ...result };
+  const finished: StepOutcome = {
+    ...result,
+    ...(out.answered !== undefined ? { answered: out.answered } : {}),
+    ...(out.answers ? { answers: out.answers } : {}),
+  };
   return out.failed ? { ...finished, success: false, error: result.error ?? "failed" } : finished;
 }
 

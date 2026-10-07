@@ -171,9 +171,7 @@ ACTION_MAP: dict[str, Any] = {
     "create_default_avatar": lambda p: cc5_api.create_default_avatar(),
     "delete_avatar":         lambda p: cc5_api.delete_avatar(p.get("name", "")),
     "load_asset":            lambda p: cc5_api.load_asset(p["file_path"], p.get("target")),
-    # F-86: a failed export that may have cleared CC5's undo history says so in its error text: the HTTP 400 reply
-    # is read for its `error` only (cc5_api.with_undo_history_sentence).
-    "export_fbx":            lambda p: cc5_api.with_undo_history_sentence(cc5_api.export_fbx(
+    "export_fbx":            lambda p: cc5_api.export_fbx(
         p["output_path"],
         int(p.get("options", 0)),
         target_tool=p.get("target_tool", ""),
@@ -189,7 +187,7 @@ ACTION_MAP: dict[str, Any] = {
         motion_range=p.get("motion_range"),
         convert_image_format=bool(p.get("convert_image_format", False)),
         texture_size=(int(p["texture_size"]) if p.get("texture_size") is not None else None),
-    )),
+    ),
     "capture_viewport":      lambda p: cc5_api.capture_viewport(p.get("output_path", ""), int(p.get("width", 1280)), int(p.get("height", 720))),
     "set_subdivision_level": lambda p: cc5_api.set_subdivision_level(int(p["level"])),
     "undo":                  lambda p: cc5_api.undo(),
@@ -471,7 +469,8 @@ def _dialog_text(parts: list[Any]) -> str:
 
 
 def _describe_modal() -> dict[str, Any] | None:
-    """{title, text, buttons} of the modal dialog CC5 is showing, or None. Main thread only.
+    """{title, text, buttons, text_read, progress, buttons_unreadable} of the modal dialog CC5 is showing, or None.
+    Main thread only.
 
     CC5's own dialogs (e.g. "The target object layer already exists ... Replace / Material Only / Cancel")
     are not QMessageBoxes: their question sits in QLabels, so every visible label is read. Licence serials in the
@@ -507,7 +506,20 @@ def _describe_modal() -> dict[str, Any] | None:
         progress = isinstance(dialog, QProgressDialog)
     except Exception:
         pass
-    return {"title": title, "text": text, "buttons": buttons, "text_read": text_read, "progress": progress}
+    buttons_unreadable = False
+    if not buttons:
+        # F-99 (live CC5 5.13): CC5's Export FBX dialog (IC::CFbxExportDialog) is one QQuickWidget whose buttons are
+        # QML items; its only button widget is the title bar's unlabelled close button. So it is no window with no
+        # buttons: the user answers or closes it in CC5, and no MCP tool can click it. QObject.inherits() goes by Qt
+        # class name, so no QtQuick import is needed.
+        try:
+            from PySide2.QtCore import QObject  # type: ignore
+            buttons_unreadable = any(child.inherits("QQuickWidget") or child.inherits("QWindowContainer")
+                                     for child in dialog.findChildren(QObject))
+        except Exception:
+            pass
+    return {"title": title, "text": text, "buttons": buttons, "text_read": text_read, "progress": progress,
+            "buttons_unreadable": buttons_unreadable}
 
 
 def _is_recovery_prompt(described: dict[str, Any]) -> bool:
@@ -522,6 +534,54 @@ def _is_question(described: dict[str, Any]) -> bool:
     return [b.lower() for b in described.get("buttons") or []] != ["cancel"]
 
 
+def _is_window_to_close(described: dict[str, Any]) -> bool:
+    """A window no MCP tool can answer: no button the bridge can click (none at all, F-85, or QML ones, F-99), so the
+    user closes (or answers) it in CC5.
+
+    Not a progress window, nor one whose text could not be read, nor the crash-recovery prompt: that one stays a
+    question even when its buttons could not be read, since closing it decides about the user's unsaved work.
+    """
+    if described.get("progress") or not described.get("text_read") or _is_recovery_prompt(described):
+        return False
+    return bool(described.get("buttons_unreadable")) or not described.get("buttons")
+
+
+def _window_to_close_text(title: str, text: str, buttons_unreadable: bool = False) -> str:
+    """How such a window is named, without the caller's next step (the queue guard's "then try again", the waiting
+    error's job): CC5's untitled Welcome / What's New page (F-94), a window whose buttons are QML items (F-99), or a
+    window with no buttons (F-85).
+
+    Named by its title, else its first line, never by its whole text: SkinGen's About box holds the licence serial.
+    """
+    first_line = next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
+    name = title or first_line
+    if not name:
+        # Live CC5 5.13 can start with its full-screen Welcome / What's New page, an untitled modal window
+        # (Qt class CRLWhatsNewWebEngineWidget, a name that means nothing to the user).
+        return ("CC5's Welcome / What's New page (or another untitled CC5 window) is open - close it in "
+                "Character Creator 5 (tick \"Don't show this again\" so it stays closed)")
+    if len(name) > 120:
+        name = name[:117] + "..."
+    if buttons_unreadable:
+        return (f'CC5 has a window open whose buttons this bridge cannot read: "{name}" - answer or close it in '
+                "Character Creator 5 (no MCP tool can click its buttons)")
+    return (f'CC5 has a window open with no buttons: "{name}" - close it in Character Creator 5 (no MCP tool can '
+            "close it)")
+
+
+def _dialog_view(described: dict[str, Any]) -> dict[str, Any]:
+    """What the MCP server is told about a dialog (get_dialog, a 409, job_status).
+
+    Its title, text and buttons; text_read, False when its labels could not be read (review #8: the tools then word it
+    as the queue guard does); and buttons_unreadable, only when set (F-99).
+    """
+    view = {k: described[k] for k in ("title", "text", "buttons")}
+    view["text_read"] = bool(described.get("text_read"))
+    if described.get("buttons_unreadable"):
+        view["buttons_unreadable"] = True
+    return view
+
+
 def _active_modal_dialog() -> tuple[str, str] | None:
     """(title, text) of the modal dialog CC5 is showing, or None."""
     described = _describe_modal()
@@ -529,11 +589,13 @@ def _active_modal_dialog() -> tuple[str, str] | None:
 
 
 def _modal_dialog_error(title: str, text: str, described: dict[str, Any] | None = None) -> str:
-    if not title and not text:
-        # Live CC5 5.13 can start with its full-screen Welcome / What's New page, an untitled modal window
-        # (Qt class CRLWhatsNewWebEngineWidget, a name that means nothing to the user).
-        return ("CC5's Welcome / What's New page (or another untitled CC5 window) is open - close it in "
-                "Character Creator 5 (tick \"Don't show this again\" so it stays closed), then try again.")
+    if described is None and not title and not text:
+        # CC5's untitled Welcome / What's New page (F-94), for a caller that has no description. With one, that page
+        # is named below as a window to close: only an untitled, textless window with no button the bridge can click
+        # whose text was read, as formatDialog (src/tools/dialog.ts) and _waiting_dialog_error name it. An untitled
+        # window with buttons stays a question, a progress window stays busy, and one whose text could not be read
+        # (it may be the crash-recovery prompt) stays a question for the user.
+        return f"{_window_to_close_text('', '')}, then try again."
     question = " ".join((text or title or "a dialog").split())
     if len(question) > 300:
         question = question[:297] + "..."
@@ -542,20 +604,15 @@ def _modal_dialog_error(title: str, text: str, described: dict[str, Any] | None 
         # A command's own progress window (an export's): not a question, and its Cancel aborts that command (F-56).
         return (f'CC5 is busy with "{title or question}" (the progress window of a command it is running) - try '
                 "again when it closes. Do not cancel it unless the user asks; they cancel it in CC5.")
+    if described is not None and _is_window_to_close(described):
+        # F-85: a window with no buttons (live: SkinGen's About box, whose labels hold the licence serial) is no
+        # question, and answer_cc5_dialog has nothing to click. F-99: nor can it click a QML dialog's buttons.
+        unreadable = bool(described.get("buttons_unreadable"))
+        return f"{_window_to_close_text(title, text, unreadable)}, then try again."
     if _is_recovery_prompt({"title": title, "text": text}):
         action = "answer it in CC5 (OK restores your last unsaved work, Cancel discards it)"
     elif described is not None and not described.get("text_read"):
         action = "its text could not be read, so ask the user to answer it in CC5"
-    elif described is not None and not described.get("buttons"):
-        # F-85: a window with no buttons (live: SkinGen's About box, whose labels hold the licence serial) is no
-        # question, and answer_cc5_dialog has nothing to click. Named by its title, else its first line, never by
-        # its whole text.
-        first_line = next((line.strip() for line in (text or "").splitlines() if line.strip()), "")
-        name = title or first_line
-        if len(name) > 120:
-            name = name[:117] + "..."
-        return (f'CC5 has a window open with no buttons: "{name}" - close it in Character Creator 5 (no MCP tool '
-                "can close it), then try again.")
     else:
         # The guard runs only while no MCP command is running, so no MCP command is waiting on this dialog: it is
         # the user's own or CC5's, and not a confirmation of something the user asked the agent to do.
@@ -568,6 +625,10 @@ def _blocked_by_modal_dialog() -> tuple[bool, str | None]:
 
     (True, None): leave it queued, the next timer tick checks again. (False, error): run nothing, fail it.
     (False, None): run it.
+
+    The wait counts from the first tick that saw the dialog (the head's modal_since). With no dialog open the stamp is
+    dropped (batch F review #0): a capture or an OBJ replace the F-104 gate holds stays first in the queue after the
+    dialog closed, and a later dialog gets its own MODAL_WAIT_SECONDS instead of failing it at once.
     """
     with command_queue.mutex:
         head = command_queue.queue[0] if command_queue.queue else None
@@ -578,6 +639,7 @@ def _blocked_by_modal_dialog() -> tuple[bool, str | None]:
             return False, None
     described = _describe_modal()
     if described is None:
+        head.pop("modal_since", None)  # only the main thread touches a queued command's dict
         return False, None
     waiting_since = head.setdefault("modal_since", time.monotonic())
     if time.monotonic() - waiting_since < MODAL_WAIT_SECONDS:
@@ -650,6 +712,19 @@ def _drain_dialog_queue() -> None:
 
 
 def _waiting_dialog_error(dialog: dict[str, Any], job_id: str) -> str:
+    """What the caller of a command that waits in `dialog` is told: the 409 and a waiting job's dialog_message.
+
+    Every text names the job as job_status("<id>"), which src/build-session.ts jobIdFromWaitingText reads, and starts
+    with a prefix its isBlockedByDialog knows.
+    """
+    if _is_window_to_close(dialog):
+        # Review #7 / #19: a window with no buttons (F-84: bake_skin_textures opened SkinGen's About box) or a QML
+        # dialog (F-99) has nothing answer_cc5_dialog can click. Worded as the queue guard words it, with the job
+        # instead of "then try again".
+        unreadable = bool(dialog.get("buttons_unreadable"))
+        window = _window_to_close_text(dialog.get("title") or "", dialog.get("text") or "", unreadable)
+        return (f'{window}. The command is still running as job {job_id}: read its result with '
+                f'job_status("{job_id}") once it is closed.')
     question = " ".join((dialog.get("text") or dialog.get("title") or "a dialog").split())
     if len(question) > 400:
         question = question[:397] + "..."
@@ -659,6 +734,9 @@ def _waiting_dialog_error(dialog: dict[str, Any], job_id: str) -> str:
         allowed = _RECOVERY_BUTTONS.get(RECOVERY_ANSWER)
         how = (f'answer it with answer_cc5_dialog("{allowed}") (CC5_RECOVERY_ANSWER={RECOVERY_ANSWER})' if allowed
                else "the user must answer it in CC5")
+    elif not dialog.get("text_read"):
+        # answer_dialog refuses a dialog whose text could not be read (it may be the recovery prompt): as the guard.
+        how = "its text could not be read, so ask the user to answer it in CC5"
     else:
         how = "answer it with answer_cc5_dialog (ask the user when it is a real choice)"
     return (f'CC5 is waiting for an answer to "{question}"{where}. Buttons: {buttons}. '
@@ -666,11 +744,13 @@ def _waiting_dialog_error(dialog: dict[str, Any], job_id: str) -> str:
 
 
 def get_dialog(params: dict | None = None) -> dict[str, Any]:
-    """The open CC5 dialog (title, text, buttons) and the command waiting on it, if any."""
+    """The open CC5 dialog (title, text, buttons, text_read, progress; buttons_unreadable when set) and the command
+    waiting on it, if any.
+    """
     described = _describe_modal()
     with _store_lock:
         waiting = _running_id if _running_id in _command_dialogs else None
-    view = {k: described[k] for k in ("title", "text", "buttons")} if described else None
+    view = _dialog_view(described) if described else None
     if view is not None:
         # A command's own progress window (an export's), not a question (live, F-56).
         view["progress"] = not _is_question(described)
@@ -732,6 +812,9 @@ def answer_dialog(button: Any, expect: Any = None) -> dict[str, Any]:
         return {"success": False, "error": f'"{described["title"]}" is the progress window of a command CC5 is '
                                            "running, not a question. It closes by itself when the command ends; "
                                            "cancelling it aborts the command, so only the user should do that, in CC5."}
+    if described.get("buttons_unreadable") and _is_window_to_close(described):
+        # F-99: its buttons are QML items (live: CC5's Export FBX dialog), which the bridge can neither see nor click.
+        return {"success": False, "error": f"{_window_to_close_text(described['title'], described['text'], True)}."}
     if expect is not None:
         seen = " ".join(f"{described['title']} {described['text']}".split()).lower()
         if " ".join(expect.split()).lower() not in seen:
@@ -743,9 +826,15 @@ def answer_dialog(button: Any, expect: Any = None) -> dict[str, Any]:
     if len(matches) != 1:
         found = ", ".join(described["buttons"]) or "none"
         return {"success": False, "error": f'No single button "{button}" in the dialog. Buttons: {found}'}
+    clicked = _plain(matches[0].text()).replace("&", "")
     _click_now(matches[0])
-    view = {k: described[k] for k in ("title", "text", "buttons")}
-    return {"success": True, "clicked": _plain(matches[0].text()).replace("&", ""), "dialog": view}
+    with _store_lock:
+        job = _jobs.get(_running_id) if _running_id is not None else None
+        if job is not None:
+            # F-98: the waiting job keeps what was clicked in it (live: after the user's Cancel in Replace / Material
+            # Only, the recipe reported the step OK although CC5 applied nothing). /jobs/status returns it.
+            job.setdefault("answers", []).append({"button": clicked, "title": described["title"]})
+    return {"success": True, "clicked": clicked, "dialog": _dialog_view(described)}
 
 
 def _auto_answer_recovery() -> None:
@@ -797,6 +886,136 @@ def process_dialog_lane() -> None:
         _note_command_dialog()
 
 
+# --- F-104: a capture or an OBJ replace waits until CC5 has settled after the previous command ---
+#
+# Live CC5 5.13 (2026-10-07): CC5 goes on loading a file's images after LoadFile returns (REventCallback
+# OnImageAsyncLoadStart ... OnImageAsyncLoadAllDone). capture_viewport undoes one step after its render (F-53), and a
+# render made in that window gets no step of its own, so the capture's undo took the load back: with a load job and a
+# capture queued together, Box_001 was gone in 6 of 7 runs. replace_mesh_from_obj started right after load_texture
+# misread the OBJ by 95.44 cm (F-101). A queue that held both until 0.3 s after the previous command ended and until
+# CC5's image load was done kept the box 5 of 5 and the replace exact 2 of 2. No help: one command per timer tick,
+# waiting until Qt's event loop went idle, BeginAction(name, bBlockRecordUndo=True) around RenderImage, and
+# BeginAction/EndAction around it. Two ordinary loads queued together stay separate undo steps, so only these two
+# actions wait.
+SETTLE_ACTIONS = frozenset({"capture_viewport", "replace_mesh_from_obj"})
+SETTLE_SECONDS = 0.3
+# The longest an image load holds them, counted from CC5's last OnImageAsyncLoadStart: an AllDone that never comes must
+# not hold them for good, and a held direct call (capture_viewport) still starts within _execute_sync's 30 s.
+IMAGE_LOAD_WAIT_SECONDS = 20.0
+_last_command_end: float | None = None  # time.monotonic() when the last command the queue ran ended
+# Also read by name by cc5_api.capture_viewport (_images_still_loading, batch F review #2): a capture that runs while it
+# is set leaves its own undo step alone.
+_images_loading = False
+_images_loading_since = 0.0
+# The registered REventCallback and the id RegisterCallback gave it: kept here, so that Python never collects an object
+# CC5 still calls.
+_image_watch: Any = None
+_image_watch_id: Any = None
+
+
+def _note_image_load_start() -> None:
+    """OnImageAsyncLoadStart: CC5 began loading images in the background. CC5 calls it, so it never raises."""
+    global _images_loading, _images_loading_since
+    try:
+        _images_loading_since = time.monotonic()
+        _images_loading = True
+    except Exception:
+        pass
+
+
+def _note_image_load_done() -> None:
+    """OnImageAsyncLoadAllDone: CC5 has loaded every image it was loading. CC5 calls it, so it never raises."""
+    global _images_loading
+    _images_loading = False
+
+
+def start_image_watch() -> bool:
+    """Watch CC5's background image loads for the F-104 gate (initialize_plugin, main thread). True when it is on.
+
+    The REventCallback subclass is built here, not at import: RLPy exists only inside CC5, and the tests' fake RLPy
+    cannot be a base class. A registration that fails prints one line and leaves the watch off; the queue then holds
+    SETTLE_ACTIONS for SETTLE_SECONDS after the previous command only.
+    """
+    global _image_watch, _image_watch_id
+    if _image_watch is not None:
+        return True  # registered already: a second callback would only double every call
+    try:
+        import RLPy  # type: ignore
+
+        class _ImageLoadWatch(RLPy.REventCallback):
+            def __init__(self) -> None:
+                RLPy.REventCallback.__init__(self)
+
+            def OnImageAsyncLoadStart(self) -> None:
+                try:
+                    _note_image_load_start()
+                except Exception:
+                    pass
+
+            def OnImageAsyncLoadAllDone(self) -> None:
+                try:
+                    _note_image_load_done()
+                except Exception:
+                    pass
+
+        watch = _ImageLoadWatch()
+        watch_id = RLPy.REventHandler.RegisterCallback(watch)
+    except Exception as e:
+        reason = " ".join(str(e).split())
+        print(f"[CC5 MCP Bridge] CC5's image loads are not watched (F-104): {reason}")
+        return False
+    _image_watch, _image_watch_id = watch, watch_id
+    return True
+
+
+def stop_image_watch() -> None:
+    """Unregister the image-load watch (uninitialize_plugin, before the server stops). Never raises.
+
+    A watch CC5 would not unregister stays referenced here: CC5 may still call it.
+    """
+    global _image_watch, _image_watch_id, _images_loading
+    if _image_watch is None:
+        return
+    try:
+        import RLPy  # type: ignore
+        RLPy.REventHandler.UnregisterCallback(_image_watch_id)
+    except Exception as e:
+        reason = " ".join(str(e).split())
+        print(f"[CC5 MCP Bridge] Unregistering the image-load watch failed: {reason}")
+        return
+    _image_watch, _image_watch_id, _images_loading = None, None, False
+
+
+def _settled(now: float) -> bool:
+    """Whether a SETTLE_ACTIONS command may run at `now`: SETTLE_SECONDS after the previous command ended, and with no
+    background image load that started less than IMAGE_LOAD_WAIT_SECONDS ago.
+    """
+    if _last_command_end is not None and now - _last_command_end < SETTLE_SECONDS:
+        return False
+    if _images_loading and now - _images_loading_since < IMAGE_LOAD_WAIT_SECONDS:
+        return False
+    return True
+
+
+def _held_until_settled() -> bool:
+    """Whether the next queued command is a SETTLE_ACTIONS command that must wait for CC5 to settle (F-104).
+
+    It stays first in the queue, so the commands behind it keep their order. A cancelled one is not held: it never
+    runs, and it must not keep the commands behind it waiting.
+    """
+    with command_queue.mutex:
+        try:
+            head = command_queue.queue[0]
+        except IndexError:
+            return False
+    if head["action"] not in SETTLE_ACTIONS:
+        return False
+    with _store_lock:
+        if head["id"] in _cancelled:
+            return False
+    return not _settled(time.monotonic())
+
+
 def process_command_queue() -> None:
     """Drain the queue and execute RLPy calls on the main thread. Called by QTimer.
 
@@ -805,8 +1024,11 @@ def process_command_queue() -> None:
     the unsaved scene comes back, and inside an event loop RLPy calls are not made for (Task 18 traced
     CC5 crashes during FBX exports to sessions that most likely had that prompt open). Commands then
     wait in the queue, and fail with the dialog's text after MODAL_WAIT_SECONDS.
+
+    A capture or an OBJ replace (SETTLE_ACTIONS) also waits at the head of the queue until CC5 has settled after the
+    previous command (F-104: _settled); it runs on a later tick, and the commands behind it keep their order.
     """
-    global _processing, _running_id
+    global _processing, _running_id, _last_command_end
     _drain_dialog_queue()
     if _processing:
         # A nested tick: the running command is inside a dialog's event loop (or pumping events).
@@ -817,6 +1039,9 @@ def process_command_queue() -> None:
         while not command_queue.empty():
             wait, modal_error = _blocked_by_modal_dialog()
             if wait:
+                break
+            # A command that fails with the dialog's text runs nothing in CC5, so it is not held.
+            if modal_error is None and _held_until_settled():
                 break
             try:
                 cmd = command_queue.get_nowait()
@@ -848,6 +1073,7 @@ def process_command_queue() -> None:
             except Exception as e:
                 print(f"[CC5 MCP Bridge] Action '{action}' failed: {traceback.format_exc()}")
                 result = {"success": False, "error": str(e)}
+            _last_command_end = time.monotonic()  # F-104: a capture or an OBJ replace waits SETTLE_SECONDS from here
 
             with _store_lock:
                 _running_id = None
@@ -918,7 +1144,7 @@ def _execute_sync(action: str, params: dict, timeout: float = 30.0) -> tuple[int
                 response_events.pop(cmd_id, None)
                 _detached.add(cmd_id)
                 _jobs[cmd_id] = {"job_id": cmd_id, "action": action, "status": "running"}
-                view = {k: dialog[k] for k in ("title", "text", "buttons")}
+                view = _dialog_view(dialog)
                 return 409, {"state": "waiting_for_dialog", "job_id": cmd_id, "dialog": view,
                              "error": _waiting_dialog_error(view, cmd_id)}
         if time.monotonic() >= deadline:
@@ -982,22 +1208,25 @@ def _job_status(job_id: str) -> tuple[int, Any]:
         if not job:
             return 404, {"error": f"Unknown job: {job_id}"}
         out = dict(job)
+        if "answers" in out:
+            out["answers"] = [dict(a) for a in out["answers"]]  # F-98: a copy, as answer_dialog may add one meanwhile
         now = time.monotonic()
         dialog = _command_dialogs.get(job_id)
         if dialog and out.get("status") == "running" and now - dialog["since"] >= DIALOG_REPORT_SECONDS:
             # A job (recipe step, batch load, export) waiting on a CC5 question: say so instead of just "running".
-            view = {k: dialog[k] for k in ("title", "text", "buttons")}
+            view = _dialog_view(dialog)
             out.update({"dialog": view, "dialog_message": _waiting_dialog_error(view, job_id)})
         elif out.get("status") == "queued" and _running_id is not None and _running_id != job_id:
             # Queued behind a command that waits on a CC5 question: it cannot start before that answer, so say so
             # instead of "still running" (C2b review: a recipe's later steps waited 120 s each, then said "still
-            # running"). It is not cancelled: it runs once the question is answered.
+            # running"). It is not cancelled: it runs once the question is answered, or the window closed.
             blocking = _command_dialogs.get(_running_id)
             if blocking and now - blocking["since"] >= DIALOG_REPORT_SECONDS:
-                view = {k: blocking[k] for k in ("title", "text", "buttons")}
+                view = _dialog_view(blocking)
+                after = "once that window is closed" if _is_window_to_close(view) else "after that answer"
                 out.update({"dialog": view, "blocked_by": _running_id, "dialog_message": (
                     f"Job {job_id} has not started: it is queued behind job {_running_id}. "
-                    f"{_waiting_dialog_error(view, _running_id)} Job {job_id} runs after that answer; read its "
+                    f"{_waiting_dialog_error(view, _running_id)} Job {job_id} runs {after}; read its "
                     f'result with job_status("{job_id}").')})
         return 200, {"result": out}
 

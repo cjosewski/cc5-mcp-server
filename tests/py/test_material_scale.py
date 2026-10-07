@@ -36,6 +36,16 @@ class MaterialScaleTest(unittest.TestCase):
         self.api.set_material_opacity("CC_Base_Body", "Std_Skin_Body", 7)
         self.assertEqual(self.mat.AddOpacityKey.call_args.args[3], 100.0)
 
+    def test_opacity_is_recorded_on_the_scale_the_change_check_reads(self):
+        # F-90: CC5 reports a colour it was given only after it renders; opacity, which the F-34 comparison also
+        # reads, is recorded the same way (0-1, 3 dp, as get_material_properties reads it). Glossiness and specular
+        # are never compared, so they are not recorded.
+        self.avatar.GetID.return_value = 7
+        self.api.set_material_opacity("CC_Base_Body", "Std_Skin_Body", 0.3)
+        self.api.set_material_glossiness("CC_Base_Body", "Std_Skin_Body", 0.2)
+        self.api.set_material_specular("CC_Base_Body", "Std_Skin_Body", 0.5)
+        self.assertEqual(self.api._writes_since_render, {("7", "CC_Base_Body", "Std_Skin_Body"): {"opacity": 0.3}})
+
     def test_get_reports_0_to_1(self):
         # A fresh CC4 Kevin skin reads 100 / 20 / 100 from CC5.
         self.mat.GetOpacity.return_value = 100

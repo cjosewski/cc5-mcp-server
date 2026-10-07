@@ -13,6 +13,21 @@ const NOT_SETTINGS =
   "Parameters CC5 returns no value for and the shader's padding entries are listed apart: they are not settings.";
 
 /**
+ * A shader value as both shader tools and set_skin_shader (src/tools/skin.ts) show it: at most 4 decimals, as the
+ * plugin rounds morph and expression weights (F-13, F-62). CC5 keeps float32 (F-102, live: RootColor 0.02 came back as
+ * 0.019999999552965164), and the set reply and the read show the same digits.
+ */
+export function shaderValue(value: unknown): string {
+  return typeof value === "number" && Number.isFinite(value) ? String(Number(value.toFixed(4))) : String(value);
+}
+
+/** A plugin result's notes, in their order (strings only: the result is JSON from another process). */
+function resultNotes(result: unknown): string[] {
+  const notes = typeof result === "object" && result !== null ? (result as { notes?: unknown }).notes : undefined;
+  return Array.isArray(notes) ? notes.filter((n): n is string => typeof n === "string") : [];
+}
+
+/**
  * get_shader_parameters' line naming the entries that are not settings (F-69), or null when there are none or the
  * plugin is older than the lists.
  */
@@ -67,7 +82,10 @@ export function registerMaterialTools(server: McpServer, bridge: CC5Bridge) {
       () => bridge.getDiffuseColor(mesh_name, material_name),
       (color) => {
         if (color.error) return `Failed: ${color.error}`;
-        return `Diffuse color of ${mesh_name}/${material_name}: RGB(${color.r.toFixed(3)}, ${color.g.toFixed(3)}, ${color.b.toFixed(3)})`;
+        // F-90 (review #0): a colour the bridge set since CC5 last rendered comes from the bridge's record, with a note
+        // saying so (cc5_api.DIFFUSE_FROM_RECORD), because CC5's own read may still give the colour from before.
+        return [`Diffuse color of ${mesh_name}/${material_name}: RGB(${color.r.toFixed(3)}, ${color.g.toFixed(3)}, ` +
+          `${color.b.toFixed(3)})`, ...resultNotes(color)].join("\n");
       },
     )
   );
@@ -174,7 +192,7 @@ export function registerMaterialTools(server: McpServer, bridge: CC5Bridge) {
         const leftOut = leftOutLine(result);
         const tail = leftOut ? `\n${leftOut}` : "";
         if (names.length === 0) return `${result.material ?? material_name}: no shader parameters (shader: ${result.shader ?? "unknown"}).${tail}`;
-        const lines = names.map(n => `  - ${n} = [${params[n].map(v => v.toFixed(3)).join(", ")}]`);
+        const lines = names.map(n => `  - ${n} = [${params[n].map(shaderValue).join(", ")}]`);
         return `Shader '${result.shader ?? "?"}' on ${result.mesh ?? mesh_name}/${result.material ?? material_name} (${names.length} params):\n${lines.join("\n")}${tail}`;
       },
     )
@@ -192,7 +210,7 @@ export function registerMaterialTools(server: McpServer, bridge: CC5Bridge) {
     async ({ mesh_name, material_name, parameter_name, values }) => bridgeCall(
       () => bridge.setShaderParameter(mesh_name, material_name, parameter_name, values),
       (result) => result.success
-        ? `${result.mesh ?? mesh_name}/${result.material ?? material_name} '${result.parameter ?? parameter_name}' set to [${(result.values ?? values).join(", ")}]`
+        ? `${result.mesh ?? mesh_name}/${result.material ?? material_name} '${result.parameter ?? parameter_name}' set to [${(result.values ?? values).map(shaderValue).join(", ")}]`
         : `Failed: ${result.error}`,
     )
   );

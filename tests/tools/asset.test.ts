@@ -6,12 +6,14 @@
 
 import fs from "node:fs";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { registerAssetTools } from "../../src/tools/asset.js";
-import { UNDO_HISTORY_CLEARED } from "../../src/tools/unity.js";
+import { CANCELLED_LOAD, registerAssetTools } from "../../src/tools/asset.js";
+import { CANCELLED_CHANGED, CANCELLED_NOTHING, CANCELLED_UNSURE } from "../../src/recipe.js";
 import { CC5Bridge } from "../../src/cc5-bridge.js";
 import { createMockBridge, mockJobs, SUCCESS, FAILURE } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
-import { FIT_RULE, NOT_A_CHECK, PICK_RULE, PRESET_RULE } from "../../src/prompts/content-rules.js";
+import {
+  FIT_RULE, NOT_A_CHECK, PICK_RULE, PRESET_RULE, SKINGEN_QUESTION, SKINGEN_QUESTION_RULE,
+} from "../../src/prompts/content-rules.js";
 
 import { createMockServer } from "../helpers/mock-server.js";
 
@@ -86,7 +88,9 @@ describe("load_asset handler – success cases", () => {
     const handler = server.getRegisteredTool("load_asset");
     const result = await handler({ file_path: "C:/e/Green.ccEye", target: "Kevin" });
     expect(started).toEqual([{ action: "load_asset", params: { file_path: "C:/e/Green.ccEye", target: "Kevin" } }]);
-    expect(result.content[0].text).toBe("Asset loaded: C:/e/Green.ccEye (applied to Kevin)");
+    // The first line; the NOT CHECKED lines follow in the same text block (F-95).
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].text.split("\n")[0]).toBe("Asset loaded: C:/e/Green.ccEye (applied to Kevin)");
   });
 
   it("returns content with type 'text'", async () => {
@@ -113,12 +117,14 @@ describe("load_asset – what the load changed (F-34)", () => {
   const BOXERS = [{ kind: "worn_added", group: "clothing", id: "13", name: "Pants" },
     { kind: "worn_removed", group: "clothing", id: "11", name: "Boxers" }];
 
-  it("puts the report after the unchanged first line; CHECK lines are not an error", async () => {
+  // F-95 (live): in two text blocks, Claude Code showed "... (applied to Kevin)Compared before and after: ...".
+  it("puts the report after the unchanged first line, in the same text block; CHECK lines are not an error", async () => {
     mockJobs(bridge, { load_asset: { success: true, path: PANTS, target: "Kevin", changes: changes(BOXERS) } });
     const result = await server.getRegisteredTool("load_asset")({ file_path: PANTS });
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toBe(`Asset loaded: ${PANTS} (applied to Kevin)`);
-    expect(result.content[1].text).toBe([
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].text).toBe([
+      `Asset loaded: ${PANTS} (applied to Kevin)`,
       "Compared before and after: 2 worn items, 10 shaping morphs, 30 materials (0.3 s).",
       "CHECK removed Boxers (clothing): CC5 may have swapped it out for this item",
       "Applied: added Pants (clothing)",
@@ -131,8 +137,10 @@ describe("load_asset – what the load changed (F-34)", () => {
       changes: changes([BOXERS[1]]) } });
     const result = await server.getRegisteredTool("load_asset")({ file_path: PANTS });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toBe("Failed to load asset: boom (CC5 reported an error, but it changed 1 thing)");
-    expect(result.content[1].text).toContain("CHECK removed Boxers (clothing): CC5 may have swapped it out for this item");
+    expect(result.content).toHaveLength(1);
+    const lines = result.content[0].text.split("\n");
+    expect(lines[0]).toBe("Failed to load asset: boom (CC5 reported an error, but it changed 1 thing)");
+    expect(lines).toContain("CHECK removed Boxers (clothing): CC5 may have swapped it out for this item");
   });
 
   it("returns CC5's question as an error when the load waits on one", async () => {
@@ -148,6 +156,40 @@ describe("load_asset – what the load changed (F-34)", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe(question);
     expect(bridge.getJob).toHaveBeenCalledTimes(1);
+  });
+
+  // F-91 (live 2026-10-07): a content load during a SkinGen session asked this. get_cc5_dialog gave the rule (a plain
+  // confirmation for a load the user asked for: answer OK and say so); load_asset's reply did not.
+  it("gives the SkinGen session rule on its own line after CC5's question to end the session", async () => {
+    const question = `CC5 is waiting for an answer to "${SKINGEN_QUESTION}" (the "Character Creator 5" window). ` +
+      "Buttons: OK, Cancel. The command is still running as job cmd_ab12cd34_6: answer it with answer_cc5_dialog (ask " +
+      'the user when it is a real choice), then check its result with job_status("cmd_ab12cd34_6").';
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_ab12cd34_6" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_ab12cd34_6", action: "load_asset", status: "running",
+      dialog: { title: "Character Creator 5", text: SKINGEN_QUESTION, buttons: ["OK", "Cancel"], text_read: true },
+      dialog_message: question });
+    const result = await server.getRegisteredTool("load_asset")({ file_path: "C:/Props/Box.iProp" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: `${question}\n${SKINGEN_QUESTION_RULE}` }]);
+  });
+
+  // F-92 precaution (cc5_api.load_asset): a .ccProject replaces the scene, so the plugin clears CC5's selection first
+  // and names what was selected, or warns that it could not; the reply showed neither.
+  it("shows the plugin's notes on a project load", async () => {
+    const PROJECT = "C:/p/Scene.ccProject";
+    const cleared = "CC5's selection (Pants) was cleared before the project load: a project replaces the scene, and " +
+      "deleting a character while one of its worn items is selected can crash CC5 (F-92).";
+    mockJobs(bridge, { load_asset: { success: true, path: PROJECT, notes: [cleared] } });
+    const result = await server.getRegisteredTool("load_asset")({ file_path: PROJECT });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toEqual([{ type: "text", text: `Asset loaded: ${PROJECT}\n${cleared}` }]);
+
+    const warning = "WARNING: CC5's selection could not be cleared before the project load (SWIG): a project replaces " +
+      "the scene, and deleting a character while one of its worn items is selected can crash CC5 (F-92).";
+    mockJobs(bridge, { load_asset: { success: false, error: "LoadFile failed", notes: [warning] } });
+    const failed = await server.getRegisteredTool("load_asset")({ file_path: PROJECT });
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0].text).toBe(`Failed to load asset: LoadFile failed\n${warning}`);
   });
 
   it("says how to get the result of a load that is still running", async () => {
@@ -166,6 +208,40 @@ describe("load_asset – what the load changed (F-34)", () => {
     }
   });
 
+  // F-97 (live): _Blue1 Eyes reported "CHECK opacity on CC_Base_Eye/Std_Cornea_R: 1 -> 0.8", its own setting.
+  it("reports an eye preset's own cornea opacity as applied, not as a CHECK line", async () => {
+    const BLUE = "C:/Templates/Eye/_Blue1 Eyes.ccEye";
+    const cornea = (side: string) => ({ kind: "material", mesh: "CC_Base_Eye", material: `Std_Cornea_${side}`,
+      field: "opacity", before: 1, after: 0.8 });
+    mockJobs(bridge, { load_asset: { success: true, path: BLUE, target: "Kevin", changes: changes([cornea("R"), cornea("L")]) } });
+    const result = await server.getRegisteredTool("load_asset")({ file_path: BLUE });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text.split("\n").slice(0, 4)).toEqual([
+      `Asset loaded: ${BLUE} (applied to Kevin)`,
+      "Compared before and after: 2 worn items, 10 shaping morphs, 30 materials (0.3 s).",
+      "Applied: opacity on CC_Base_Eye/Std_Cornea_R: 0.8",
+      "Applied: opacity on CC_Base_Eye/Std_Cornea_L: 0.8",
+    ]);
+    expect(result.content[0].text).not.toMatch(/^CHECK /m);
+  });
+
+  // F-91 (live 2026-10-07): a SkinGen preset starts a SkinGen session that hides hair, brows and clothing until a later
+  // content load or a delete ends it; a content load during it can ask to end it (batch F review #13: seen for a prop
+  // load, and a prop delete ended it without a question).
+  it("says a SkinGen preset started a SkinGen session and how to answer a later load's question", async () => {
+    const CORDIAL = "C:/Templates/Makeup/Full Makeup/Cordial.ccSkinGenPreset";
+    mockJobs(bridge, { load_asset: { success: true, path: CORDIAL, target: "Kevin", changes: changes([]) } });
+    const result = await server.getRegisteredTool("load_asset")({ file_path: CORDIAL });
+    expect(result.isError).toBeUndefined();
+    const lines = result.content[0].text.split("\n");
+    expect(lines[2]).toBe("NOTE: this SkinGen preset started a SkinGen session in CC5: the viewport hides hair, brows " +
+      "and clothing (they stay worn and are exported) until a later content load or a delete ends it (live: a prop " +
+      "delete ended it without a question). A content load during the session can ask \"Applying this content will " +
+      "deactivate the current SkinGen session. Would you like to continue?\" (seen for a prop load): for a load the " +
+      "user asked for, answer OK and say so.");
+    expect(lines[3]).toMatch(/^NOT CHECKED: what CC5 shows but cannot report \(hair, brows or clothing hidden/);
+  });
+
   it("names makeup presets and gives the pick-list, before/after, fit and captures rules", () => {
     const description = server.tool.mock.calls.find((c) => c[0] === "load_asset")?.[1] as string;
     expect(description).toContain(".ccSkinGenPreset (makeup and SkinGen presets)");
@@ -174,6 +250,65 @@ describe("load_asset – what the load changed (F-34)", () => {
     for (const rule of [PICK_RULE, PRESET_RULE, FIT_RULE, NOT_A_CHECK]) expect(description).toContain(rule);
     expect(description.length).toBeLessThan(2000);
     for (const call of server.tool.mock.calls) expect((call[1] as string).length).toBeLessThan(2000);
+  });
+});
+
+// F-98 (batch F review #8, #28): CC5 reports a load done after answer_cc5_dialog clicked Cancel in its question (live:
+// the user's Cancel in an eye preset's Replace / Material Only applied nothing). The job's status lists that answer;
+// load_asset's reply read "Asset loaded: ... (applied to Kevin)", and a SkinGen preset's claimed a SkinGen session.
+describe("load_asset – a load answered Cancel in CC5 (F-98)", () => {
+  const HAZEL = "C:/Templates/Eye/_Hazel1 Eyes.ccEye";
+  const CORDIAL = "C:/Templates/Makeup/Full Makeup/Cordial.ccSkinGenPreset";
+  const CANCEL = [{ button: "Cancel", title: "Character Creator 5" }];
+  const changes = (facts: unknown[]) => ({ complete: true, target: "Kevin", target_is_first: true, elapsed_ms: 300,
+    compared: { worn: 2, morphs: 10, materials: 30 }, skipped: 0, truncated: false, facts });
+  const COMPARED = "Compared before and after: 2 worn items, 10 shaping morphs, 30 materials (0.3 s).";
+  const LOOK = "NOT CHECKED: what CC5 shows but cannot report (hair, brows or clothing hidden in the viewport, makeup " +
+    "or skin layers): capture the face (frame_camera face) and the whole body (home) and compare them with captures " +
+    "from before the load";
+  /** The load's job finished while load_asset waited, after answer_cc5_dialog clicked `answers` in its question. */
+  const finished = (result: unknown, answers: unknown = CANCEL) => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_ab12cd34_7" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_ab12cd34_7", action: "load_asset", status: "done", result, answers });
+  };
+  const load = (file_path: string) => server.getRegisteredTool("load_asset")({ file_path });
+
+  it("says the load was cancelled in CC5 and applied nothing, never that it loaded; the reply is an error", async () => {
+    finished({ success: true, path: HAZEL, target: "Kevin", changes: changes([]) });
+    const result = await load(HAZEL);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: [
+      `Asset load cancelled: ${HAZEL} for Kevin (${CANCELLED_NOTHING})`, COMPARED, LOOK].join("\n") }]);
+  });
+
+  it("claims no SkinGen session for a SkinGen preset answered Cancel", async () => {
+    finished({ success: true, path: CORDIAL, target: "Kevin", changes: changes([]) });
+    const result = await load(CORDIAL);
+    expect(result.content[0].text).toBe([`Asset load cancelled: ${CORDIAL} for Kevin (${CANCELLED_NOTHING})`, COMPARED,
+      LOOK].join("\n"));
+    expect(result.content[0].text).not.toContain("SkinGen session");
+  });
+
+  it("says what CC5 still changed, or that CC5 may not have done it when nothing was compared", async () => {
+    const socks = { kind: "worn_added", group: "clothing", id: "21", name: "Socks" };
+    finished({ success: true, path: HAZEL, target: "Kevin", changes: changes([socks]) });
+    expect((await load(HAZEL)).content[0].text).toBe([`Asset load cancelled: ${HAZEL} for Kevin (${CANCELLED_CHANGED})`,
+      COMPARED, "CHECK added Socks (clothing), which this eye load was not for", LOOK].join("\n"));
+    // A plugin from before the change report sends no comparison.
+    finished({ success: true, path: HAZEL, target: "Kevin" });
+    const unsure = await load(HAZEL);
+    expect(unsure.isError).toBe(true);
+    expect(unsure.content[0].text.split("\n")[0]).toBe(`Asset load cancelled: ${HAZEL} for Kevin (${CANCELLED_UNSURE})`);
+    // The words a recipe gives a step answered Cancel (recipe.ts), so a load reads the same in both.
+    expect(CANCELLED_LOAD).toEqual({ changed: CANCELLED_CHANGED, nothing: CANCELLED_NOTHING, unsure: CANCELLED_UNSURE });
+  });
+
+  it("keeps the loaded reply when the answers hold no Cancel", async () => {
+    finished({ success: true, path: HAZEL, target: "Kevin", changes: changes([]) },
+      [{ button: "Replace", title: "Character Creator 5" }]);
+    const result = await load(HAZEL);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe([`Asset loaded: ${HAZEL} (applied to Kevin)`, COMPARED, LOOK].join("\n"));
   });
 });
 
@@ -210,7 +345,7 @@ describe("load_asset handler – extension validation", () => {
     const started = mockJobs(bridge, { load_asset: { success: true, path: "C:/h/Buzz Cut.rlHair", target: "Kevin" } });
     const result = await server.getRegisteredTool("load_asset")({ file_path: "C:/h/Buzz Cut.rlHair", target: "Kevin" });
     expect(started).toEqual([{ action: "load_asset", params: { file_path: "C:/h/Buzz Cut.rlHair", target: "Kevin" } }]);
-    expect(result.content[0].text).toBe("Asset loaded: C:/h/Buzz Cut.rlHair (applied to Kevin)");
+    expect(result.content[0].text.split("\n")[0]).toBe("Asset loaded: C:/h/Buzz Cut.rlHair (applied to Kevin)");
   });
 
   it("rejects other .rl files (.rlHairElement)", async () => {
@@ -444,20 +579,19 @@ describe("export_fbx Blender target", () => {
   });
 });
 
-// F-86 (live CC5 5.13): an FBX export clears CC5's undo history, and undo still reports success afterwards.
-describe("export_fbx and CC5's undo history", () => {
-  it("ends the reply with the undo-history line when the export cleared it, keeping every other line", async () => {
+// F-89 (live CC5 5.13, corrects F-86): an FBX export does not clear CC5's undo history (morph and skin changes undo
+// across exports), so the reply says nothing about it, also for a result from a plugin installed before the fix that
+// still sends undo_history_cleared.
+describe("export_fbx and CC5's undo history (F-89)", () => {
+  it("replies with the export's own lines only", async () => {
     bridge.exportFbx.mockResolvedValue({ success: true, target_tool: "Unity", notes: ["target_tool=Unity preset applied"],
       undo_history_cleared: true });
     const r = await server.getRegisteredTool("export_fbx")({ output_path: "C:/out/char.fbx" });
     expect(r.isError).toBeUndefined();
-    expect(r.content[0].text).toBe("FBX exported to: C:/out/char.fbx (target=Unity)\nNotes: target_tool=Unity preset applied\n" +
-      "CC5 cleared its undo history with this export: changes made before it can no longer be undone (save_character " +
-      "first to keep a way back).");
-    expect(r.content[0].text.endsWith(UNDO_HISTORY_CLEARED)).toBe(true);
+    expect(r.content[0].text).toBe("FBX exported to: C:/out/char.fbx (target=Unity)\nNotes: target_tool=Unity preset applied");
   });
 
-  it("adds no such line when the result does not say so", async () => {
+  it("says nothing about it for a plain result either", async () => {
     bridge.exportFbx.mockResolvedValue(SUCCESS);
     const r = await server.getRegisteredTool("export_fbx")({ output_path: "C:/out/char.fbx" });
     expect(r.content[0].text).toBe("FBX exported to: C:/out/char.fbx (target=default)");
@@ -465,23 +599,21 @@ describe("export_fbx and CC5's undo history", () => {
   });
 });
 
-// P-5 / DT-1: a failed export_fbx comes back as HTTP 400, and only its `error` survives that. So once the export may
-// have cleared CC5's undo history, the plugin's export_fbx action writes the undo-history sentence into that text
-// (cc5_api.with_undo_history_sentence), and the tool shows it whole, once.
+// P-5: a failed export_fbx comes back as HTTP 400, and only its `error` survives that: the tool shows CC5's text whole.
 describe("a failed export_fbx through the real bridge client", () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it("shows CC5's error text whole, with the undo-history sentence the plugin wrote into it", async () => {
-    const error = `ExportFbxFile reported an error status\n${UNDO_HISTORY_CLEARED}`;
+  it("shows CC5's error text whole, and nothing about CC5's undo history", async () => {
+    const error = "ExportFbxFile reported an error status";
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: false, error,
-      notes: ["CC5's timeline was 0 frames long"], undo_history_cleared: true }), { status: 400 })));
+      notes: ["CC5's timeline was 0 frames long"] }), { status: 400 })));
     const live = createMockServer();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     registerAssetTools(live as any, new CC5Bridge("http://127.0.0.1:5101"));
     const r = await live.getRegisteredTool("export_fbx")({ output_path: "C:/out/char.fbx" });
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toBe(error);
-    expect(r.content[0].text.split(UNDO_HISTORY_CLEARED)).toHaveLength(2);
+    expect(r.content[0].text).not.toContain("undo history");
   });
 });
 

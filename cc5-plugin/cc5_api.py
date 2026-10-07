@@ -377,11 +377,65 @@ def create_default_avatar() -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+# F-92 (live CC5 5.13): CC5 crashed when a character was deleted while one of its worn items that carries its own
+# shaping morphs was selected (four dumps: RScene.RemoveObject -> IC::CEventSender::ObjectDeleted ->
+# CCAvatarShaping.dll, an access violation). load_asset leaves the loaded item selected. Clearing the selection in the
+# same action, before RemoveObject, deleted that character cleanly.
+_SELECTED_ITEM_CRASH = "deleting a character while one of its worn items is selected can crash CC5 (F-92)"
+# Review #2: delete_avatar fails closed. It removes nothing while the selection may hold something: a delete with the
+# selection left in place could be the F-92 crash, which loses the user's unsaved work. Batch F review #1: a clear that
+# returned is not taken on trust (RLPy's ClearSelectObjects returns an RStatus): the selection is read again after it,
+# as cc5_scene.clear_selection does, and the delete goes on only when that read is empty, also when the selection could
+# not be read before the clear (the note says so). Batch F review #31: clear_selection calls the same
+# ClearSelectObjects, so where that keeps failing the user deselects in CC5.
+DELETE_SELECTION_NOT_CLEARED = ("CC5's selection ({}) could not be cleared, so nothing was deleted: "
+                                + _SELECTED_ITEM_CRASH + ". Run clear_selection (or deselect everything in Character "
+                                "Creator 5), then delete again.")
+DELETE_SELECTION_NOT_READ = ("CC5's selection could not be read or cleared, so nothing was deleted: "
+                             + _SELECTED_ITEM_CRASH + ". Run clear_selection (or deselect everything in Character "
+                             "Creator 5), then delete again.")
+# F-92 precaution: a .ccProject load replaces the scene, so it removes the characters in it. The crash was only seen
+# with delete_avatar (RScene.RemoveObject), never with a project load, so load_asset clears the selection before a
+# project only as a precaution (not reproduced). Batch F review #1: the selection is read again after the clear, so the
+# note says what is true; a selection still set or unreadable is a WARNING, and the load runs all the same.
+PROJECT_SELECTION_CLEARED = ("CC5's selection ({}) was cleared before the project load: a project replaces the scene, "
+                             "and " + _SELECTED_ITEM_CRASH + ".")
+PROJECT_SELECTION_NOT_CLEARED = ("WARNING: CC5's selection could not be cleared before the project load ({}): a "
+                                 "project replaces the scene, and " + _SELECTED_ITEM_CRASH + ".")
+PROJECT_SELECTION_NOT_CHECKED = ("WARNING: CC5's selection could not be read after it was cleared before the project "
+                                 "load ({}), so it may still be set: a project replaces the scene, and "
+                                 + _SELECTED_ITEM_CRASH + ".")
+
+
+def _selected_names() -> tuple[list[str] | None, str]:
+    """The names of what is selected in CC5, read by name only (F-92: no handle is kept past a removal), or (None,
+    CC5's error) when CC5 cannot list the selection."""
+    try:
+        return [str(o.GetName()) for o in (RLPy.RScene.GetSelectedObjects() or [])], ""
+    except Exception as e:
+        return None, str(e)
+
+
+def _clear_selection() -> str | None:
+    """RScene.ClearSelectObjects (a selection change is no undo step): None when it returned, else CC5's error, also
+    for an error status it returned (batch F review #1). None does not prove the selection empty: read it again."""
+    try:
+        _raise_on_error(RLPy.RScene.ClearSelectObjects(), "ClearSelectObjects")
+    except Exception as e:
+        return str(e)
+    return None
+
+
 def delete_avatar(name: str = "") -> dict[str, Any]:
     """Delete an avatar from the scene by name. If name is empty, deletes ALL avatars.
 
     Useful to clear a neutral mannequin before loading a textured character template,
-    or to start the scene over. Uses RScene.RemoveObject.
+    or to start the scene over. Uses RScene.RemoveObject, after clearing CC5's selection (F-92). Fails closed
+    (review #2): nothing is removed (EndAction still runs) while the selection may hold something, and the error says
+    to run clear_selection (or deselect in CC5) first. After a clear that returned, the selection is read again (batch
+    F review #1): the delete goes on only when it reads empty, also when the selection could not be read before the
+    clear (the note says so); names left, or a read that fails, delete nothing. A clear that failed deletes only when
+    the selection read empty before it (a clear never selects anything).
     """
     avatars = RLPy.RScene.GetAvatars()
     target = (name or "").strip()
@@ -394,17 +448,67 @@ def delete_avatar(name: str = "") -> dict[str, Any]:
     if not matches:
         names = ", ".join(str(a.GetName()) for a in avatars)
         return {"success": False, "error": f"Avatar not found: {target}. Characters in the scene: {names}."}
+    # F-92: what is selected, by name only and before anything is removed (a removed object's handle is never touched).
+    selected, read_error = _selected_names()
     removed: list[str] = []
+    notes: list[str] = []
+    refusal: str | None = None
     try:
         RLPy.RGlobal.BeginAction("Delete Avatar")
-        for avatar in matches:
-            aname = avatar.GetName()
-            RLPy.RScene.RemoveObject(avatar)
-            removed.append(aname)
+        clear_error = _clear_selection()
+        # What is selected at the delete. After a clear that returned: CC5's selection read again (batch F review #1),
+        # as cc5_scene.clear_selection reads it. Read empty before the clear, it stays empty (a clear selects nothing).
+        # After a clear that failed: what the read before it gave.
+        left: list[str] | None
+        if selected == []:
+            left = []
+        elif clear_error is None:
+            left, _ = _selected_names()
+        else:
+            left = selected
+        if left is None:
+            refusal = DELETE_SELECTION_NOT_READ
+        elif left:
+            refusal = DELETE_SELECTION_NOT_CLEARED.format(", ".join(left))
+        else:
+            # Nothing is selected any more: the clear emptied the selection, whatever the read before it gave; or
+            # nothing was selected.
+            if selected is None or selected:
+                cleared = ", ".join(selected) if selected is not None else f"it could not be read: {read_error}"
+                notes.append(f"CC5's selection ({cleared}) was cleared before the delete: {_SELECTED_ITEM_CRASH}.")
+            for avatar in matches:
+                aname = avatar.GetName()
+                RLPy.RScene.RemoveObject(avatar)
+                removed.append(aname)
     finally:
         RLPy.RGlobal.EndAction()
+    if refusal is not None:
+        return {"success": False, "error": refusal}
     _invalidate_caches()
-    return {"success": True, "removed": removed}
+    result: dict[str, Any] = {"success": True, "removed": removed}
+    if notes:
+        result["notes"] = notes
+    return result
+
+
+def _clear_selection_before_project_load() -> list[str]:
+    """F-92 precaution: clear CC5's selection before a .ccProject load, with the note that names what was selected.
+    After a clear that returned, the selection is read again (batch F review #1), so the note says it was cleared only
+    when that read is empty. A clear that fails, and a selection still set or unreadable after the clear, are a WARNING
+    note, and the load runs all the same; nothing selected needs no note."""
+    selected, read_error = _selected_names()
+    clear_error = _clear_selection()
+    if selected == []:
+        return []
+    if clear_error is not None:
+        return [PROJECT_SELECTION_NOT_CLEARED.format(clear_error)]
+    left, left_error = _selected_names()
+    if left is None:
+        return [PROJECT_SELECTION_NOT_CHECKED.format(left_error)]
+    if left:
+        return [PROJECT_SELECTION_NOT_CLEARED.format(f"{', '.join(left)} stayed selected")]
+    names = ", ".join(selected) if selected is not None else f"it could not be read: {read_error}"
+    return [PROJECT_SELECTION_CLEARED.format(names)]
 
 
 # Content CC5 applies to a character rather than adding to the scene. Live (2026-10-05): a .ccEye loaded with
@@ -458,7 +562,9 @@ def load_asset(file_path: str, target: str | None = None) -> dict[str, Any]:
     """Load a CC5 asset file (.iAvatar, .ccm, .ccShoes, .ccCloth, etc.).
 
     Character content (_CHARACTER_CONTENT_EXTENSIONS) is aimed at one character: `target` by name, else the
-    selected character, else the first. That character is selected first, as a click in CC5 would.
+    selected character, else the first. That character is selected first, as a click in CC5 would. A .ccProject
+    replaces the scene, so CC5's selection is cleared before it loads (F-92 precaution), and `notes` say what was
+    selected, or that it could not be cleared, or could not be read again after the clear (batch F review #1).
     """
     # Defense-in-depth: validate path even though TypeScript also validates.
     # Path-safety (traversal/null) via _validate_path; for the extension, accept the
@@ -482,12 +588,18 @@ def load_asset(file_path: str, target: str | None = None) -> dict[str, Any]:
     if ext not in _CHARACTER_CONTENT_EXTENSIONS:
         if target is not None:
             return {"success": False, "error": f"target applies only to character content, not {ext} files"}
+        # F-92 precaution: a project replaces the scene, and so removes its characters.
+        project_notes = _clear_selection_before_project_load() if ext == ".ccproject" else []
+        loaded: dict[str, Any]
         try:
             _raise_on_error(RLPy.RFileIO.LoadFile(file_path), "LoadFile")
             _invalidate_caches()
-            return {"success": True, "path": file_path}
+            loaded = {"success": True, "path": file_path}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            loaded = {"success": False, "error": str(e)}
+        if project_notes:
+            loaded["notes"] = project_notes
+        return loaded
 
     # The target's name is read before the load, so the pre-load handle is never touched after LoadFile (F-34).
     try:
@@ -498,12 +610,15 @@ def load_asset(file_path: str, target: str | None = None) -> dict[str, Any]:
     if error:
         return {"success": False, "error": error}
     # F-34: read the character just before and just after the load, in this same command. The import sits inside
-    # the try: a hand copy of the plugin without cc5_changes.py still loads, with a WARNING note.
+    # the try: a hand copy of the plugin without cc5_changes.py still loads, with a WARNING note. F-90: the record of
+    # what the bridge wrote since CC5 last rendered goes with it (_writes_since_render), and the characters an undo or
+    # redo since then found in the scene (_colours_late_since_undo, review #20).
     notes: list[str] = []
     changes_mod = state = None
     try:
         import cc5_changes as changes_mod
-        state = changes_mod.begin(avatar, target_name)
+        state = changes_mod.begin(avatar, target_name, record=_writes_since_render,
+                                  colours_late=_colours_late_since_undo)
     except Exception as e:
         notes.append(f"WARNING: the before/after comparison could not start: {e}")
     RLPy.RGlobal.BeginAction("Load Asset")
@@ -597,14 +712,11 @@ TIMELINE_NOT_RESTORED_PREFIX = "WARNING: CC5 timeline not restored: "
 
 
 @contextlib.contextmanager
-def _one_frame_timeline_for_export(notes: list[str], history: dict[str, bool] | None = None):
+def _one_frame_timeline_for_export(notes: list[str]):
     """Around a mesh-only ExportFbxFile: a timeline shorter than one frame is set to one frame for the export and
     restored after it, also when the export raises (F-82).
 
-    Never fails the export: a read or a setter that fails becomes a WARNING note and the export runs anyway. The two
-    setters clear CC5's undo history, as every FBX export does anyway (F-86), so inside an export they cost nothing;
-    `history["cleared"]` is set as soon as SetProjectLength has changed the timeline, so a failed export still says
-    that the history is gone.
+    Never fails the export: a read or a setter that fails becomes a WARNING note and the export runs anyway.
     No BeginAction/EndAction: the change is undone within this call, so there is no step to keep, and the sequence
     verified live (probe E5: set, export, set back) ran without one; an FBX export inside an action is untested.
     """
@@ -618,8 +730,6 @@ def _one_frame_timeline_for_export(notes: list[str], history: dict[str, bool] | 
             old_length, old_end = g.GetProjectLength(), g.GetEndTime()
             g.SetProjectLength(one)
             length_set = True
-            if history is not None:
-                history["cleared"] = True  # F-86: this setter cleared CC5's undo history, whatever the export does
             g.SetEndTime(one)
             end_set = True
     except Exception as e:
@@ -647,10 +757,10 @@ def _one_frame_timeline_for_export(notes: list[str], history: dict[str, bool] | 
             notes.append(TIMELINE_LENGTHENED_NOTE)
 
 
-def _timeline_guard(export_motion: Any, notes: list[str], history: dict[str, bool] | None = None) -> Any:
+def _timeline_guard(export_motion: Any, notes: list[str]) -> Any:
     """The F-82 guard for a mesh-only export. An export with motion is left alone: its take is the motion range
     (include_current_pose exports a one-frame take)."""
-    return contextlib.nullcontext() if export_motion else _one_frame_timeline_for_export(notes, history)
+    return contextlib.nullcontext() if export_motion else _one_frame_timeline_for_export(notes)
 
 
 def export_fbx(
@@ -704,12 +814,7 @@ def export_fbx(
             the point of the export (export_for_unity): the call then fails instead.
 
     A mesh-only export (export_motion False) of a posed character runs with a one-frame timeline, restored
-    afterwards, so its animation take is not empty (F-82: _one_frame_timeline_for_export). A successful export
-    reports undo_history_cleared: live CC5 5.13 clears its undo history on every FBX export (F-86). A failure reports
-    it too once CC5's undo history may be gone: the F-82 guard changed the timeline (its setters clear it), or
-    ExportFbxFile was called, whether it then raised or returned an error status (the cautious choice: a false
-    warning costs a save_character, a missed one the user's work). The text for the export_fbx tool is added by
-    its action (with_undo_history_sentence), not here: export_for_unity and export_textures print it from the flag.
+    afterwards, so its animation take is not empty (F-82: _one_frame_timeline_for_export).
     """
     # Defense-in-depth path validation
     _decoded_out = urllib.parse.unquote(output_path)
@@ -719,16 +824,6 @@ def export_fbx(
         return {"success": False, "error": "Path traversal ('..') is not allowed"}
 
     notes: list[str] = []
-    # F-86: whether CC5's undo history may be gone (see the docstring). Set by the F-82 guard and before each
-    # ExportFbxFile call.
-    history: dict[str, bool] = {"cleared": False}
-
-    def _failed(error: str) -> dict[str, Any]:
-        """A failure result, with undo_history_cleared when CC5's undo history may be gone (F-86)."""
-        failure: dict[str, Any] = {"success": False, "error": error, "notes": notes}
-        if history["cleared"]:
-            failure["undo_history_cleared"] = True
-        return failure
 
     # Resolve a bare filename (no directory component) under CC5_EXPORT_DIR.
     if os.path.dirname(output_path) == "":
@@ -918,8 +1013,7 @@ def export_fbx(
                         except Exception as e:
                             notes.append(f"WARNING: SetTextureSize failed: {e}")
 
-                with _timeline_guard(export_motion, notes, history):
-                    history["cleared"] = True  # before the call: one that raises may have cleared it as well
+                with _timeline_guard(export_motion, notes):
                     status = RLPy.RFileIO.ExportFbxFile(avatar, output_path, setting)
                 used_setting_object = True
             except Exception as e:
@@ -934,7 +1028,8 @@ def export_fbx(
             setting_error = "RExportFbxSetting is not available in this CC5 build"
 
         if not used_setting_object and not allow_fallback:
-            return _failed(f"CC5 could not export with the requested FBX settings: {setting_error}")
+            return {"success": False, "error": f"CC5 could not export with the requested FBX settings: {setting_error}",
+                    "notes": notes}
 
         if not used_setting_object:
             if export_motion is False:
@@ -976,8 +1071,7 @@ def export_fbx(
             # Live CC5 5.13 has no 2-argument ExportFbxFile(obj, path) (TypeError). Its overloads are
             # (obj, path, RExportFbxSetting) and (obj, path, EExportFbxOptions, EExportFbxOptions2,
             # EExportFbxOptions3[, texture size, texture format, motion path]).
-            with _timeline_guard(export_motion, notes, history):
-                history["cleared"] = True  # before the call: one that raises may have cleared it as well
+            with _timeline_guard(export_motion, notes):
                 status = RLPy.RFileIO.ExportFbxFile(avatar, output_path, flags, flags2, flags3)
             _raise_on_error(status, "ExportFbxFile")
             applied_flags2 = applied_flags3 = True
@@ -992,9 +1086,6 @@ def export_fbx(
             "flags3": flags3 if applied_flags3 else 0,
             "notes": notes,
             "target_tool": target_tool or "default",
-            # F-86 (live CC5 5.13): an FBX export clears CC5's undo history; afterwards undo cannot take back anything
-            # done before it and still reports success. The tools say so in their replies.
-            "undo_history_cleared": True,
         }
         if applied_export_level is not None:
             result["export_level"] = applied_export_level
@@ -1017,28 +1108,7 @@ def export_fbx(
                 notes.append(f"restored sub_d_level to {_orig_subd} after export failure")
             except Exception:
                 pass
-        return _failed(str(e))
-
-
-# F-86: the same text as UNDO_HISTORY_CLEARED in src/tools/unity.ts.
-UNDO_HISTORY_CLEARED = ("CC5 cleared its undo history with this export: changes made before it can no longer be "
-                        "undone (save_character first to keep a way back).")
-
-
-def with_undo_history_sentence(result: Any) -> Any:
-    """The export_fbx action's result: a failure that may have cleared CC5's undo history says so in `error` too.
-
-    A {success: false} result reaches the MCP server as HTTP 400, and only its `error` is read, so the flag alone
-    never reaches the export_fbx tool's reply. Only the export_fbx action wrappers (server.ACTION_MAP and
-    _auto_patch_server) call this: export_for_unity and export_textures print the sentence from the flag, and would
-    print it twice.
-    """
-    if not isinstance(result, dict) or result.get("success") is not False or not result.get("undo_history_cleared"):
-        return result
-    error = str(result.get("error") or "FBX export failed")
-    if UNDO_HISTORY_CLEARED in error:
-        return result
-    return {**result, "error": f"{error}\n{UNDO_HISTORY_CLEARED}"}
+        return {"success": False, "error": str(e), "notes": notes}
 
 
 def get_avatar_info() -> dict[str, Any] | None:
@@ -1127,16 +1197,116 @@ $bitmap.Dispose()
         )
 
 
+def _cc5_step(v: float) -> int:
+    """The 0-255 step CC5 keeps for a 0-1 colour channel: the nearest one (F-14), after clamping to 0-1."""
+    return int(max(0.0, min(1.0, float(v))) * 255 + 0.5)
+
+
 def _cc5_rgb(r: float, g: float, b: float) -> Any:
-    """RRgb for 0-1 channels, each on the nearest of CC5's 0-255 steps.
+    """RRgb for 0-1 channels, each on the nearest of CC5's 0-255 steps (_cc5_step).
 
     Live (F-14): CC5 stores colours as 0-255 and dropped the fraction, so 0.3 became 76/255 = 0.298. Each channel
     is rounded to the nearest step k and sent as (k + 0.4) / 255, which lands on k whether CC5 truncates or rounds.
     """
     def channel(v: float) -> float:
-        k = int(max(0.0, min(1.0, float(v))) * 255 + 0.5)
+        k = _cc5_step(v)
         return min(255.0, k + 0.4) / 255.0 if k < 255 else 1.0
     return RLPy.RRgb(channel(r), channel(g), channel(b))
+
+
+# F-90 (live 2026-10-07): CC5 reports a material's diffuse colour as it was when it last rendered. Right after
+# set_skin_color(0.5, 0.5, 0.5) GetDiffuseColor read 1.0, also after RGlobal.ForceViewportUpdate(),
+# RGlobal.ObjectModified(avatar, EObjectModifiedType_Material) and in the next bridge command, and 0.502 after one
+# capture. So the F-34 comparison blamed a load for a colour set before it. The bridge therefore records every diffuse
+# colour and opacity it writes (the comparison reads both; whether CC5 reports opacity late too is not known), as CC5
+# reports it after a render: {(character id, mesh, material): {"diffuse": [r, g, b] on 0-255, "opacity": 0-1}}.
+# load_asset hands it to cc5_changes, which compares a recorded material from the value written and takes out of the
+# record what CC5 reads fresh after the load. A capture that rendered clears it, and so do undo and redo (the record
+# may no longer say what CC5 holds). Kept across /reload like _redo_slots; lost on a CC5 restart.
+_writes_since_render: dict[tuple[str, str, str], dict[str, Any]] = globals().get("_writes_since_render", {})
+# Review #20: after an undo or a redo the record above is empty, but CC5's reads may still give the colours and
+# opacities of its last render, not what the undo or redo left. So undo and redo add the ids (str(GetID())) of the
+# characters in the scene at that moment, and a capture whose RenderImage wrote the file empties the set; a load on one
+# of these characters holds back the colour and opacity differences its comparison reads on fields the bridge has no
+# record of, and says so in one NOT CHECKED note (cc5_changes). A character loaded after the undo (a recipe's base, a
+# batch variant's new character) is not in it: no undo touched its materials, so its loads still get CHECK lines.
+# cc5_changes adds a character too after a load whose comparison could not settle a recorded colour (its record
+# field is dropped: the bridge no longer knows what CC5 holds). get_diffuse_color adds a note to CC5's read of a
+# character in it (_colours_late_for, batch F review #3).
+# Kept across /reload like _writes_since_render; lost on a CC5 restart.
+_colours_late_since_undo: set[str] = globals().get("_colours_late_since_undo", set())
+if not isinstance(_colours_late_since_undo, set):
+    _colours_late_since_undo = set()  # an earlier copy of this module kept one flag (a bool), which names no character
+# get_diffuse_color's note when the colour comes from the record above (review #0).
+DIFFUSE_FROM_RECORD = ("This is the colour the bridge set. CC5 reports a material's colour only after it next renders "
+                       "(capture_viewport), so its own read may still give the colour from before (F-90).")
+# get_diffuse_color's note when the colour is CC5's read of a character in _colours_late_since_undo (batch F review
+# #3): an undo or a redo put it there, or a load whose comparison could not tell a colour the bridge set from a read
+# CC5 had not refreshed (cc5_changes).
+DIFFUSE_READ_MAY_BE_LATE = ("CC5 may report this colour as it was at its last render: an undo, a redo or a load since "
+                            "then may have changed it, and CC5 reports a material's colour only after it next renders. "
+                            "Take a capture (capture_viewport) first, then read it again (F-90).")
+
+
+def _mark_colours_late() -> None:
+    """Add the characters in the scene to _colours_late_since_undo (review #20), after an undo or redo. Never raises:
+    when CC5 cannot list them or read an id, nothing is marked, and the undo or redo still succeeds."""
+    try:
+        ids = {str(avatar.GetID()) for avatar in list(RLPy.RScene.GetAvatars() or [])}
+    except Exception:
+        return
+    _colours_late_since_undo.update(ids)
+
+
+def _clear_colours_late() -> None:
+    """Empty _colours_late_since_undo (review #20): CC5 rendered, so its reads give the colours it holds."""
+    _colours_late_since_undo.clear()
+
+
+def _colours_late_for(avatar: Any) -> bool:
+    """Whether this character is in _colours_late_since_undo (review #20): CC5's colour and opacity reads of it may
+    still give its last render, not what CC5 holds now. Never raises: a character whose id cannot be read counts as not
+    marked."""
+    try:
+        return str(avatar.GetID()) in {str(i) for i in _colours_late_since_undo}
+    except Exception:
+        return False
+
+
+def _recorded_diffuse(avatar: Any, mesh: Any, material: Any) -> list[int] | None:
+    """The diffuse colour the bridge set on this material since CC5 last rendered, on CC5's 0-255 steps (F-90), or None
+    when the record has none. Never raises."""
+    try:
+        steps = (_writes_since_render.get((str(avatar.GetID()), str(mesh), str(material))) or {}).get("diffuse")
+        if isinstance(steps, list) and len(steps) == 3:
+            return [int(c) for c in steps]
+    except Exception:
+        pass
+    return None
+
+
+def _note_write(avatar: Any, mesh: Any, material: Any, field: str, value: Any) -> None:
+    """Record a value the bridge just wrote to one of the character's materials (F-90). Never raises: a setter never
+    fails because of its record."""
+    try:
+        entry = _writes_since_render.setdefault((str(avatar.GetID()), str(mesh), str(material)), {})
+        entry[field] = list(value) if isinstance(value, (list, tuple)) else value
+    except Exception:
+        pass
+
+
+def _note_colour_write(avatar: Any, mesh: Any, material: Any, rgb: Any) -> None:
+    """Record a diffuse colour (0-1 channels) the bridge just wrote, on the 0-255 steps CC5 reads after a render."""
+    try:
+        steps = [_cc5_step(v) for v in rgb]
+    except Exception:
+        return
+    _note_write(avatar, mesh, material, "diffuse", steps)
+
+
+def _forget_writes() -> None:
+    """Clear the record of written colours and opacities (F-90)."""
+    _writes_since_render.clear()
 
 
 def _set_render_resolution(width: int, height: int) -> bool:
@@ -1164,8 +1334,9 @@ def _set_render_resolution(width: int, height: int) -> bool:
     return False
 
 
-def _drop_capture_undo_steps(steps: int) -> None:
-    """Undo the steps a capture itself recorded, so `undo` (and Ctrl+Z in CC5) reaches the user's change.
+def _drop_capture_undo_steps(steps: int) -> int:
+    """Undo the steps a capture itself recorded, so `undo` (and Ctrl+Z in CC5) reaches the user's change. Returns how
+    many it undid (F-104 checks the scene only after an undo that ran).
 
     Live CC5 5.13 (F-53): a capture records ONE undo step, so remove an item -> capture -> undo left the item
     removed. RenderImage alone is one step, SetRenderExportParameter alone is one step, and a size change
@@ -1179,12 +1350,111 @@ def _drop_capture_undo_steps(steps: int) -> None:
         # successful" and the undone change did not come back). Marked before undoing the capture's step, so a
         # failed undo still counts: either way nothing of the user's is left to redo.
         _redo_slots[:] = ["capture"]
+    undone = 0
     for _ in range(steps):
         try:
             RLPy.RGlobal.Undo()
         except Exception as e:
             print(f"[CC5 MCP Bridge] capture: undoing its own step failed: {e}")
-            return
+            return undone
+        undone += 1
+    return undone
+
+
+# F-104 (live 2026-10-07): CC5 has not finished a file load when LoadFile returns; it goes on loading the images
+# (REventCallback OnImageAsyncLoadStart ... OnImageAsyncLoadAllDone). A render made in that window gets no undo step of
+# its own, so the capture's own undo (F-53) took the load back with it: Box_001 was gone after a capture queued behind
+# its load in 6 of 7 runs through the bridge, and kept 6 of 6 times when the capture waited for ImageAsyncLoadAllDone.
+# The bridge's queue holds a capture until CC5 has finished (server.py); behind that, the capture compares the scene
+# before its render with the scene after its own undo, and when something came or went, one redo puts it back. Each
+# entry is (kind, id) of a character, an item a character wears, a prop, a light or a camera. Never the selection: the
+# capture's own undo fires CC5's selection-changed event even when nothing else changed (F-104 probes). Nor materials,
+# textures, presets or morphs: an undo that took back a skin or eye preset, a texture or a morph change goes unseen, so
+# the capture does not undo its own step at all while the server's image-load watch says CC5 is still loading images
+# (the queue's gate lets it run after 20 s even then; batch F review #2).
+_FINGERPRINT_TYPES = (("prop", "EObjectType_Prop"), ("light", "EObjectType_SpotLight"),
+                      ("light", "EObjectType_PointLight"), ("light", "EObjectType_DirectionalLight"),
+                      ("camera", "EObjectType_Camera"))
+CAPTURE_UNDO_REDONE = ("WARNING: CC5 had not finished the change before this capture (a load still running), so the "
+                       "capture's own undo took that change back; it was put back with a redo (F-104). Check the "
+                       "scene.")
+CAPTURE_UNDO_LOST = ("WARNING: CC5 had not finished the change before this capture (a load still running), so the "
+                     "capture's own undo took that change back, and a redo did not bring it back (F-104): check the "
+                     "scene; the change may need to be made again.")
+# Batch F review #4: a redo that raised left the change in CC5's redo slot (_redo_slots is then ["user"]), and a scene
+# that could not be read after the redo was not checked: neither says the change is lost.
+CAPTURE_UNDO_REDO_FAILED = ("WARNING: CC5 had not finished the change before this capture (a load still running), so "
+                            "the capture's own undo took that change back, and the redo after it failed (F-104): redo "
+                            "(or Edit > Redo in CC5) can bring it back; check the scene.")
+CAPTURE_UNDO_NOT_CHECKED = ("WARNING: CC5 had not finished the change before this capture (a load still running), so "
+                            "the capture's own undo took that change back; a redo ran to put it back, but the scene "
+                            "could not be read after it (F-104): check the scene.")
+# Batch F review #2: the capture's step left in CC5's undo history, not undone (see above).
+CAPTURE_UNDO_SKIPPED = ("WARNING: CC5 was still loading images when this capture rendered, so the capture did not undo "
+                        "its own render step (F-104): the next undo may take back only that step; check with a capture "
+                        "after an undo.")
+
+
+def _images_still_loading() -> bool:
+    """Whether the server's image-load watch (server._images_loading, F-104) says CC5 is still loading images in the
+    background: the queue's gate lets a capture run after IMAGE_LOAD_WAIT_SECONDS even then (CC5 slow, F-105). The
+    server module is looked up when this runs, never imported here: it imports this module. False when the module or
+    its flag is missing (with the watch off the flag stays False). Never raises (batch F review #2)."""
+    try:
+        return getattr(sys.modules.get("server"), "_images_loading", False) is True
+    except Exception:
+        return False
+
+
+def _scene_fingerprint() -> frozenset | None:
+    """The scene as the F-104 check compares it: a frozenset of (kind, id) for every character and the clothes,
+    accessories and hair it wears, and for the props, lights and cameras. Only objects and worn items: a material,
+    texture, preset or morph change does not show in it. None when any read fails: the capture then checks nothing.
+    Read only."""
+    try:
+        found: set[tuple[str, str]] = set()
+        for avatar in list(RLPy.RScene.GetAvatars() or []):
+            found.add(("character", str(avatar.GetID())))
+            for kind, items in (("clothing", avatar.GetClothes()), ("accessory", avatar.GetAccessories(True)),
+                                ("hair", avatar.GetHairs())):
+                found.update((kind, str(item.GetID())) for item in list(items or []))
+        for kind, type_name in _FINGERPRINT_TYPES:
+            objects = RLPy.RScene.FindObjects(getattr(RLPy, type_name))
+            found.update((kind, str(obj.GetID())) for obj in list(objects or []))
+        return frozenset(found)
+    except Exception:
+        return None
+
+
+def _capture_undo_check(before: frozenset | None) -> list[str]:
+    """F-104: after the capture's own undo, the scene must be as it was before the render (`before`). When it is not,
+    that undo took back a change CC5 had not finished, and one RLPy redo puts it back. Returns the WARNING note, or []
+    when nothing came or went or the scene could not be read before the redo. It sees only objects and worn items
+    (_scene_fingerprint): an undo that took back a material, texture, preset or morph change gets no redo and no note.
+
+    _redo_slots stays ["capture"] (_drop_capture_undo_steps): the capture replaced CC5's redo history. Batch F review
+    #4: when the redo raised and the change is not back, CC5's redo slot still holds it, so _redo_slots is ["user"] and
+    the note says redo can bring it back; when the scene cannot be read after a redo that ran, the note says it was not
+    checked (CAPTURE_UNDO_LOST only for a change a redo that ran did not bring back). Never raises (it runs in
+    capture_viewport's finally)."""
+    if before is None:
+        return []
+    after = _scene_fingerprint()
+    if after is None or after == before:
+        return []
+    redo_failed = False
+    try:
+        RLPy.RGlobal.Redo()
+    except Exception as e:
+        print(f"[CC5 MCP Bridge] capture: the redo after its own undo failed: {e}")
+        redo_failed = True
+    now = _scene_fingerprint()
+    if now == before:
+        return [CAPTURE_UNDO_REDONE]
+    if redo_failed:
+        _redo_slots[:] = ["user"]  # the change the undo took back waits in CC5's redo slot
+        return [CAPTURE_UNDO_REDO_FAILED]
+    return [CAPTURE_UNDO_NOT_CHECKED if now is None else CAPTURE_UNDO_LOST]
 
 
 # Captures without a path go to their own file here (F-22: one fixed temp file was overwritten by every capture);
@@ -1219,7 +1489,16 @@ def capture_viewport(output_path: str = "", width: int = 1280, height: int = 720
     render-export resolution first via _set_render_resolution (re-instated after
     UR-09, which wrongly assumed the size field was dead — it is wired via
     GetRenderExportImageParameter/SetRenderExportParameter, not the old kCommon arg).
+
+    F-104: when the capture's own undo changed the scene (a load CC5 had not finished), it redoes once and the result
+    carries a WARNING in `notes` (_capture_undo_check). That check sees only objects and worn items (characters, the
+    clothes, accessories and hair they wear, props, lights, cameras), not a material, texture, preset or morph change.
+    So while the server's image-load watch says CC5 is still loading images (the queue's gate gave up after 20 s), the
+    capture does not undo its own step at all, and a WARNING in `notes` says so (batch F review #2). A failed capture
+    also has its notes in `error`, one line each (batch F review #5): the bridge answers it with HTTP 400, and the MCP
+    server keeps only `error` from that.
     """
+    notes: list[str] = []
     try:
         if not output_path:
             output_path = _new_capture_path()
@@ -1236,6 +1515,11 @@ def capture_viewport(output_path: str = "", width: int = 1280, height: int = 720
         if os.path.exists(output_path):
             os.remove(output_path)
 
+        # F-104: the scene before anything this capture records (_capture_undo_check).
+        scene_before = _scene_fingerprint()
+        # Batch F review #2: whether CC5 is still loading images as the render starts (a render in that window gets no
+        # undo step of its own, F-104).
+        images_loading = _images_still_loading()
         # Render at a usable resolution (RenderImage default is ~100x32).
         size_changed = _set_render_resolution(width, height)
         rendered = False
@@ -1264,7 +1548,19 @@ def capture_viewport(output_path: str = "", width: int = 1280, height: int = 720
                     _render_image_broken = True
         finally:
             # One step whether the size changed, a render wrote the file, or both (see _drop_capture_undo_steps).
-            _drop_capture_undo_steps(1 if (size_changed or rendered) else 0)
+            steps = 1 if (size_changed or rendered) else 0
+            if steps and images_loading:
+                # Batch F review #2: the undo would take back the change CC5 is still loading (F-104), and the scene
+                # check misses a preset, texture or morph load. A capture step left behind is the harmless miscount.
+                # The redo slot is marked as _drop_capture_undo_steps marks it: a step recorded now cleared CC5's redo
+                # history, so nothing of the user's is left to redo.
+                _redo_slots[:] = ["capture"]
+                notes = [CAPTURE_UNDO_SKIPPED]
+            elif _drop_capture_undo_steps(steps):
+                notes = _capture_undo_check(scene_before)  # F-104: only after an undo that ran
+            if rendered:
+                _forget_writes()  # F-90: after a render CC5 reports the colours it holds
+                _clear_colours_late()  # review #20: also those an undo or redo left
 
         # Fallback: Windows screenshot of CC5 viewport
         if not os.path.exists(output_path):
@@ -1273,21 +1569,35 @@ def capture_viewport(output_path: str = "", width: int = 1280, height: int = 720
             except Exception as e:
                 print(f"[CC5 MCP Bridge] _capture_window_screenshot failed: {e}")
 
+        result: dict[str, Any]
         if os.path.exists(output_path):
             file_size = os.path.getsize(output_path)
             if file_size > MAX_IMAGE_BYTES:
-                return {
+                result = {
                     "success": True,
                     "path": output_path,
                     "warning": f"Image too large to embed ({file_size} bytes). Read from path directly.",
                 }
-            with open(output_path, "rb") as f:
-                image_data = base64.b64encode(f.read()).decode("utf-8")
-            return {"success": True, "path": output_path, "base64": image_data}
-
-        return {"success": False, "error": f"RenderImage did not create file at {output_path}"}
+            else:
+                with open(output_path, "rb") as f:
+                    image_data = base64.b64encode(f.read()).decode("utf-8")
+                result = {"success": True, "path": output_path, "base64": image_data}
+        else:
+            return _capture_failed(f"RenderImage did not create file at {output_path}", notes)
+        if notes:
+            result["notes"] = notes
+        return result
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return _capture_failed(str(e), notes)
+
+
+def _capture_failed(error: str, notes: list[str]) -> dict[str, Any]:
+    """A failed capture's result. Its notes (F-104) are in `error` too, one line each after the error (batch F review
+    #5): the bridge answers {success: False} with HTTP 400, and the MCP server keeps only `error` from that."""
+    failed: dict[str, Any] = {"success": False, "error": "\n".join([error] + notes)}
+    if notes:
+        failed["notes"] = notes
+    return failed
 
 
 def set_subdivision_level(level: int) -> dict[str, Any]:
@@ -1417,6 +1727,8 @@ def undo() -> dict[str, Any]:
     try:
         RLPy.RGlobal.Undo()
         _mark_overlay_records_stale()
+        _forget_writes()  # F-90: the record may no longer say what CC5 holds
+        _mark_colours_late()  # review #20: and CC5's reads may still give the colours of its last render
         _redo_slots.append("user")
         avatar = get_first_avatar()
         if avatar:
@@ -1435,6 +1747,8 @@ def redo() -> dict[str, Any]:
     try:
         RLPy.RGlobal.Redo()
         _mark_overlay_records_stale()
+        _forget_writes()  # F-90: the record may no longer say what CC5 holds
+        _mark_colours_late()  # review #20: and CC5's reads may still give the colours of its last render
         if _redo_slots:
             _redo_slots.pop()
         avatar = get_first_avatar()
@@ -1942,7 +2256,11 @@ def set_expression(expressions: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def reset_expression() -> dict[str, Any]:
-    """Reset all facial expression sliders to 0 (neutral face)."""
+    """Reset all facial expression sliders to 0 (neutral face).
+
+    The result names the sliders that were set (`reset`, at most 50) and gives each with its weight before the reset
+    (`reset_weights`, review #5): the OBJ round trip (F-88) resets the expression and sets it again afterwards.
+    """
     avatar = get_first_avatar()
     if not avatar:
         return {"success": False, "error": "No avatar"}
@@ -1963,8 +2281,12 @@ def reset_expression() -> dict[str, Any]:
     try:
         before = [float(w) for w in face_comp.GetExpressionWeights(time, names)]
         changed: list[str] | None = [n for n, w in zip(names, before) if abs(w) > 1e-6]
+        # Rounded as set_expression reads weights back (float32, F-13); a weight that is not a finite number stays out
+        # (P-8: the reply must stay JSON without NaN or Infinity).
+        reset_weights = {n: round(w, 4) for n, w in zip(names, before) if abs(w) > 1e-6 and math.isfinite(w)}
     except Exception:
         changed = None
+        reset_weights = {}
     try:
         RLPy.RGlobal.BeginAction("Reset Expression")
         face_comp.BeginKeyEditing()
@@ -1979,6 +2301,7 @@ def reset_expression() -> dict[str, Any]:
     if changed is not None:
         result["reset_count"] = len(changed)
         result["reset"] = changed[:50]
+        result["reset_weights"] = reset_weights
     else:
         result["reset_count"] = len(names)  # could not read the weights first: every slider was set to 0
     return result
@@ -2057,7 +2380,14 @@ def _get_valid_mesh_material(avatar, mesh_name: str, material_name: str) -> tupl
 
 
 def get_diffuse_color(mesh_name: str, material_name: str) -> dict[str, Any]:
-    """Get the diffuse color of a material."""
+    """Get the diffuse color of a material.
+
+    F-90 (review #0): CC5 reports a material's colour as it was when it last rendered, so right after set_skin_color its
+    read still gave the colour from before. A colour the bridge set since then comes from its record
+    (_recorded_diffuse), with a note (DIFFUSE_FROM_RECORD) saying so; any other is CC5's read. An undo or a redo empties
+    that record, so CC5's read of a character in _colours_late_since_undo comes with a note (DIFFUSE_READ_MAY_BE_LATE)
+    to capture first (batch F review #3).
+    """
     error = _validate_material_names(mesh_name, material_name)
     if error:
         return {"success": False, "error": error}
@@ -2069,11 +2399,20 @@ def get_diffuse_color(mesh_name: str, material_name: str) -> dict[str, Any]:
     if error:
         return {"success": False, "error": error}
 
+    recorded = _recorded_diffuse(avatar, mesh_name, material_name)
+    if recorded is not None:
+        red, green, blue = recorded
+        return {"success": True, "r": red / 255.0, "g": green / 255.0, "b": blue / 255.0,
+                "notes": [DIFFUSE_FROM_RECORD]}
     try:
         color = mat_comp.GetDiffuseColor(mesh_name, material_name)
-        return {"success": True, "r": color.Red() / 255.0, "g": color.Green() / 255.0, "b": color.Blue() / 255.0}
+        result: dict[str, Any] = {"success": True, "r": color.Red() / 255.0, "g": color.Green() / 255.0,
+                                  "b": color.Blue() / 255.0}
     except Exception as e:
         return {"success": False, "error": str(e)}
+    if _colours_late_for(avatar):
+        result["notes"] = [DIFFUSE_READ_MAY_BE_LATE]
+    return result
 
 
 def set_diffuse_color(mesh_name: str, material_name: str, r: float, g: float, b: float) -> dict[str, Any]:
@@ -2100,6 +2439,7 @@ def set_diffuse_color(mesh_name: str, material_name: str, r: float, g: float, b:
         try:
             RLPy.RGlobal.BeginAction("Set Diffuse Color")
             mat_comp.AddDiffuseKey(key, mesh_name, material_name, color)
+            _note_colour_write(avatar, mesh_name, material_name, (r, g, b))  # F-90
             RLPy.RGlobal.ObjectModified(avatar, _EOMTYPE_MATERIAL)
         finally:
             RLPy.RGlobal.EndAction()
@@ -2174,6 +2514,8 @@ def set_material_opacity(mesh_name: str, material_name: str, opacity: float) -> 
         try:
             RLPy.RGlobal.BeginAction("Set Material Opacity")
             mat_comp.AddOpacityKey(key, mesh_name, material_name, _to_weight_scale(opacity))
+            # F-90: recorded on the 0-1 scale the F-34 comparison reads, as get_material_properties does.
+            _note_write(avatar, mesh_name, material_name, "opacity", _from_weight_scale(_to_weight_scale(opacity)))
             RLPy.RGlobal.ObjectModified(avatar, _EOMTYPE_MATERIAL)
         finally:
             RLPy.RGlobal.EndAction()
@@ -2822,13 +3164,18 @@ def _apply_diffuse_color_to_targets(
     targets: list[tuple[str, str]],
     key: Any,
     color: Any,
+    avatar: Any,
+    rgb: tuple[float, float, float],
 ) -> list[str]:
-    """Apply diffuse color to a list of (mesh, material) pairs. Returns applied labels."""
+    """Apply diffuse color to a list of (mesh, material) pairs. Returns applied labels.
+
+    Each material written is recorded with `rgb`, the 0-1 channels of `color` (F-90: _note_colour_write)."""
     applied: list[str] = []
     for mesh_name, material_name in targets:
         try:
             mat_comp.AddDiffuseKey(key, mesh_name, material_name, color)
             applied.append(f"{mesh_name}/{material_name}")
+            _note_colour_write(avatar, mesh_name, material_name, rgb)
         except Exception as e:
             print(f"[CC5 MCP Bridge] AddDiffuseKey failed for {mesh_name}/{material_name}: {e}")
     return applied
@@ -3025,7 +3372,7 @@ def set_skin_color(r: float, g: float, b: float) -> dict[str, Any]:
     applied: list[str] = []
     try:
         RLPy.RGlobal.BeginAction("Set Skin Color")
-        applied = _apply_diffuse_color_to_targets(mat_comp, targets, key, color)
+        applied = _apply_diffuse_color_to_targets(mat_comp, targets, key, color, avatar, (r, g, b))
         if applied:
             RLPy.RGlobal.ObjectModified(avatar, _EOMTYPE_MATERIAL)
     finally:
@@ -3077,6 +3424,8 @@ def set_hair_color(r: float, g: float, b: float) -> dict[str, Any]:
             try:
                 mat_comp.AddDiffuseKey(key, mesh_name, material_name, color)
                 applied.append(f"{mesh_name}/{material_name}")
+                # F-90: recorded under the character, through which the F-34 comparison reads a hair's materials.
+                _note_colour_write(avatar, mesh_name, material_name, (r, g, b))
             except Exception as e:
                 print(f"[CC5 MCP Bridge] AddDiffuseKey failed for {mesh_name}/{material_name}: {e}")
         if applied:
@@ -3113,7 +3462,7 @@ def set_lip_color(r: float, g: float, b: float) -> dict[str, Any]:
     try:
         RLPy.RGlobal.BeginAction("Set Lip Color")
         # Try known lip/mouth material targets (UR-21: shared helper)
-        applied = _apply_diffuse_color_to_targets(mat_comp, _LIP_TARGETS, key, color)
+        applied = _apply_diffuse_color_to_targets(mat_comp, _LIP_TARGETS, key, color, avatar, (r, g, b))
         # Also search for Lip-specific materials
         try:
             meshes = avatar.GetMeshNames(True) if hasattr(avatar, "GetMeshNames") else []
@@ -3124,6 +3473,7 @@ def set_lip_color(r: float, g: float, b: float) -> dict[str, Any]:
                         if "lip" in mat_name.lower() or "mouth" in mat_name.lower():
                             try:
                                 mat_comp.AddDiffuseKey(key, mesh, mat_name, color)
+                                _note_colour_write(avatar, mesh, mat_name, (r, g, b))  # F-90
                                 label = f"{mesh}/{mat_name}"
                                 if label not in applied:
                                     applied.append(label)
@@ -3436,17 +3786,30 @@ def _texture_size_enum(texture_size: int) -> Any:
     return _resolution_to_enum(texture_size)
 
 
-# F-84 (live CC5 5.13 with SkinGen Premium): no QAction bakes, applies or edits the skin. The SkinGen menu holds About
-# (objectName qtSkinGenAboutAction), Online Manual, Video Tutorial and "Remove SkinGen Data"; the old bare "skin gen" /
-# "skingen" keywords matched About, a buttonless modal window that blocked every later command until it was closed by
-# hand. An action qualifies only when its text or objectName names one of these ("apply skin" covers "apply skingen"
-# and "apply skin gen"), and never when it names a word in _BAKE_ACTION_SKIP_WORDS.
-_BAKE_ACTION_KEYWORDS = ("bake skin", "bake texture", "apply skin", "skin editor")
+# F-84 (live CC5 5.13 with SkinGen Premium): the SkinGen menu holds About (objectName qtSkinGenAboutAction), Online
+# Manual, Video Tutorial and "Remove SkinGen Data"; the old bare "skin gen" / "skingen" keywords matched About, a
+# buttonless modal window that blocked every later command until it was closed by hand. F-87 (live): the phrases that
+# replaced them ("bake skin", "bake texture") missed CC5 5.13's bake command, "Bake All &Skin Textures" (objectName
+# qtBakeAllSkinTextureAction, Character menu): the & mnemonic and "All" break the phrase in the text, and the
+# camel-case objectName has no spaces. So an action's menu text and objectName are compared as words (_action_words):
+# a bake command has the word bake and skin or skingen, an apply-skin command apply followed by skin or skingen, a
+# skin editor skin followed by editor (_bake_command_kind), and none qualifies with a word in _BAKE_ACTION_SKIP_WORDS
+# or a word starting with one (Tutorials, Removed). Live 2026-10-07, a bake rule that also took the word texture(s)
+# took "Bake All Substance Textures", which is no skin bake, and would take an objectName such as
+# qtBakeLightTextureAction: a bake command needs the word skin or skingen.
+_BAKE_SKIN_WORDS = ("skin", "skingen")
 _BAKE_ACTION_SKIP_WORDS = ("about", "manual", "tutorial", "help", "online", "remove", "delete")
+# The kinds of command, best first: Bake before Apply before Skin Editor.
+_BAKE_COMMAND_KINDS = ("bake", "apply_skin", "skin_editor")
 _BAKE_RESOLUTIONS = (256, 512, 1024, 2048, 4096)
-# How many skin-related actions a result lists in candidates_inspected.
+# How many skin-related actions a result lists in candidates_inspected; every command that qualifies is listed too,
+# past this limit (F-87: live, the reply named a disabled command the list left out).
 MAX_INSPECTED_BAKE_ACTIONS = 20
+# The error when no command qualifies, enabled or not; disabled ones are named instead (_bake_disabled_error, F-87).
 BAKE_COMMAND_MISSING = "CC5 has no Bake / Apply Skin / Skin Editor command the plugin can run, so nothing was opened"
+# F-87 (Chad, 2026-10-07): CC5 enables its skin bake command once the character has SkinGen layers applied in the
+# Appearance Editor. When CC5 enables an Apply Skin or Skin Editor command is not known, so only bake commands get it.
+BAKE_ENABLED_WHEN = "CC5 enables {} once the character has SkinGen layers applied in the Appearance Editor."
 
 
 def _manual_bake_steps(resolution: int) -> str:
@@ -3455,35 +3818,102 @@ def _manual_bake_steps(resolution: int) -> str:
             f"size to {resolution} and bake.")
 
 
-def _bake_rank(blob: str) -> int:
-    """Bake before Apply before Skin Editor."""
-    if "bake" in blob:
-        return 0
-    if "apply" in blob:
-        return 1
-    return 2
+def _menu_text(text: str) -> str:
+    """A QAction's text as its menu shows it: "Bake All &Skin Textures" -> "Bake All Skin Textures" ("&&" is a "&")."""
+    import re
+    return re.sub(r"&(.)", r"\1", text)
+
+
+def _action_words(label: str) -> list[str]:
+    """The lower-case words of a QAction's menu text or objectName, camel case and underscores split (F-87):
+    "qtBakeAllSkinTextureAction" -> qt, bake, all, skin, texture, action."""
+    import re
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", label)
+    spaced = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", spaced)  # an acronym before a word: HDSkin -> HD Skin
+    return re.findall(r"[a-z0-9]+", spaced.lower())
+
+
+def _bake_command_kind(words: list[str]) -> str | None:
+    """The kind of command these words name (one of _BAKE_COMMAND_KINDS), or None."""
+    if "bake" in words and any(word in _BAKE_SKIN_WORDS for word in words):
+        return "bake"
+    pairs = list(zip(words, words[1:]))
+    if any(first == "apply" and second in _BAKE_SKIN_WORDS for first, second in pairs):
+        return "apply_skin"
+    if ("skin", "editor") in pairs:
+        return "skin_editor"
+    return None
+
+
+def _command_kind(text: str, name: str) -> str | None:
+    """The best kind (in _BAKE_COMMAND_KINDS order) that a command's menu text or objectName names, or None."""
+    kinds = [kind for kind in (_bake_command_kind(_action_words(label)) for label in (text, name)) if kind]
+    return min(kinds, key=_BAKE_COMMAND_KINDS.index) if kinds else None
+
+
+def _bake_skipped(words: list[str]) -> bool:
+    """A help-type or destructive word (_BAKE_ACTION_SKIP_WORDS) or a word starting with one (Tutorials, Removed)."""
+    return any(word.startswith(skip) for word in words for skip in _BAKE_ACTION_SKIP_WORDS)
+
+
+def _and_list(items: list[str]) -> str:
+    """'"A"', '"A" and "B"', '"A", "B" and "C"'."""
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _bake_disabled_error(disabled: list[dict[str, str]]) -> str:
+    """F-87: the error naming the disabled commands that qualify, best first and each once; none of them was run. With
+    a bake command among them it also says when CC5 enables that command (BAKE_ENABLED_WHEN)."""
+    labels: list[str] = []
+    bakes: list[str] = []
+    for entry in disabled:
+        label = entry["text"] or entry["objectName"]
+        if label in labels:
+            continue
+        labels.append(label)
+        if _command_kind(entry["text"], entry["objectName"]) == "bake":
+            bakes.append(label)
+    names = [f'"{label}"' for label in labels]
+    if len(names) == 1:
+        error = f"CC5's {names[0]} command is disabled right now, so nothing was run"
+    else:
+        error = f"CC5's {_and_list(names)} commands are disabled right now, so nothing was run"
+    if not bakes:
+        return error
+    if len(bakes) == len(labels):
+        which = "it" if len(bakes) == 1 else "them"
+    else:
+        which = _and_list([f'"{label}"' for label in bakes])
+    return f"{error}. {BAKE_ENABLED_WHEN.format(which)}"
 
 
 def bake_skin_textures(resolution: int = 4096) -> dict[str, Any]:
-    """Open CC5's skin bake command (Bake / Apply Skin / Skin Editor) if CC5 has one; the bake itself is done by hand.
+    """Trigger CC5's own skin bake command (Bake, else Apply Skin, else Skin Editor) when one is enabled.
 
-    CC5 has no bake API. This looks through CC5's QActions for an enabled one whose text or objectName names a bake,
-    applying the skin or the skin editor (_BAKE_ACTION_KEYWORDS) and no help-type or destructive word
-    (_BAKE_ACTION_SKIP_WORDS), and triggers the best one (Bake > Apply > Skin Editor) directly, so the result says
-    what ran; a modal window it opens keeps this command waiting, and the dialog lane reports it like any command's
-    question. CC5 5.13 has no such action (F-84): nothing is opened, and the result (success False,
-    manual_step_required) carries the manual steps. Every result lists the skin-related actions looked at, qualifying
-    or not (candidates_inspected, at most MAX_INSPECTED_BAKE_ACTIONS).
+    CC5 has no bake API. This looks through CC5's QActions for one whose menu text or objectName names a bake,
+    applying the skin or the skin editor (_bake_command_kind) and no help-type or destructive word (_bake_skipped),
+    and triggers the best enabled one (Bake > Apply > Skin Editor) directly, so the result says what ran; a modal
+    window it opens keeps this command waiting, and the dialog lane reports it like any command's question. CC5 5.13's
+    bake command is "Bake All Skin Textures" (Character menu, F-87); it was disabled in every state tried live, so
+    nobody has seen it run, and the resolution cannot be passed to it: after a bake command (command_kind "bake") the
+    instructions name it and say to check what it did, claiming no result. An Apply Skin or Skin Editor command opens
+    a panel, where the user sets the size and bakes. When every command that qualifies is disabled, nothing runs and
+    the error names them, and says when CC5 enables a bake command among them (_bake_disabled_error); with none at
+    all it is BAKE_COMMAND_MISSING; both carry the manual steps (success False, manual_step_required). Every result
+    lists the disabled ones (disabled_candidates) and the actions looked at (candidates_inspected): every command that
+    qualifies, so each one the reply names is there, and the other skin-related actions up to
+    MAX_INSPECTED_BAKE_ACTIONS entries.
     """
     inspected: list[dict[str, str]] = []
+    disabled: list[dict[str, str]] = []
     if isinstance(resolution, bool) or resolution not in _BAKE_RESOLUTIONS:
-        return {"success": False, "candidates_inspected": inspected,
+        return {"success": False, "candidates_inspected": inspected, "disabled_candidates": disabled,
                 "error": f"Unsupported resolution: {resolution}. Allowed: 256, 512, 1024, 2048, 4096"}
     manual = _manual_bake_steps(resolution)
 
     def no_bake(error: str) -> dict[str, Any]:
         return {"success": False, "manual_step_required": True, "error": error, "instructions": manual,
-                "notes": [], "candidates_inspected": inspected}
+                "notes": [], "candidates_inspected": inspected, "disabled_candidates": disabled}
 
     try:
         from PySide2 import QtWidgets  # type: ignore
@@ -3493,7 +3923,9 @@ def bake_skin_textures(resolution: int = 4096) -> dict[str, Any]:
         app = QtWidgets.QApplication.instance()
         if app is None:
             return no_bake("QApplication.instance() returned None")
-        candidates: list[tuple[int, int, Any, str, str]] = []  # (rank, order found, action, text, objectName)
+        # (rank in _BAKE_COMMAND_KINDS, order found, action, menu text, text, objectName)
+        candidates: list[tuple[int, int, Any, str, str, str]] = []
+        switched_off: list[tuple[int, int, str, str]] = []  # (rank, order found, menu text, objectName)
         seen: set[tuple[str, str]] = set()
         for widget in app.allWidgets():
             try:
@@ -3506,31 +3938,51 @@ def bake_skin_textures(resolution: int = 4096) -> dict[str, Any]:
                     name = (action.objectName() or "").strip()
                 except Exception:
                     continue
-                blob = f"{text} {name}".lower()
-                if "skin" in blob and (text, name) not in seen and len(inspected) < MAX_INSPECTED_BAKE_ACTIONS:
-                    seen.add((text, name))
-                    inspected.append({"text": text, "objectName": name})
-                # A disabled action's trigger() does nothing, so the reply would claim a window that never opened.
+                shown = _menu_text(text)
+                fields = (_action_words(shown), _action_words(name))
+                kind = _command_kind(shown, name)
+                qualifies = kind is not None and not any(_bake_skipped(words) for words in fields)
+                # Every command the reply can name is listed, past the limit too (F-87: live, a disabled command the
+                # reply named was missing from the list).
+                listed = qualifies or ("skin" in f"{shown} {name}".lower()
+                                       and len(inspected) < MAX_INSPECTED_BAKE_ACTIONS)
+                if listed and (shown, name) not in seen:
+                    seen.add((shown, name))
+                    inspected.append({"text": shown, "objectName": name})
+                if not qualifies:
+                    continue
+                rank = _BAKE_COMMAND_KINDS.index(kind)
+                # A disabled action's trigger() does nothing, so the reply would claim a command that never ran:
+                # it is named instead (F-87).
                 try:
                     enabled = bool(action.isEnabled())
                 except Exception:
                     enabled = False
-                if not enabled or any(word in blob for word in _BAKE_ACTION_SKIP_WORDS):
-                    continue
-                if any(key in blob for key in _BAKE_ACTION_KEYWORDS):
-                    candidates.append((_bake_rank(blob), len(candidates), action, text, name))
+                if enabled:
+                    candidates.append((rank, len(candidates), action, shown, text, name))
+                elif all((entry[2], entry[3]) != (shown, name) for entry in switched_off):
+                    switched_off.append((rank, len(switched_off), shown, name))
+        disabled.extend({"text": menu_text, "objectName": object_name}
+                        for _rank, _order, menu_text, object_name in sorted(switched_off))
         if not candidates:
-            return no_bake(BAKE_COMMAND_MISSING)
-        _rank, _order, chosen, text, name = min(candidates, key=lambda c: (c[0], c[1]))
-        label = text or name
+            return no_bake(_bake_disabled_error(disabled) if disabled else BAKE_COMMAND_MISSING)
+        rank, _order, chosen, shown, text, name = min(candidates, key=lambda c: (c[0], c[1]))
+        label = shown or name
+        kind = _BAKE_COMMAND_KINDS[rank]
         # Directly, not QTimer.singleShot: the deferred trigger let the reply go out before the action ran, so it
         # could not say what opened, and the bridge then took the window for the user's own (F-84).
         chosen.trigger()
-        return {"success": True, "resolution": resolution, "triggered_action": label, "manual_step_required": True,
-                "instructions": f"CC5 opened '{label}'. Set the texture size to {resolution} there and run the bake: "
-                                "the plugin cannot press it.",
+        if kind == "bake":
+            # F-87: a command that bakes rather than opening a panel, and nobody has seen this one run.
+            instructions = (f"This bridge has not yet seen CC5's \"{label}\" command run and could not pass the "
+                            f"texture size ({resolution}) to it: check what it did with captures and get_cc5_dialog.")
+        else:
+            instructions = (f"CC5 opened '{label}'. Set the texture size to {resolution} there and run the bake: "
+                            "the plugin cannot press it.")
+        return {"success": True, "resolution": resolution, "triggered_action": label, "command_kind": kind,
+                "manual_step_required": True, "instructions": instructions,
                 "notes": [f"Triggered QAction: text='{text}' objectName='{name}'"],
-                "candidates_inspected": inspected}
+                "candidates_inspected": inspected, "disabled_candidates": disabled}
     except Exception as e:
         return no_bake(str(e))
 
@@ -4827,9 +5279,7 @@ def _auto_patch_server() -> None:
         "create_default_avatar": lambda p: _self.create_default_avatar(),
         "delete_avatar":         lambda p: _self.delete_avatar(p.get("name", "")),
         "load_asset":            lambda p: _self.load_asset(p["file_path"], p.get("target")),
-        # F-86: a failed export that may have cleared CC5's undo history says so in its error text (HTTP 400 keeps
-        # only that); the same wrapper as server.ACTION_MAP's.
-        "export_fbx":            lambda p: _self.with_undo_history_sentence(_self.export_fbx(
+        "export_fbx":            lambda p: _self.export_fbx(
             p["output_path"],
             int(p.get("options", 0)),
             target_tool=p.get("target_tool", ""),
@@ -4845,7 +5295,7 @@ def _auto_patch_server() -> None:
             motion_range=p.get("motion_range"),
             convert_image_format=bool(p.get("convert_image_format", False)),
             texture_size=(int(p["texture_size"]) if p.get("texture_size") is not None else None),
-        )),
+        ),
         "capture_viewport":      lambda p: _self.capture_viewport(p.get("output_path", ""), int(p.get("width", 1280)), int(p.get("height", 720))),
         "set_subdivision_level": lambda p: _self.set_subdivision_level(int(p["level"])),
         "undo":                  lambda p: _self.undo(),

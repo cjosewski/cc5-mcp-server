@@ -41,12 +41,17 @@ describe("create_character over the MCP SDK", () => {
     expect(prompt).toBeDefined();
     expect(prompt?.arguments?.map(({ name, required }) => ({ name, required }))).toEqual([{ name: "description", required: false }]);
     expect(prompt?.description).toContain("stage by stage");
+    // I-08: any character, exported where the user wants it, not only a patient for Unity.
+    expect(prompt?.description).toContain("Unity, Unreal, Blender or another tool");
+    expect(prompt?.description).not.toMatch(/patient/i);
+    expect(prompt?.arguments?.[0].description).toContain("any injuries or special looks");
+    expect(prompt?.arguments?.[0].description).not.toMatch(/patient/i);
   });
 
   it("asks for the description when none or an empty one arrives", async () => {
     const cases: Array<Record<string, string>> = [{}, { description: "" }];
     for (const args of cases) {
-      expect(await promptText(args)).toContain("First ask me for the patient description");
+      expect(await promptText(args)).toContain("First ask me for the character description");
     }
   });
 
@@ -56,6 +61,6 @@ describe("create_character over the MCP SDK", () => {
 
   it("restates a whole description as it arrived", async () => {
     expect(await promptText({ description: "Adult male soldier, about 30" }))
-      .toContain('as this prompt received it: "Adult male soldier, about 30"');
+      .toContain('Character description, as this prompt received it: "Adult male soldier, about 30"');
   });
 });

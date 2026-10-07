@@ -103,6 +103,35 @@ class ModalGuardTest(BridgeTestCase):
         self.assertTrue(self.srv._execute_sync("mark", {}, timeout=5)[1]["error"].startswith('CC5 is busy with "CCSkinGen"'))
         self.assertEqual(self.ran, [])
 
+    # F-99 (live CC5 5.13): CC5's Export FBX dialog is one QQuickWidget; its buttons are QML items the bridge cannot see.
+    EXPORT_FBX = {"title": "Export FBX", "text": "", "buttons": [], "text_read": True, "progress": False,
+                  "buttons_unreadable": True}
+
+    def test_a_window_whose_buttons_cannot_be_read_is_answered_or_closed_in_cc5(self):
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        self.dialog = dict(self.EXPORT_FBX)
+        status, body = self.srv._execute_sync("mark", {}, timeout=5)
+        self.assertEqual(status, 400)
+        # Live, the guard said "a window open with no buttons ... close it", and the dialog tools "Buttons: none found".
+        self.assertEqual(body["error"], 'CC5 has a window open whose buttons this bridge cannot read: "Export FBX" - '
+                                        "answer or close it in Character Creator 5 (no MCP tool can click its buttons), "
+                                        "then try again.")
+        self.assertEqual(self.ran, [])
+
+    def test_a_window_whose_buttons_cannot_be_read_keeps_the_other_branches(self):
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        # The crash-recovery prompt stays a question: closing it decides about the user's unsaved work.
+        self.dialog = {**self.EXPORT_FBX, "title": RECOVERY[0], "text": RECOVERY[1]}
+        self.assertIn("OK restores your last unsaved work", self.srv._execute_sync("mark", {}, timeout=5)[1]["error"])
+        # A window whose text could not be read goes to the user as a question.
+        self.dialog = {**self.EXPORT_FBX, "text_read": False}
+        self.assertIn("its text could not be read", self.srv._execute_sync("mark", {}, timeout=5)[1]["error"])
+        # An untitled one without text is still named as CC5's Welcome / What's New page (F-94).
+        self.dialog = {**self.EXPORT_FBX, "title": ""}
+        self.assertTrue(self.srv._execute_sync("mark", {}, timeout=5)[1]["error"].startswith(
+            "CC5's Welcome / What's New page (or another untitled CC5 window) is open"))
+        self.assertEqual(self.ran, [])
+
     def test_a_progress_window_is_reported_as_busy_not_as_a_question(self):
         # F-56: a command's progress window (an export's) is not a question, and its Cancel aborts that command.
         self.srv.MODAL_WAIT_SECONDS = 0.2
@@ -127,14 +156,46 @@ class ModalGuardTest(BridgeTestCase):
                                         "read, so ask the user to answer it in CC5, then try again.")
 
     def test_an_untitled_window_is_named_as_the_welcome_page(self):
-        # Live CC5 5.13 can start with its full-screen Welcome / What's New page: untitled, with no text.
+        # Live CC5 5.13 can start with its full-screen Welcome / What's New page: untitled, with no text and no buttons
+        # (F-94: the tools said "Buttons: none found").
         self.srv.MODAL_WAIT_SECONDS = 0.2
-        self.dialog = ("", "")
+        self.dialog = {"title": "", "text": "", "buttons": [], "text_read": True, "progress": False}
         status, body = self.srv._execute_sync("mark", {}, timeout=5)
         self.assertEqual(status, 400)
         self.assertEqual(body["error"], "CC5's Welcome / What's New page (or another untitled CC5 window) is open - "
                                         "close it in Character Creator 5 (tick \"Don't show this again\" so it stays "
                                         "closed), then try again.")
+        self.assertEqual(self.ran, [])
+
+    def test_an_untitled_window_with_buttons_is_a_question_not_the_welcome_page(self):
+        # Only a window with no button the bridge can click is one to close: formatDialog (src/tools/dialog.ts) words an
+        # untitled, textless window with an OK button as a question, and so does the guard now.
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        self.dialog = {"title": "", "text": "", "buttons": ["OK"], "text_read": True, "progress": False}
+        status, body = self.srv._execute_sync("mark", {}, timeout=5)
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error"], 'CC5 is waiting for an answer to "a dialog" - no MCP command is waiting on it, so '
+                                        "it is probably the user's own or CC5's: ask the user to answer or close it in "
+                                        "CC5, then try again.")
+        self.assertEqual(self.ran, [])
+
+    def test_an_untitled_window_whose_text_could_not_be_read_goes_to_the_user(self):
+        # Only a window whose text was read and is empty is the Welcome page: one whose labels could not be read may be
+        # any question, the crash-recovery prompt too. The guard called it the Welcome page and said to close it, while
+        # formatDialog (src/tools/dialog.ts) and the waiting text word it as below.
+        self.srv.MODAL_WAIT_SECONDS = 0.2
+        unread = {"title": "", "text": "", "buttons": [], "text_read": False, "progress": False}
+        for extra in ({}, {"buttons": ["OK", "Cancel"]}, {"buttons_unreadable": True}):
+            with self.subTest(extra=extra):
+                self.dialog = {**unread, **extra}
+                status, body = self.srv._execute_sync("mark", {}, timeout=5)
+                self.assertEqual(status, 400)
+                self.assertEqual(body["error"], 'CC5 is waiting for an answer to "a dialog" - its text could not be '
+                                                "read, so ask the user to answer it in CC5, then try again.")
+        # A progress window stays one: CC5 is busy, as formatDialog says too.
+        self.dialog = {**unread, "progress": True}
+        self.assertTrue(self.srv._execute_sync("mark", {}, timeout=5)[1]["error"].startswith(
+            'CC5 is busy with "a dialog" (the progress window of a command it is running)'))
         self.assertEqual(self.ran, [])
 
     def test_does_not_wait_longer_than_needed(self):

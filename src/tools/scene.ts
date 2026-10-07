@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { BridgeHttpError, type CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall, bridgeErrorResult, errorResult } from "../util.js";
-import { formatDialog, formatRecoveryAnswers } from "./dialog.js";
+import { formatDialog, formatRecoveryAnswers, isAnsweredOnlyInCC5, isWindowToClose } from "./dialog.js";
 
 const DIALOG_CHECK_TIMEOUT_MS = 3000;
 
@@ -77,11 +77,19 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
             extra.push(formatDialog(d.dialog));
           } else if (d.waiting_job) {
             // The command waits inside its dialog, so nothing else starts: a direct command sits in the queue until
-            // the bridge's 30 s limit and is cancelled (F-59); a job stays queued and runs after the answer.
-            extra.push("But CC5 has a dialog open that an MCP command is waiting on. Nothing else starts until it is " +
-              "answered: a direct command sent now is cancelled after about 30 s; a job (export, import, recipe step) " +
-              "stays queued and runs after the answer. get_cc5_dialog and answer_cc5_dialog still work:\n" +
-              formatDialog(d.dialog, d.waiting_job));
+            // the bridge's 30 s limit and is cancelled (F-59); a job stays queued and runs after the answer. Review #4:
+            // a window answer_cc5_dialog cannot answer (no buttons, F-94; buttons the bridge cannot read, F-99; text it
+            // could not read) is closed or answered in CC5, so only get_cc5_dialog is offered for it.
+            const shown = formatDialog(d.dialog, d.waiting_job);
+            const until = isWindowToClose(d.dialog) ? "closed"
+              : isAnsweredOnlyInCC5(d.dialog) ? "answered or closed in CC5" : undefined;
+            extra.push(until
+              ? `But CC5 has a window open that an MCP command is waiting on. Nothing else starts until it is ${until}: ` +
+                "a direct command sent now is cancelled after about 30 s; a job (export, import, recipe step) stays " +
+                `queued and runs once it is ${until}. get_cc5_dialog still works:\n${shown}`
+              : "But CC5 has a dialog open that an MCP command is waiting on. Nothing else starts until it is " +
+                "answered: a direct command sent now is cancelled after about 30 s; a job (export, import, recipe step) " +
+                `stays queued and runs after the answer. get_cc5_dialog and answer_cc5_dialog still work:\n${shown}`);
           } else {
             extra.push("But CC5 has a dialog open. Other commands do not run until it is closed (they fail after about " +
               `5 s):\n${formatDialog(d.dialog)}`);
@@ -122,10 +130,12 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
     },
     async ({ name }) => bridgeCall(
       () => bridge.deleteAvatar(name ?? ""),
+      // The plugin's notes say when it cleared CC5's selection before the delete, or could not (F-92).
       (result) => !result.success ? `Failed: ${result.error}`
-        : (result.removed ?? []).length
-          ? `Deleted avatar(s): ${(result.removed ?? []).join(", ")}`
-          : "The scene has no characters: nothing to delete.",
+        : [(result.removed ?? []).length
+            ? `Deleted avatar(s): ${(result.removed ?? []).join(", ")}`
+            : "The scene has no characters: nothing to delete.",
+          ...(result.notes ?? [])].join("\n"),
     )
   );
 
@@ -146,21 +156,26 @@ export function registerSceneTools(server: McpServer, bridge: CC5Bridge) {
       }
       try {
         const result = await bridge.captureViewport(output_path, width, height);
+        // F-104: every note the plugin returns (a WARNING when the capture's undo took back more than the render),
+        // each on its own line of the reply's one text block.
+        const notes = result.notes ?? [];
         if (!result.success) {
-          return errorResult(`Failed: ${result.error}`);
+          return errorResult([`Failed: ${result.error}`, ...notes].join("\n"));
         }
         // The plugin wrote the render but did not send it (over its 10 MB limit): give the path and its warning.
         // No desktop screenshot here: one used to replace the render (live, F-58). When RenderImage writes nothing,
         // the plugin already falls back to a screenshot of CC5's window.
         if (!result.base64) {
-          if (!result.path) return errorResult("CC5 reported a capture but sent neither the image nor its file path.");
-          return { content: [{ type: "text" as const,
-            text: `Viewport captured: ${result.path}\n${result.warning ?? "The image was not sent back: open the file."}` }] };
+          if (!result.path) {
+            return errorResult(["CC5 reported a capture but sent neither the image nor its file path.", ...notes].join("\n"));
+          }
+          return { content: [{ type: "text" as const, text: [`Viewport captured: ${result.path}`,
+            result.warning ?? "The image was not sent back: open the file.", ...notes].join("\n") }] };
         }
         return {
           content: [
             { type: "image" as const, data: result.base64, mimeType: "image/png" },
-            { type: "text" as const, text: `Viewport captured: ${result.path ?? "temp file"}` },
+            { type: "text" as const, text: [`Viewport captured: ${result.path ?? "temp file"}`, ...notes].join("\n") },
           ],
         };
       } catch (err: unknown) {

@@ -8,6 +8,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CC5Bridge } from "../cc5-bridge.js";
 import { bridgeCall } from "../util.js";
 
+// F-103 (live): with no character in the scene, search_morphs("height") replied "No morphs found matching 'height'",
+// while with one loaded the same search listed 200 morphs. The plugin answers [] in both cases, so an empty result is
+// told apart by reading the avatars (only then), as the worn-item lists do (F-61).
+export const NO_CHARACTER_FOR_MORPHS =
+  "No character in the scene: CC5 lists morphs only for a loaded character. Load or create one first.";
+
 export function registerMorphTools(server: McpServer, bridge: CC5Bridge) {
   server.tool(
     "search_morphs",
@@ -17,10 +23,14 @@ export function registerMorphTools(server: McpServer, bridge: CC5Bridge) {
       category: z.string().max(256).optional().describe("Optional category filter (e.g., 'Body', 'Head')"),
     },
     async ({ query, category }) => bridgeCall(
-      () => bridge.searchMorphs(query, category),
-      (results) => results.length > 0
+      async () => {
+        const results = await bridge.searchMorphs(query, category);
+        const noCharacter = results.length === 0 && !(await bridge.getAvatars())?.length;
+        return { results, noCharacter };
+      },
+      ({ results, noCharacter }) => results.length > 0
         ? `Found ${results.length} morph(s):\n${results.map(r => `- ${r.display_name} (ID: ${r.id})`).join("\n")}`
-        : `No morphs found matching '${query}'`,
+        : noCharacter ? NO_CHARACTER_FOR_MORPHS : `No morphs found matching '${query}'`,
     )
   );
 

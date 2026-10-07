@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { awaitJob, runJob, runJobStep, runJobTool, startJob, JOB_ID_PATTERN, STILL_ASKING_NOTE } from "../src/jobs.js";
+import {
+  awaitJob, jobDialogMessage, pendingResult, runJob, runJobStep, runJobTool, startJob, withSkinGenRule, JOB_ID_PATTERN,
+  STILL_ASKING_NOTE,
+} from "../src/jobs.js";
 import { BridgeHttpError, BridgeUnreachableError } from "../src/cc5-bridge.js";
+import { formatDialog } from "../src/tools/dialog.js";
+import { SKINGEN_QUESTION, SKINGEN_QUESTION_RULE } from "../src/prompts/content-rules.js";
 
 function bridgeWith(statuses: Array<Record<string, unknown>>) {
   return {
@@ -33,10 +38,11 @@ describe("runJob", () => {
 
   it("stops waiting and passes on the question when the job waits on a CC5 dialog", async () => {
     const message = 'CC5 is waiting for an answer to "Replace?". Buttons: Replace, Cancel. The command is still running as job cmd_1';
-    const b = bridgeWith([{ status: "running" }, { status: "running", dialog: { title: "", text: "Replace?", buttons: [] }, dialog_message: message }]);
+    const replace = { title: "", text: "Replace?", buttons: ["Replace", "Cancel"] };
+    const b = bridgeWith([{ status: "running" }, { status: "running", dialog: replace, dialog_message: message }]);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const out = await runJob(b as any, "load_asset", {}, { waitMs: 60_000, pollMs: 1 });
-    expect(out).toEqual({ done: false, job_id: "cmd_1", dialog: message, question: { title: "", text: "Replace?", buttons: [] } });
+    expect(out).toEqual({ done: false, job_id: "cmd_1", dialog: message, question: replace });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(await runJobStep(bridgeWith([{ status: "running", dialog_message: message }]) as any, "load_asset", {}, { waitMs: 1000 }))
       .toEqual({ success: false, error: message, stopped: { job_id: "cmd_1" } });
@@ -157,6 +163,27 @@ describe("awaitJob", () => {
     expect(out).toEqual({ done: false, job_id: "cmd_1", dialog: ASKING, question: LAYER });
   });
 
+  // F-98: CC5 reports a command done after its question was answered Cancel; the job status lists the clicks.
+  it("passes on the buttons answer_cc5_dialog clicked while the job waited, and nothing when it lists none", async () => {
+    const answers = [{ button: "Cancel", title: "Character Creator 5" }];
+    const b = bridgeWith([
+      { status: "running", dialog: LAYER, dialog_message: ASKING },
+      { status: "done", result: { success: true }, answers },
+    ]);
+    const onDialog = vi.fn().mockResolvedValue({ kind: "wait" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await awaitJob(b as any, "cmd_1", { waitMs: 1000, pollMs: 1, onDialog }))
+      .toEqual({ done: true, failed: false, result: { success: true }, answers });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await awaitJob(bridgeWith([{ status: "failed", result: { success: false }, answers }]) as any, "cmd_1",
+      { waitMs: 1000, pollMs: 1 })).toEqual({ done: true, failed: true, result: { success: false }, answers });
+    for (const none of [[], undefined, "Cancel"]) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect(await awaitJob(bridgeWith([{ status: "done", result: { success: true }, answers: none }]) as any, "cmd_1",
+        { waitMs: 1000, pollMs: 1 })).toEqual({ done: true, failed: false, result: { success: true } });
+    }
+  });
+
   it("carries the button on a job that failed after the answer", async () => {
     const b = bridgeWith([
       { status: "running", dialog: LAYER, dialog_message: ASKING },
@@ -248,6 +275,152 @@ describe("awaitJob", () => {
   });
 });
 
+/** SkinGen's About box (F-85, F-94): no buttons; its labels hold the licence serial, which the plugin redacts. */
+const ABOUT = { title: "CCSkinGen", text: "SkinGen 2.0\nS/N : (serial)\nCopyright Reallusion", buttons: [] };
+/** A plugin older than batch F (server.py _waiting_dialog_error) words every window as a question for answer_cc5_dialog. */
+const oldWaiting = (question: string, title: string, buttons: string, id: string) =>
+  `CC5 is waiting for an answer to "${question}"${title ? ` (the "${title}" window)` : ""}. Buttons: ${buttons}. The ` +
+  `command is still running as job ${id}: answer it with answer_cc5_dialog (ask the user when it is a real choice), ` +
+  `then check its result with job_status("${id}").`;
+const ABOUT_WAITING = oldWaiting("SkinGen 2.0 S/N : (serial) Copyright Reallusion", "CCSkinGen", "none found", "cmd_1");
+/** SkinGen's About box as a batch F plugin words a command waiting in it. */
+const ABOUT_WAITING_F = 'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character Creator 5 (no MCP ' +
+  'tool can close it). The command is still running as job cmd_1: read its result with job_status("cmd_1") once it ' +
+  "is closed.";
+
+// Review #3, #7, #19 (F-94): a job waiting in a window with no buttons was told to "answer it with answer_cc5_dialog",
+// which has nothing to click there, while get_cc5_dialog for the same window said to close it in CC5.
+describe("a job waiting in a window no MCP tool can answer (review #3, #7, #19)", () => {
+  it("load_asset and the other job tools word SkinGen's About box as a window to close in CC5", async () => {
+    const b = bridgeWith([{ status: "running", dialog: ABOUT, dialog_message: ABOUT_WAITING }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tool = await runJobTool(b as any, "bake_skin_textures", {}, () => "ok");
+    expect(tool.isError).toBe(true);
+    expect(tool.content[0].text).toBe('CC5 has a window open with no buttons: "CCSkinGen" - close it in Character ' +
+      "Creator 5 (no MCP tool can close it).\nJob cmd_1 is waiting on this window; read its result with job_status " +
+      "once it is closed.");
+    expect(tool.content[0].text).not.toContain("answer_cc5_dialog");
+    expect(tool.content[0].text).not.toContain("S/N");
+  });
+
+  it("a recipe or batch step stops with that wording and the window as its question", async () => {
+    const b = bridgeWith([{ status: "running", dialog: ABOUT, dialog_message: ABOUT_WAITING }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const step = await runJobStep(b as any, "load_asset", {}, { waitMs: 1000, pollMs: 1 });
+    expect(step).toEqual({ success: false, error: formatDialog(ABOUT, "cmd_1"), stopped: { job_id: "cmd_1", question: ABOUT } });
+    expect(pendingResult({ job_id: "cmd_1", dialog: step.error })).toEqual({ isError: true,
+      content: [{ type: "text", text: formatDialog(ABOUT, "cmd_1") }] });
+  });
+
+  it("keeps the note of a wait that ran out after the window's wording", async () => {
+    const b = { getJob: vi.fn().mockResolvedValue({ job_id: "cmd_1", status: "running", dialog: ABOUT, dialog_message: ABOUT_WAITING }) };
+    const onDialog = vi.fn().mockResolvedValue({ kind: "wait" });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await awaitJob(b as any, "cmd_1", { waitMs: 20, pollMs: 1, onDialog })).toEqual({
+      done: false, job_id: "cmd_1", dialog: `${formatDialog(ABOUT, "cmd_1")} (${STILL_ASKING_NOTE})`, question: ABOUT });
+  });
+
+  it("keeps a batch F plugin's own wording of that window", async () => {
+    const b = bridgeWith([{ status: "running", dialog: ABOUT, dialog_message: ABOUT_WAITING_F }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await runJob(b as any, "load_asset", {}, { waitMs: 1000, pollMs: 1 }))
+      .toEqual({ done: false, job_id: "cmd_1", dialog: ABOUT_WAITING_F, question: ABOUT });
+  });
+
+  it("words a window whose buttons the bridge cannot read (F-99) and one whose text it could not read (review #8)", () => {
+    const qml = { title: "Export FBX", text: "", buttons: [], buttons_unreadable: true };
+    const qmlText = jobDialogMessage("cmd_1", { dialog: qml, dialog_message: oldWaiting("Export FBX", "", "none found", "cmd_1") });
+    expect(qmlText).toBe(formatDialog(qml, "cmd_1"));
+    expect(qmlText).toContain("answer or close it in Character Creator 5 (no MCP tool can click its buttons)");
+    const unread = { title: "Character Creator 5", text: "", buttons: ["OK", "Cancel"], text_read: false };
+    const unreadText = jobDialogMessage("cmd_1",
+      { dialog: unread, dialog_message: oldWaiting("Character Creator 5", "", "OK, Cancel", "cmd_1") });
+    expect(unreadText).toBe(formatDialog(unread, "cmd_1"));
+    expect(unreadText).toContain("its text could not be read, so ask the user to answer it in CC5");
+  });
+
+  it("keeps the plugin's text for a question, the crash-recovery prompt, and without a dialog", () => {
+    expect(jobDialogMessage("cmd_1", { dialog: LAYER, dialog_message: ASKING })).toBe(ASKING);
+    const layerWaiting = oldWaiting("The target object layer already exists.", "Character Creator 5",
+      "Replace, Material Only, Cancel", "cmd_1");
+    expect(jobDialogMessage("cmd_1", { dialog: LAYER, dialog_message: layerWaiting })).toBe(layerWaiting);
+    // Closing the recovery prompt decides about the user's unsaved work: it stays a question without readable buttons.
+    const recovery = { title: "Character Creator 5", text: "Unsaved project data found.", buttons: [] };
+    const recoveryWaiting = oldWaiting("Unsaved project data found.", "Character Creator 5", "none found", "cmd_1");
+    expect(jobDialogMessage("cmd_1", { dialog: recovery, dialog_message: recoveryWaiting })).toBe(recoveryWaiting);
+    expect(jobDialogMessage("cmd_1", { dialog_message: ABOUT_WAITING })).toBe(ABOUT_WAITING);
+    expect(jobDialogMessage("cmd_1", { dialog: ABOUT })).toBeUndefined();
+  });
+
+  it("says a job queued behind such a window runs once that window has closed", async () => {
+    const blocked = "Job cmd_9 has not started: it is queued behind job cmd_8. " +
+      oldWaiting("SkinGen 2.0 S/N : (serial) Copyright Reallusion", "CCSkinGen", "none found", "cmd_8") +
+      ' Job cmd_9 runs after that answer; read its result with job_status("cmd_9").';
+    const b = { getJob: vi.fn().mockResolvedValue({ job_id: "cmd_9", status: "queued", blocked_by: "cmd_8", dialog: ABOUT, dialog_message: blocked }) };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await awaitJob(b as any, "cmd_9", { waitMs: 1000, pollMs: 1 })).toEqual({
+      done: false, job_id: "cmd_9", question: ABOUT, blocked_by: "cmd_8",
+      dialog: "Job cmd_9 has not started: it is queued behind job cmd_8, which waits in this window:\nCC5 has a window " +
+        'open with no buttons: "CCSkinGen" - close it in Character Creator 5 (no MCP tool can close it).\nJob cmd_9 ' +
+        'runs once that window has closed; read its result with job_status("cmd_9").',
+    });
+  });
+});
+
+/** CC5 5.13's question at a content load during a SkinGen session (F-91, live: OK and Cancel). */
+const SKINGEN = { title: "Character Creator 5", text: SKINGEN_QUESTION, buttons: ["OK", "Cancel"], text_read: true };
+/** The plugin's text for a command waiting in that question (server.py _waiting_dialog_error). */
+const skinGenWaiting = (id: string) => `CC5 is waiting for an answer to "${SKINGEN_QUESTION}" (the "Character ` +
+  `Creator 5" window). Buttons: OK, Cancel. The command is still running as job ${id}: answer it with ` +
+  `answer_cc5_dialog (ask the user when it is a real choice), then check its result with job_status("${id}").`;
+
+// F-91 (live 2026-10-07): a content load during a SkinGen session asked this. get_cc5_dialog's reply gave the rule (a
+// plain confirmation for a load the user asked for: answer OK and say so); load_asset's reply for the job did not.
+describe("a job waiting in CC5's question before a content load ends a SkinGen session (F-91)", () => {
+  it("load_asset and the other job tools give the rule on its own line after the question", async () => {
+    const b = bridgeWith([{ status: "running", dialog: SKINGEN, dialog_message: skinGenWaiting("cmd_1") }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tool = await runJobTool(b as any, "load_asset", {}, () => "ok");
+    expect(tool.isError).toBe(true);
+    expect(tool.content[0].text).toBe(`${skinGenWaiting("cmd_1")}\n${SKINGEN_QUESTION_RULE}`);
+  });
+
+  it("finds the question in the dialog's title or text (case and line breaks ignored) or in the waiting text alone", () => {
+    const plain = "CC5 is waiting for an answer. The command is still running as job cmd_1.";
+    const split = { ...SKINGEN, text: "Applying this content will DEACTIVATE the current\nSkinGen  session.\nWould you like to continue?" };
+    expect(pendingResult({ job_id: "cmd_1", dialog: plain, question: split }).content[0].text)
+      .toBe(`${plain}\n${SKINGEN_QUESTION_RULE}`);
+    const titled = { title: SKINGEN_QUESTION, text: "", buttons: ["OK", "Cancel"] };
+    expect(pendingResult({ job_id: "cmd_1", dialog: plain, question: titled }).content[0].text)
+      .toBe(`${plain}\n${SKINGEN_QUESTION_RULE}`);
+    expect(pendingResult({ job_id: "cmd_1", dialog: skinGenWaiting("cmd_1") }))
+      .toEqual({ isError: true, content: [{ type: "text", text: `${skinGenWaiting("cmd_1")}\n${SKINGEN_QUESTION_RULE}` }] });
+  });
+
+  it("adds nothing to another question, to a window the user answers in CC5, or a second time", () => {
+    expect(pendingResult({ job_id: "cmd_1", dialog: ASKING, question: LAYER }).content[0].text).toBe(ASKING);
+    // F-99: a window whose buttons the bridge cannot read is answered or closed in CC5: no MCP tool can click its OK.
+    const qml = { ...SKINGEN, buttons: [], buttons_unreadable: true };
+    const qmlWaiting = 'CC5 has a window open whose buttons this bridge cannot read: "Character Creator 5" - answer or ' +
+      "close it in Character Creator 5 (no MCP tool can click its buttons). The command is still running as job cmd_1: " +
+      'read its result with job_status("cmd_1") once it is closed.';
+    expect(withSkinGenRule(qmlWaiting, qml)).toBe(qmlWaiting);
+    const once = withSkinGenRule(skinGenWaiting("cmd_1"), SKINGEN);
+    expect(withSkinGenRule(once, SKINGEN)).toBe(once);
+    expect(once.split(SKINGEN_QUESTION_RULE)).toHaveLength(2);
+    // The job's record is JSON from the plugin: a waiting text that is no text comes back as it was, never an exception.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(withSkinGenRule(42 as any, SKINGEN)).toBe(42);
+  });
+
+  it("leaves a recipe's or batch's WAIT text as the plugin wrote it", async () => {
+    const b = bridgeWith([{ status: "running", dialog: SKINGEN, dialog_message: skinGenWaiting("cmd_1") }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await runJobStep(b as any, "load_asset", {}, { waitMs: 1000, pollMs: 1 }))
+      .toEqual({ success: false, error: skinGenWaiting("cmd_1"), stopped: { job_id: "cmd_1", question: SKINGEN } });
+  });
+});
+
 describe("startJob", () => {
   it("rejects without calling the bridge when already cancelled, and returns the job id otherwise", async () => {
     const cancelled = new AbortController();
@@ -310,6 +483,16 @@ describe("runJobStep", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(await runJobStep(b as any, "load_asset", {}, { waitMs: 60_000, pollMs: 1, signal: ac.signal, onDialog }))
       .toEqual({ success: false, error: "still running in CC5 as job cmd_1 (check it with job_status)", answered: "Material Only" });
+  });
+
+  it("keeps the buttons answer_cc5_dialog clicked while a finished job waited (F-98), also on a failed one", async () => {
+    const answers = [{ button: "Cancel", title: "Character Creator 5" }];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await runJobStep(bridgeWith([{ status: "done", result: { success: true, path: "C:/e/Eyes.ccEye" }, answers }]) as any,
+      "load_asset", {}, { pollMs: 1 })).toEqual({ success: true, path: "C:/e/Eyes.ccEye", answers });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await runJobStep(bridgeWith([{ status: "failed", result: { success: false, error: "x" }, answers }]) as any,
+      "load_asset", {}, { pollMs: 1 })).toEqual({ success: false, error: "x", answers });
   });
 
   it("reports a failed job with its error, or 'failed' without one", async () => {

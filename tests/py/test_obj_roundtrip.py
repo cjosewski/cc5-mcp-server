@@ -1,4 +1,4 @@
-"""F-83: the OBJ round trip (export_obj, sculpt, replace_mesh_from_obj) in CC5's T-pose."""
+"""F-83: the OBJ round trip (export_obj, sculpt, replace_mesh_from_obj) in CC5's T-pose; F-88: with a neutral face."""
 from __future__ import annotations
 
 import os
@@ -19,6 +19,22 @@ BITS = {"EExport3DFileOption_FullBodyPart": 1, "EExport3DFileOption_AllClothes":
         "EExport3DFileOption_ResetToBindPose": 4, "EExport3DFileOption_ExportMaterial": 8,
         "EExport3DFileOption_AxisYUp": 16}
 ONE_FRAME = 100.0  # RTime units: CC5 counts 6,000 per second, so one frame at 60 fps
+# F-88 (live CC5 5.13): the expression set on Kevin, as CC5 reads it back (float32), beside two sliders at 0.
+EXPRESSION = {"Brow_Compress_L": 0.6000000238418579, "Brow_Compress_R": 0.6000000238418579,
+              "Mouth_Frown_L": 0.4000000059604645, "Mouth_Frown_R": 0.4000000059604645,
+              "Eye_Squint_L": 0.30000001192092896, "Eye_Squint_R": 0.30000001192092896,
+              "Brow_Raise_Inner_L": 0.0, "Mouth_Smile_L": 0.0}
+SLIDERS = "Brow_Compress_L 0.6, Brow_Compress_R 0.6, Eye_Squint_L 0.3 and 3 more"  # by name, three, then the count
+# Review #5: every set slider with its weight (3 places), so the expression can be set again after the round trip.
+WEIGHTS = {"Brow_Compress_L": 0.6, "Brow_Compress_R": 0.6, "Eye_Squint_L": 0.3, "Eye_Squint_R": 0.3,
+           "Mouth_Frown_L": 0.4, "Mouth_Frown_R": 0.4}
+# Review #6: the replace sees only the expression the character has now, so an OBJ exported with one must never come
+# back, not even after reset_expression.
+EXPRESSION_NOTE = (f"WARNING: the OBJ carries the facial expression: {SLIDERS} (this reply lists every slider with its "
+                   "weight). Do not bring this OBJ back with replace_mesh_from_obj, not even after reset_expression: the "
+                   "expression is part of this OBJ, and the replace would make it part of the mesh without noticing "
+                   "(its check would pass). For a round trip, run reset_expression, export again with export_obj and "
+                   "edit that OBJ; after the replace, set the expression again with these weights.")
 
 
 def write_obj(path, groups):
@@ -90,8 +106,8 @@ class _Clip:
 
 
 class FakeCC5:
-    """What replace_mesh_from_obj touches: Kevin's rest shape (kept in the T-pose), his motion clips, OBJ export,
-    ReplaceMesh, and one undo step per BeginAction."""
+    """What replace_mesh_from_obj touches: Kevin's rest shape (kept in the T-pose), his motion clips, his facial
+    expression sliders, OBJ export, ReplaceMesh, and one undo step per BeginAction."""
 
     def __init__(self, rl):
         self.mesh = {TONGUE: list(TONGUE_VERTICES), BODY: list(T_POSE)}
@@ -119,6 +135,14 @@ class FakeCC5:
         rl.RFileIO.ExportObjFile.side_effect = self.export_obj
         for name, bit in BITS.items():
             setattr(rl, name, bit)
+
+    def set_expression(self, weights):
+        """The face's expression sliders and the weights CC5 reads for them (a neutral face until this is called)."""
+        face = self.avatar.GetFaceComponent.return_value
+        face.GetExpressionGroups.return_value = ["Face"]
+        face.GetExpressionNames.side_effect = lambda group: list(weights)
+        face.GetExpressionWeights.side_effect = lambda time, names: [weights[n] for n in names]
+        return face
 
     def begin_action(self, name):
         self.events.append(("BeginAction", name))
@@ -227,9 +251,25 @@ class ReadObjGroupsTest(unittest.TestCase):
                          {"count_a": 0, "count_b": 0, "max_cm": 0.0, "share_over_10cm": 0.0})
 
     def test_the_limits(self):
+        # F-88: exact round trips read 0.00 cm and an expression applied twice 0.36 cm, so the check allows 0.05 cm.
         p = self.pipe
         self.assertEqual((p.POSE_CLIP_MAX_FRAMES, p.POSE_MISMATCH_CM, p.POSE_MISMATCH_SHARE, p.ROUND_TRIP_TOLERANCE_CM,
-                          p.REPLACE_APPLIED_CM), (1, 10.0, 0.05, 0.5, 0.01))
+                          p.REPLACE_APPLIED_CM, p.EXPRESSION_SLIDERS_NAMED), (1, 10.0, 0.05, 0.05, 0.01, 3))
+
+    def test_expression_weights_name_every_slider_with_its_weight(self):
+        sliders = [{"name": "A", "weight": 0.6}, {"name": "B", "weight": 0.12345}, {"name": "C", "weight": 1.0},
+                   {"name": "D", "weight": 0.25}]
+        self.assertEqual(self.pipe._expression_weights(sliders), {"A": 0.6, "B": 0.123, "C": 1.0, "D": 0.25})
+        self.assertEqual(self.pipe._expression_weights([]), {})
+
+    def test_slider_text_names_three_sliders_then_counts_the_rest(self):
+        def sliders(*names):
+            return [{"name": n, "weight": 0.5} for n in names]
+        text = self.pipe._slider_text
+        self.assertEqual(text(sliders("A")), "A 0.5")
+        self.assertEqual(text(sliders("A", "B", "C")), "A 0.5, B 0.5, C 0.5")
+        self.assertEqual(text(sliders("A", "B", "C", "D")), "A 0.5, B 0.5, C 0.5 and 1 more")
+        self.assertEqual(text([{"name": "A", "weight": 1.0}, {"name": "B", "weight": 0.0123}]), "A 1, B 0.0123")
 
 
 class RoundTripTestCase(unittest.TestCase):
@@ -313,6 +353,54 @@ class ExportObjTest(RoundTripTestCase):
         self.assertEqual(r["notes"], ["WARNING: CC5 rejected (avatar, path, option) and (avatar, path) was used instead, "
                                       "so the OBJ options (Y-up axis, body and clothing parts, materials) were NOT "
                                       "applied, and the OBJ may not be in CC5's T-pose"])
+
+    # F-88 (live CC5 5.13): the OBJ carries the facial expression the character shows, and a replace with it set baked
+    # it into the mesh. The OBJ may be wanted for other uses, so the export runs, with a WARNING naming the sliders.
+    def test_an_expression_set_gets_a_warning_naming_its_sliders_and_the_export_still_runs(self):
+        face = self.cc5.set_expression(EXPRESSION)
+        for y_up, first_note in ((True, self.pipe.OBJ_TPOSE_NOTE), (False, self.pipe.OBJ_Z_UP_NOTE)):
+            with self.subTest(y_up=y_up):
+                path = os.path.join(self.dir, f"expression_{y_up}.obj")
+                r = self.pipe.export_obj(path, y_up=y_up)
+                self.assertTrue(r["success"])
+                self.assertTrue(os.path.isfile(path))
+                self.assertEqual(r["notes"], [first_note, EXPRESSION_NOTE])
+                self.assertTrue(r["notes"][1].startswith(self.pipe.OBJ_EXPRESSION_PREFIX))
+                # Review #5: the note names three; the result gives every slider with its weight.
+                self.assertEqual(r["expression_weights"], WEIGHTS)
+        self.assertEqual(self.cc5.options, [1 | 2 | 8 | 16, 1 | 2 | 8])
+        self.assertNotIn("BeginAction", self.calls())  # read only: no undo step
+        face.AddExpressionKeys.assert_not_called()
+
+    def test_a_neutral_face_adds_no_note(self):
+        self.cc5.set_expression({name: 0.0 for name in EXPRESSION})
+        r = self.pipe.export_obj(os.path.join(self.dir, "neutral.obj"))
+        self.assertEqual(r["notes"], [self.pipe.OBJ_TPOSE_NOTE])
+        self.assertNotIn("expression_weights", r)
+
+    def test_an_expression_that_cannot_be_read_gets_a_note_and_the_export_still_runs(self):
+        self.cc5.set_expression(EXPRESSION).GetExpressionWeights.side_effect = RuntimeError("SWIG")
+        r = self.pipe.export_obj(os.path.join(self.dir, "unread.obj"))
+        self.assertTrue(r["success"])
+        self.assertEqual(r["notes"], [self.pipe.OBJ_TPOSE_NOTE, self.pipe.OBJ_EXPRESSION_NOT_READ])
+        self.assertNotIn("expression_weights", r)
+        self.assertEqual(self.pipe.OBJ_EXPRESSION_NOT_READ, "Could not read the facial expression: the OBJ carries any "
+                                                            "expression the face shows, and replace_mesh_from_obj "
+                                                            "refuses while the expression cannot be read.")
+
+    def test_the_expression_warning_follows_a_weaker_call_forms_warning(self):
+        def export(avatar, path, *rest):
+            if rest:
+                raise TypeError("Wrong number or type of arguments for overloaded function 'RFileIO_ExportObjFile'.")
+            open(path, "wb").close()
+
+        self.rl.RFileIO.ExportObjFile.side_effect = export
+        self.cc5.set_expression(EXPRESSION)
+        r = self.pipe.export_obj(os.path.join(self.dir, "weak.obj"))
+        self.assertEqual(len(r["notes"]), 2)
+        self.assertTrue(r["notes"][0].startswith("WARNING: CC5 rejected (avatar, path, option)"))
+        self.assertEqual(r["notes"][1], EXPRESSION_NOTE)
+        self.assertEqual(r["expression_weights"], WEIGHTS)
 
 
 class ReplaceMeshTest(RoundTripTestCase):
@@ -480,9 +568,65 @@ class ReplaceMeshTest(RoundTripTestCase):
         self.assertEqual(r["error"], "CC5 did not read TestPatient.obj as expected (the mesh differs by up to 2.00 cm "
                                      "from the OBJ); undoing the replace failed (SWIG): undo it in Character Creator 5.")
 
-    # P-3: ReplaceMesh reports OK but the mesh keeps its old shape. A fine sculpt (0.3 cm) is within the 0.5 cm check
+    def test_a_mesh_0_36_cm_off_the_obj_after_the_replace_is_undone_once_and_fails(self):
+        # F-88: an expression baked in and applied again read 0.36 cm, which the 0.5 cm allowed before passed; exact
+        # round trips read 0.00 cm, so the check now allows ROUND_TRIP_TOLERANCE_CM (0.05 cm).
+        self.cc5.misread_cm = 0.36
+        r = self.replace(self.obj())
+        self.assertEqual(r, {"success": False, "error": "CC5 did not read TestPatient.obj as expected (the mesh differs "
+                                                        "by up to 0.36 cm from the OBJ); the replace was undone."})
+        self.assertEqual(self.calls().count("Undo"), 1)
+        self.assertEqual(self.cc5.mesh[BODY], T_POSE)
+        self.assertEqual(len(self.cc5.clips), 1)
+        self.assertTempFoldersDeleted()
+
+    def test_a_mesh_within_0_05_cm_of_the_obj_passes_the_check(self):
+        self.cc5.misread_cm = 0.04
+        r = self.replace(self.obj())
+        self.assertEqual((r["success"], r["check_max_cm"]), (True, 0.04))
+        self.assertNotIn("Undo", self.calls())
+
+    # F-88 (live CC5 5.13): Kevin with six expression sliders set; an unedited OBJ, replaced, made the expression part
+    # of the mesh, and the expression applied on top again (the head up to 0.36 cm off).
+    def test_an_expression_set_is_refused_before_anything_changes(self):
+        # Review #6: the refusal covers an OBJ exported with this expression set (export again after reset_expression)
+        # and one exported with a neutral face (reset_expression, then replace it again); review #5: the weights to set
+        # the expression again come with it.
+        face = self.cc5.set_expression(EXPRESSION)
+        r = self.replace(self.obj())
+        self.assertEqual(r, {"success": False, "error": (
+            f"Kevin's facial expression is set ({SLIDERS}; this reply lists every slider with its weight), so nothing "
+            "was replaced: an OBJ exported with the expression set carries it, and the replace would bake it into the "
+            "mesh. If TestPatient.obj was exported while this expression was set, run reset_expression, export the "
+            "OBJ again with export_obj and make the edit on that OBJ. If it was exported with a neutral face, run "
+            "reset_expression and replace it again. After the replace, set the expression again with the weights "
+            "listed."), "expression_weights": WEIGHTS})
+        self.assertNothingChanged()
+        self.assertEqual(self.cc5.options, [])  # refused before the check export
+        self.assertEqual(self.temp_folders, [])
+        face.AddExpressionKeys.assert_not_called()  # the expression stays as it is
+
+    def test_an_expression_that_cannot_be_read_is_refused_before_anything_changes(self):
+        self.cc5.set_expression(EXPRESSION).GetExpressionWeights.side_effect = RuntimeError("SWIG")
+        r = self.replace(self.obj())
+        self.assertEqual(r, {"success": False,
+                             "error": "Could not read Kevin's facial expression, so nothing was replaced: SWIG"})
+        self.cc5.avatar.GetFaceComponent.return_value = None
+        r = self.replace(self.obj())
+        self.assertEqual(r, {"success": False, "error": "Could not read Kevin's facial expression, so nothing was "
+                                                        "replaced: CC5 gave no face component"})
+        self.assertNothingChanged()
+        self.assertEqual(self.cc5.options, [])
+
+    def test_a_neutral_face_is_read_and_the_replace_goes_on(self):
+        face = self.cc5.set_expression({name: 0.0 for name in EXPRESSION})
+        r = self.replace(self.obj())
+        self.assertEqual((r["success"], r["check_max_cm"]), (True, 0.0))
+        face.GetExpressionWeights.assert_called_once()
+
+    # P-3: ReplaceMesh reports OK but the mesh keeps its old shape. A fine sculpt (0.03 cm) is within the 0.05 cm check
     # against the OBJ, so only the comparison with the mesh before the replace shows that nothing was applied.
-    FINE_SCULPT = [T_POSE[0], T_POSE[1], (0.0, 170.3, 0.0), T_POSE[3]]
+    FINE_SCULPT = [T_POSE[0], T_POSE[1], (0.0, 170.03, 0.0), T_POSE[3]]
 
     def test_a_replace_cc5_did_not_apply_is_undone_once_and_fails(self):
         self.cc5.ignores_replace = True

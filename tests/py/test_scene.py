@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import itertools
 import os
 import tempfile
 import unittest
@@ -36,6 +38,25 @@ class FakeScene:
         scene.ClearSelectObjects.side_effect = lambda: self.selection.clear()
         scene.SelectObject.side_effect = lambda o: self.selection.__setitem__(slice(None), [o])  # replaces, as in CC5
         scene.SelectObjects.side_effect = lambda objs: self.selection.extend(objs)
+
+
+def _selection_reads_fail(rl, scene, *failing):
+    """GetSelectedObjects raises RuntimeError("SWIG") on the reads numbered in `failing` (0: the read before the clear,
+    1: the read after it) and lists the fake scene's selection on the others."""
+    reads = itertools.count()
+
+    def read():
+        if next(reads) in failing:
+            raise RuntimeError("SWIG")
+        return list(scene.selection)
+    rl.RScene.GetSelectedObjects.side_effect = read
+
+
+def _error_status():
+    """An RStatus whose IsError() is True: how RLPy reports a call that failed without raising."""
+    status = mock.MagicMock(name="RStatus")
+    status.IsError.return_value = True
+    return status
 
 
 def _avatar(name, oid, clothes=(), hairs=(), accessories=()):
@@ -258,6 +279,305 @@ class LoadAssetTargetTest(unittest.TestCase):
             self.assertFalse(r["success"], name)
             self.assertIn("LoadFile reported an error status", r["error"])
 
+    # F-92 precaution: a .ccProject replaces the scene, so its load removes the characters in it. The crash was seen only
+    # with delete_avatar, so this is a precaution: the selection is cleared first, and the load runs in any case.
+    PROJECT_CLEARED = ("CC5's selection ({}) was cleared before the project load: a project replaces the scene, and "
+                       "deleting a character while one of its worn items is selected can crash CC5 (F-92).")
+
+    def _order(self):
+        order: list = []
+        clear = self.rl.RScene.ClearSelectObjects.side_effect
+        status = self.rl.RFileIO.LoadFile.return_value
+        self.rl.RScene.ClearSelectObjects.side_effect = lambda: order.append("ClearSelectObjects") or clear()
+        self.rl.RFileIO.LoadFile.side_effect = lambda *a: order.append("LoadFile") or status
+        return order
+
+    def test_a_project_load_clears_the_selection_first_and_names_it(self):
+        order = self._order()
+        pants = _obj("Pants", 11, "cloth")
+        self.scene.selection = [pants, self.amy]
+        path = self._file("Scene.ccProject")
+        r = self.api.load_asset(path)
+        self.assertEqual(r, {"success": True, "path": path, "notes": [self.PROJECT_CLEARED.format("Pants, Amy")]})
+        self.assertEqual(order, ["ClearSelectObjects", "LoadFile"])
+        self.assertEqual(self.scene.selection, [])
+        self.rl.RGlobal.BeginAction.assert_not_called()  # a selection change is no undo step
+
+    def test_a_project_load_with_nothing_selected_adds_no_note(self):
+        order = self._order()
+        path = self._file("Scene.ccProject")
+        self.assertEqual(self.api.load_asset(path), {"success": True, "path": path})
+        self.assertEqual(order, ["ClearSelectObjects", "LoadFile"])
+
+    def test_a_project_load_runs_when_the_selection_cannot_be_cleared(self):
+        self.scene.selection = [self.amy]
+        self.rl.RScene.ClearSelectObjects.side_effect = RuntimeError("SWIG")
+        path = self._file("Scene.ccProject")
+        r = self.api.load_asset(path)
+        self.assertEqual(r, {"success": True, "path": path, "notes": [
+            "WARNING: CC5's selection could not be cleared before the project load (SWIG): a project replaces the "
+            "scene, and deleting a character while one of its worn items is selected can crash CC5 (F-92)."]})
+        self.rl.RFileIO.LoadFile.assert_called_once_with(path)
+
+    def test_a_project_load_says_a_selection_it_could_not_read_was_cleared(self):
+        # The selection read again after the clear is empty (batch F review #1), so the note can say it was cleared.
+        self.scene.selection = [self.amy]
+        _selection_reads_fail(self.rl, self.scene, 0)
+        path = self._file("Scene.ccProject")
+        r = self.api.load_asset(path)
+        self.assertEqual(r["notes"], [self.PROJECT_CLEARED.format("it could not be read: SWIG")])
+        self.rl.RFileIO.LoadFile.assert_called_once_with(path)
+
+    # Batch F review #1: a clear that returned is checked by reading the selection again, so the note says "was cleared"
+    # only when that read is empty. A selection still set, or unreadable after the clear, is a WARNING note, and the
+    # project loads all the same, as after a clear that failed.
+    def test_a_project_load_warns_when_the_selection_is_still_set_after_the_clear(self):
+        self.scene.selection = [_obj("Pants", 11, "cloth")]
+        self.rl.RScene.ClearSelectObjects.side_effect = lambda: None  # returns, and clears nothing
+        path = self._file("Scene.ccProject")
+        r = self.api.load_asset(path)
+        self.assertEqual(r, {"success": True, "path": path, "notes": [
+            "WARNING: CC5's selection could not be cleared before the project load (Pants stayed selected): a project "
+            "replaces the scene, and deleting a character while one of its worn items is selected can crash CC5 "
+            "(F-92)."]})
+        self.rl.RFileIO.LoadFile.assert_called_once_with(path)
+
+    NOT_READ_AFTER_CLEAR = ("WARNING: CC5's selection could not be read after it was cleared before the project load "
+                            "(SWIG), so it may still be set: a project replaces the scene, and deleting a character "
+                            "while one of its worn items is selected can crash CC5 (F-92).")
+
+    def test_a_project_load_warns_when_the_selection_cannot_be_read_after_the_clear(self):
+        self.scene.selection = [self.amy]
+        _selection_reads_fail(self.rl, self.scene, 1)
+        path = self._file("Scene.ccProject")
+        r = self.api.load_asset(path)
+        self.assertEqual(r, {"success": True, "path": path, "notes": [self.NOT_READ_AFTER_CLEAR]})
+        self.rl.RFileIO.LoadFile.assert_called_once_with(path)
+
+    def test_a_project_load_warns_when_the_selection_can_be_read_neither_before_nor_after_the_clear(self):
+        # Before batch F review #1 this note said the selection was cleared.
+        _selection_reads_fail(self.rl, self.scene, 0, 1)
+        path = self._file("Scene.ccProject")
+        r = self.api.load_asset(path)
+        self.assertEqual(r, {"success": True, "path": path, "notes": [self.NOT_READ_AFTER_CLEAR]})
+        self.rl.RFileIO.LoadFile.assert_called_once_with(path)
+
+    def test_a_project_load_counts_an_error_status_from_the_clear_as_a_failed_clear(self):
+        # RLPy's ClearSelectObjects returns an RStatus (batch F review #1): an error status is a clear that failed.
+        self.scene.selection = [self.amy]
+        self.rl.RScene.ClearSelectObjects.side_effect = lambda: _error_status()
+        path = self._file("Scene.ccProject")
+        r = self.api.load_asset(path)
+        self.assertEqual(r, {"success": True, "path": path, "notes": [
+            "WARNING: CC5's selection could not be cleared before the project load (ClearSelectObjects reported an "
+            "error status): a project replaces the scene, and deleting a character while one of its worn items is "
+            "selected can crash CC5 (F-92)."]})
+        self.rl.RFileIO.LoadFile.assert_called_once_with(path)
+
+    def test_a_failed_project_load_keeps_the_note(self):
+        self.scene.selection = [self.amy]
+        self.rl.RFileIO.LoadFile.side_effect = RuntimeError("boom")
+        r = self.api.load_asset(self._file("Scene.ccProject"))
+        self.assertEqual(r, {"success": False, "error": "boom", "notes": [self.PROJECT_CLEARED.format("Amy")]})
+
+    def test_other_scene_content_leaves_the_selection_alone(self):
+        self.scene.selection = [self.amy]
+        path = self._file("Close Face_Front.ccCam")
+        self.assertEqual(self.api.load_asset(path), {"success": True, "path": path})
+        self.rl.RScene.ClearSelectObjects.assert_not_called()
+        self.assertEqual(self.scene.selection, [self.amy])
+
+
+class DeleteAvatarSelectionTest(unittest.TestCase):
+    """F-92 (live): CC5 crashed deleting a character while its uniform pants were selected (load_asset leaves the
+    loaded item selected). Clearing the selection in the same action, before RemoveObject, deleted it cleanly."""
+
+    CLEARED = ("CC5's selection ({}) was cleared before the delete: deleting a character while one of its worn items "
+               "is selected can crash CC5 (F-92).")
+
+    def setUp(self):
+        self.rl = _support.install_fake_rlpy()
+        self.api = _support.fresh_import("cc5_api")
+        self.pants = _obj("Pants", 11, "cloth")
+        self.kevin = _avatar("Kevin", 1, clothes=[self.pants])
+        self.amy = _avatar("Amy", 2)
+        self.scene = FakeScene(self.rl, avatars=[self.kevin, self.amy])
+        self.order = []
+        clear = self.rl.RScene.ClearSelectObjects.side_effect
+        self.rl.RScene.ClearSelectObjects.side_effect = lambda: self.order.append("ClearSelectObjects") or clear()
+        self.rl.RGlobal.BeginAction.side_effect = lambda name: self.order.append("BeginAction")
+        self.rl.RGlobal.EndAction.side_effect = lambda: self.order.append("EndAction")
+
+        def remove(obj):
+            self.order.append(f"RemoveObject {obj.GetName()}")
+            self.scene.avatars.remove(obj)
+            # A removed character and what it wore are gone: their handles must not be touched afterwards.
+            for gone in (obj, *obj.GetClothes()):
+                gone.GetName.side_effect = RuntimeError("deleted object")
+
+        self.rl.RScene.RemoveObject.side_effect = remove
+
+    def test_the_selection_is_cleared_in_the_action_before_the_character_is_removed(self):
+        self.scene.selection = [self.pants]  # live, after load_asset: get_selection said "Pants (Cloth)"
+        r = self.api.delete_avatar("Kevin")
+        self.assertEqual(self.order, ["BeginAction", "ClearSelectObjects", "RemoveObject Kevin", "EndAction"])
+        self.assertEqual(self.scene.selection, [])
+        # The names were read before the delete: the Pants' handle is gone after it.
+        self.assertEqual(r, {"success": True, "removed": ["Kevin"], "notes": [self.CLEARED.format("Pants")]})
+
+    def test_deleting_every_character_clears_once_before_the_first_remove(self):
+        self.scene.selection = [self.pants, self.amy]
+        r = self.api.delete_avatar("")
+        self.assertEqual(self.order, ["BeginAction", "ClearSelectObjects", "RemoveObject Kevin", "RemoveObject Amy",
+                                      "EndAction"])
+        self.assertEqual(r["removed"], ["Kevin", "Amy"])
+        self.assertEqual(r["notes"], [self.CLEARED.format("Pants, Amy")])
+
+    def test_no_note_when_nothing_was_selected(self):
+        r = self.api.delete_avatar("Kevin")
+        self.assertEqual(r, {"success": True, "removed": ["Kevin"]})
+        self.assertEqual(self.order, ["BeginAction", "ClearSelectObjects", "RemoveObject Kevin", "EndAction"])
+
+    # Review #2 (fail closed): nothing is deleted when the clear failed while the selection held something or could not
+    # be read. Batch F review #1: after a clear that returned, the selection is read again, and the delete goes on only
+    # when that read is empty, whatever the read before the clear gave. Batch F review #31: both refusals also say to
+    # deselect in CC5, since clear_selection calls the same ClearSelectObjects.
+    NOT_CLEARED = ("CC5's selection ({}) could not be cleared, so nothing was deleted: deleting a character while one of "
+                   "its worn items is selected can crash CC5 (F-92). Run clear_selection (or deselect everything in "
+                   "Character Creator 5), then delete again.")
+    NOT_READ = ("CC5's selection could not be read or cleared, so nothing was deleted: deleting a character while one of "
+                "its worn items is selected can crash CC5 (F-92). Run clear_selection (or deselect everything in "
+                "Character Creator 5), then delete again.")
+
+    def test_the_refusals_are_the_plugins(self):
+        self.assertEqual(self.api.DELETE_SELECTION_NOT_CLEARED, self.NOT_CLEARED)
+        self.assertEqual(self.api.DELETE_SELECTION_NOT_READ, self.NOT_READ)
+
+    def assertNothingDeleted(self):
+        self.assertEqual(self.scene.avatars, [self.kevin, self.amy])
+        self.rl.RScene.RemoveObject.assert_not_called()
+
+    def test_a_selection_that_cannot_be_cleared_deletes_nothing(self):
+        # Before, the delete went on with a WARNING note: the F-92 crash itself, with the note never seen.
+        self.scene.selection = [self.pants, self.amy]
+        self.rl.RScene.ClearSelectObjects.side_effect = RuntimeError("SWIG")
+        for name in ("Kevin", ""):
+            with self.subTest(name=name):
+                self.order.clear()
+                r = self.api.delete_avatar(name)
+                self.assertEqual(r, {"success": False, "error": self.NOT_CLEARED.format("Pants, Amy")})
+                self.assertEqual(self.order, ["BeginAction", "EndAction"])  # the undo step is still closed
+                self.assertNothingDeleted()
+
+    def test_a_selection_that_cannot_be_read_is_cleared_and_the_delete_goes_on(self):
+        # ClearSelectObjects ran and the selection read again after it is empty, so nothing is selected any more,
+        # whatever it held: the note says the selection could not be read (batch F's first round refused this delete,
+        # though the clear had run).
+        self.scene.selection = [self.pants]
+        _selection_reads_fail(self.rl, self.scene, 0)
+        r = self.api.delete_avatar("Kevin")
+        self.assertEqual(r, {"success": True, "removed": ["Kevin"],
+                             "notes": [self.CLEARED.format("it could not be read: SWIG")]})
+        self.assertEqual(self.order, ["BeginAction", "ClearSelectObjects", "RemoveObject Kevin", "EndAction"])
+        self.assertEqual(self.scene.selection, [])
+
+    # Batch F review #1: RLPy's ClearSelectObjects returns an RStatus, so a clear that returned may have left the
+    # selection in place. The delete reads it again, as cc5_scene.clear_selection does.
+    def test_a_clear_that_returns_but_leaves_the_pants_selected_deletes_nothing(self):
+        # Before, the delete went on and noted "CC5's selection (Pants) was cleared": the F-92 crash.
+        self.scene.selection = [self.pants]
+        # It returns, and clears nothing.
+        self.rl.RScene.ClearSelectObjects.side_effect = lambda: self.order.append("ClearSelectObjects")
+        for name in ("Kevin", ""):
+            with self.subTest(name=name):
+                self.order.clear()
+                r = self.api.delete_avatar(name)
+                self.assertEqual(r, {"success": False, "error": self.NOT_CLEARED.format("Pants")})
+                self.assertEqual(self.order, ["BeginAction", "ClearSelectObjects", "EndAction"])
+                self.assertNothingDeleted()
+
+    def test_the_refusal_names_what_is_left_after_the_clear(self):
+        # The selection could not be read before the clear; read after it, the pants are still selected.
+        self.scene.selection = [self.pants, self.amy]
+        _selection_reads_fail(self.rl, self.scene, 0)
+        self.rl.RScene.ClearSelectObjects.side_effect = lambda: self.scene.selection.remove(self.amy)
+        self.assertEqual(self.api.delete_avatar("Kevin"), {"success": False, "error": self.NOT_CLEARED.format("Pants")})
+        self.assertNothingDeleted()
+
+    def test_a_selection_that_cannot_be_read_after_the_clear_deletes_nothing(self):
+        # Before the clear: the pants, or a read that failed too. Nothing proves the selection empty at the delete.
+        for failing in ((1,), (0, 1)):
+            with self.subTest(failing=failing):
+                self.order.clear()
+                self.scene.selection = [self.pants]
+                _selection_reads_fail(self.rl, self.scene, *failing)
+                self.assertEqual(self.api.delete_avatar("Kevin"), {"success": False, "error": self.NOT_READ})
+                self.assertEqual(self.order, ["BeginAction", "ClearSelectObjects", "EndAction"])
+                self.assertNothingDeleted()
+
+    def test_a_clear_that_returns_an_error_status_is_a_clear_that_failed(self):
+        # CC5 said the clear failed: the read before it decides, and the selection is not read again.
+        self.scene.selection = [self.pants]
+        failed = _error_status()
+        self.rl.RScene.ClearSelectObjects.side_effect = lambda: self.order.append("ClearSelectObjects") or failed
+        r = self.api.delete_avatar("Kevin")
+        self.assertEqual(r, {"success": False, "error": self.NOT_CLEARED.format("Pants")})
+        self.assertEqual(self.rl.RScene.GetSelectedObjects.call_count, 1)
+        self.assertNothingDeleted()
+        # With nothing selected, an error status stops nothing: a clear selects nothing.
+        self.scene.selection.clear()
+        self.assertEqual(self.api.delete_avatar("Kevin"), {"success": True, "removed": ["Kevin"]})
+
+    def test_a_selection_that_can_neither_be_read_nor_cleared_deletes_nothing(self):
+        self.rl.RScene.GetSelectedObjects.side_effect = RuntimeError("SWIG")
+        self.rl.RScene.ClearSelectObjects.side_effect = RuntimeError("SWIG")
+        for name in ("Kevin", ""):
+            with self.subTest(name=name):
+                self.order.clear()
+                self.assertEqual(self.api.delete_avatar(name), {"success": False, "error": self.NOT_READ})
+                self.assertEqual(self.order, ["BeginAction", "EndAction"])  # the undo step is still closed
+                self.assertNothingDeleted()
+
+    def test_a_clear_that_fails_with_nothing_selected_still_deletes(self):
+        # Read and empty: nothing is selected that a delete could crash on.
+        self.rl.RScene.ClearSelectObjects.side_effect = RuntimeError("SWIG")
+        r = self.api.delete_avatar("Kevin")
+        self.assertEqual(r, {"success": True, "removed": ["Kevin"]})
+        self.assertEqual(self.order, ["BeginAction", "RemoveObject Kevin", "EndAction"])
+
+    # What the refusal says to do: clear_selection (cc5_scene), or deselect everything in Character Creator 5, then
+    # delete again. Batch F review #31: this test emptied the fake selection by hand and never called clear_selection.
+    def test_after_a_refusal_clear_selection_then_delete_works(self):
+        cc5_scene = importlib.import_module("cc5_scene")  # imported after this test's cc5_api, so it uses that one
+        self.scene.selection = [self.pants]
+        clear = self.rl.RScene.ClearSelectObjects.side_effect
+        self.rl.RScene.ClearSelectObjects.side_effect = RuntimeError("SWIG")  # once
+        self.assertEqual(self.api.delete_avatar("Kevin"), {"success": False, "error": self.NOT_CLEARED.format("Pants")})
+        self.rl.RScene.ClearSelectObjects.side_effect = clear
+        self.assertEqual(cc5_scene.clear_selection(), {"success": True, "selected": []})
+        self.assertEqual(self.api.delete_avatar("Kevin"), {"success": True, "removed": ["Kevin"]})
+
+    def test_where_clear_selection_fails_too_deselecting_in_cc5_lets_the_delete_go_on(self):
+        # The refusal's trigger is a failing ClearSelectObjects, and clear_selection calls the same one, so it fails
+        # too; the other way the refusal gives is the user deselecting everything in CC5.
+        cc5_scene = importlib.import_module("cc5_scene")
+        self.scene.selection = [self.pants]
+        self.rl.RScene.ClearSelectObjects.side_effect = RuntimeError("SWIG")  # every time
+        refused = self.api.delete_avatar("Kevin")
+        self.assertEqual(refused, {"success": False, "error": self.NOT_CLEARED.format("Pants")})
+        self.assertIn("(or deselect everything in Character Creator 5)", refused["error"])
+        self.assertEqual(cc5_scene.clear_selection(), {"success": False, "error": "SWIG"})
+        self.assertEqual(self.scene.selection, [self.pants])
+        self.scene.selection.clear()  # the user deselected everything in CC5
+        self.assertEqual(self.api.delete_avatar("Kevin"), {"success": True, "removed": ["Kevin"]})
+        self.assertEqual(self.order, ["BeginAction", "EndAction", "BeginAction", "RemoveObject Kevin", "EndAction"])
+
+    def test_a_delete_that_finds_nobody_leaves_the_selection_alone(self):
+        self.scene.selection = [self.pants]
+        r = self.api.delete_avatar("Nobody")
+        self.assertFalse(r["success"])
+        self.assertEqual(self.scene.selection, [self.pants])
+        self.assertEqual(self.order, [])
 
 
 class FakeVec:

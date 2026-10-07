@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { BridgeUnreachableError } from "../../src/cc5-bridge.js";
-import { registerExpressionTools } from "../../src/tools/expression.js";
+import { registerExpressionTools, setExpressionAgainLine } from "../../src/tools/expression.js";
 import { createMockBridge } from "../helpers/mock-bridge.js";
 import type { MockBridge } from "../helpers/mock-bridge.js";
 import type { ExpressionInfo, ExpressionSetResult, ExpressionResetResult } from "../../src/types.js";
@@ -229,5 +229,56 @@ describe("reset_expression reports the sliders it changed (F-18)", () => {
     bridge.resetExpression.mockResolvedValue({ success: true, reset_count: 0, reset: [], slider_count: 172 });
     const r = await server.getRegisteredTool("reset_expression")({});
     expect(r.content[0].text).toBe("The face was already neutral: no expression slider was set.");
+  });
+});
+
+// Review #5 (F-88): the OBJ round trip needs a neutral face and the expression set again afterwards, but no reply gave
+// the weights of more than three sliders, so the rest of the expression was lost (live case: six sliders).
+describe("reset_expression gives every weight it reset, to set the expression again (review #5)", () => {
+  const SIX = ["Brow_Compress_L", "Brow_Compress_R", "Eye_Squint_L", "Eye_Squint_R", "Mouth_Frown_L", "Mouth_Frown_R"];
+
+  it("adds one ready set_expression line with each slider's weight", async () => {
+    bridge.resetExpression.mockResolvedValue({ success: true, reset_count: 6, reset: SIX, slider_count: 172,
+      reset_weights: { Brow_Compress_L: 0.6, Brow_Compress_R: 0.6, Eye_Squint_L: 0.3, Eye_Squint_R: 0.3,
+        Mouth_Frown_L: 0.4, Mouth_Frown_R: 0.4 } });
+    const r = await server.getRegisteredTool("reset_expression")({});
+    expect(r.isError).toBeUndefined();
+    expect(r.content[0].text).toBe("Reset 6 expression slider(s) to neutral: Brow_Compress_L, Brow_Compress_R, " +
+      "Eye_Squint_L, Eye_Squint_R, Mouth_Frown_L, Mouth_Frown_R.\nTo set the expression again: set_expression with " +
+      "Brow_Compress_L 0.6, Brow_Compress_R 0.6, Eye_Squint_L 0.3, Eye_Squint_R 0.3, Mouth_Frown_L 0.4, Mouth_Frown_R 0.4");
+  });
+
+  it("lists every weight also past the 50 names the reply names, rounded to 4 decimals at most", async () => {
+    const names = Array.from({ length: 52 }, (_, i) => `Slider_${i}`);
+    bridge.resetExpression.mockResolvedValue({ success: true, reset_count: 52, reset: names.slice(0, 50), slider_count: 172,
+      reset_weights: Object.fromEntries(names.map((n) => [n, 0.30000001192092896])) });
+    const text = (await server.getRegisteredTool("reset_expression")({})).content[0].text;
+    const [first, again] = text.split("\n");
+    expect(first.endsWith("Slider_49, ....")).toBe(true);
+    expect(again).toBe(`To set the expression again: set_expression with ${names.map((n) => `${n} 0.3`).join(", ")}`);
+  });
+
+  it("adds no line for an older plugin, a neutral face, or weights that are not numbers", async () => {
+    const replies: Array<[Record<string, unknown>, string]> = [
+      [{ success: true, reset_count: 2, reset: ["A", "B"], slider_count: 172 }, "Reset 2 expression slider(s) to neutral: A, B."],
+      [{ success: true, reset_count: 0, reset: [], slider_count: 172, reset_weights: {} },
+        "The face was already neutral: no expression slider was set."],
+      [{ success: true, reset_count: 1, reset: ["A"], slider_count: 172, reset_weights: { A: "0.5" } },
+        "Reset 1 expression slider(s) to neutral: A."],
+      [{ success: true, reset_count: 128 }, "Reset 128 expression slider(s) to neutral."],
+    ];
+    for (const [result, text] of replies) {
+      bridge.resetExpression.mockResolvedValue(result);
+      expect((await server.getRegisteredTool("reset_expression")({})).content[0].text).toBe(text);
+    }
+  });
+
+  it("setExpressionAgainLine reads only the field it is given, and skips entries that are not finite numbers", () => {
+    const result = { reset_weights: { A: 0.5, B: Number.NaN, C: 1 }, expression_weights: { D: 0.25 } };
+    expect(setExpressionAgainLine(result, "reset_weights")).toBe("To set the expression again: set_expression with A 0.5, C 1");
+    expect(setExpressionAgainLine(result, "expression_weights")).toBe("To set the expression again: set_expression with D 0.25");
+    for (const bad of [null, undefined, "x", 3, { reset_weights: [0.5] }, { reset_weights: null }]) {
+      expect(setExpressionAgainLine(bad, "reset_weights")).toBeUndefined();
+    }
   });
 });

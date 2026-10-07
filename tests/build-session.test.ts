@@ -36,6 +36,16 @@ const BUSY = 'CC5 is busy with "Exporting" (the progress window of a command it 
 /** server.py _modal_dialog_error for a window with no buttons (SkinGen's About box, F-85). */
 const NO_BUTTONS = 'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character Creator 5 (no MCP tool ' +
   "can close it), then try again.";
+/** server.py _modal_dialog_error for a window whose buttons the bridge cannot read (F-99: CC5's Export FBX, QML). */
+const QML = 'CC5 has a window open whose buttons this bridge cannot read: "Export FBX" - answer or close it in ' +
+  "Character Creator 5 (no MCP tool can click its buttons), then try again.";
+/** server.py _waiting_dialog_error from batch F on, for a command waiting in a window with no buttons or a QML window. */
+const NO_BUTTONS_WAITING = (id: string) => 'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character ' +
+  `Creator 5 (no MCP tool can close it). The command is still running as job ${id}: read its result with ` +
+  `job_status("${id}") once it is closed.`;
+const QML_WAITING = (id: string) => 'CC5 has a window open whose buttons this bridge cannot read: "Export FBX" - ' +
+  "answer or close it in Character Creator 5 (no MCP tool can click its buttons). The command is still running as job " +
+  `${id}: read its result with job_status("${id}") once it is closed.`;
 const NOT_STARTED = "CC5 timed out (cancelled): Timed out before CC5 started the command; it was cancelled and will not run.";
 
 beforeEach(() => {
@@ -43,24 +53,30 @@ beforeEach(() => {
 });
 
 describe("texts that mean CC5 had a window open", () => {
-  it("isBlockedByDialog knows the guard, Welcome, busy, no-buttons and 409 texts, and nothing else", () => {
-    for (const text of [GUARD, WELCOME, BUSY, NO_BUTTONS, waiting("cmd_ab12cd34_3")]) {
+  it("isBlockedByDialog knows the guard, Welcome, busy, no-buttons, QML and 409 texts, and nothing else", () => {
+    for (const text of [GUARD, WELCOME, BUSY, NO_BUTTONS, QML, waiting("cmd_ab12cd34_3"), NO_BUTTONS_WAITING("cmd_1"),
+      QML_WAITING("cmd_1")]) {
       expect(isBlockedByDialog(text)).toBe(true);
     }
-    for (const text of ["No avatar in scene", undefined, "", NOT_STARTED]) expect(isBlockedByDialog(text)).toBe(false);
+    for (const text of ["No avatar in scene", undefined, "", NOT_STARTED, `Failed: ${QML}`]) {
+      expect(isBlockedByDialog(text)).toBe(false);
+    }
   });
 
   it("matches the texts server.py sends", () => {
     const server = fs.readFileSync(new URL("../cc5-plugin/server.py", import.meta.url), "utf-8");
     for (const text of ['CC5 is waiting for an answer to "', "CC5's Welcome / What's New page", 'CC5 is busy with "',
-      'CC5 has a window open with no buttons: "', 'job_status("{job_id}")', "Timed out before CC5 started the command"]) {
+      'CC5 has a window open with no buttons: "', 'CC5 has a window open whose buttons this bridge cannot read: "',
+      'job_status("{job_id}")', "Timed out before CC5 started the command"]) {
       expect(server).toContain(text);
     }
   });
 
-  it("jobIdFromWaitingText reads the job a 409 text names", () => {
+  it("jobIdFromWaitingText reads the job a 409 text names, also for a window to close or a QML window", () => {
     expect(jobIdFromWaitingText(waiting("cmd_ab12cd34_3"))).toBe("cmd_ab12cd34_3");
     expect(jobIdFromWaitingText(waiting("cmd_12"))).toBe("cmd_12");
+    expect(jobIdFromWaitingText(NO_BUTTONS_WAITING("cmd_ab12cd34_4"))).toBe("cmd_ab12cd34_4");
+    expect(jobIdFromWaitingText(QML_WAITING("cmd_ab12cd34_5"))).toBe("cmd_ab12cd34_5");
     expect(jobIdFromWaitingText(GUARD)).toBeUndefined();
   });
 
@@ -173,6 +189,13 @@ describe("dialogStopFromError", () => {
     expect(await dialogStopFromError(c as any, new BridgeHttpError("CC5 is waiting for an answer to \"x\".", 409)))
       .toEqual({ ran: true, text: "CC5 is waiting for an answer to \"x\"." });
     expect(c.getJob).not.toHaveBeenCalled();
+  });
+
+  it("400 with the guard's text for a QML window (F-99): the command never ran", async () => {
+    const b = bridgeWith();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await dialogStopFromError(b as any, new BridgeHttpError(QML, 400))).toEqual({ ran: false, text: QML });
+    expect(b.getJob).not.toHaveBeenCalled();
   });
 
   it("400 with the guard's text: the command never ran", async () => {

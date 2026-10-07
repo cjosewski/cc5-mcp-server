@@ -36,6 +36,9 @@ const LAYER = {
 };
 const FOOTER = [RUBRIC, FIXES, SIDE_EFFECTS].join("\n");
 const CANCELLED = "CC5 timed out (cancelled): Timed out before CC5 started the command; it was cancelled and will not run.";
+/** The header of a default check of Kevin, the only character in the scene. */
+const HEADER = "Fit check of Kevin: 5 views (face, left, right, back, front).\n" +
+  "Wearing: Boxers; hair: none; accessories: Hat_DarkBlue.";
 
 type Entry = { type: string; text?: string; data?: string; mimeType?: string };
 type Result = { content: Entry[]; isError?: boolean };
@@ -50,12 +53,26 @@ const image = (seed: number) => png(1280, 720, seed).toString("base64");
 const incompleteAt = (view: string, i: number, before: boolean) =>
   `INCOMPLETE: the fit check of Kevin stopped at view '${view}' (${i}/5); ` +
   `${before ? "the images taken before it are below" : "no image was taken"}. Do not treat this as a pass.\nWhy: `;
+/**
+ * The first text block of a default check's INCOMPLETE reply: the stop and why, the header, then the first view's
+ * label when an image was taken, else the rubric (F-95: text blocks that follow each other are one block).
+ */
+const incompleteText = (view: string, i: number, before: boolean, why: string) =>
+  `${incompleteAt(view, i, before)}${why}\n${HEADER}\n${before ? `View 1/5: face (${fileFor(1, "face")})` : FOOTER}`;
 
 async function run(args: Record<string, unknown> = {}, extra?: unknown): Promise<Result> {
   return (await server.getRegisteredTool("check_fit")(args, extra)) as Result;
 }
 const textsOf = (r: Result) => r.content.filter((e) => e.type === "text").map((e) => e.text as string);
 const imagesOf = (r: Result) => r.content.filter((e) => e.type === "image");
+const lastLine = (e: Entry) => (e.text ?? "").split("\n").at(-1);
+
+/** F-95: Claude Code shows text blocks that follow each other with no separator, so no text block follows another. */
+function expectNoTextAfterText(r: Result) {
+  r.content.forEach((e, k) => {
+    if (k > 0 && e.type === "text") expect(r.content[k - 1].type).toBe("image");
+  });
+}
 
 /** The k-th call (from 1) of a bridge mock runs `impl`; its other calls behave as before. */
 function onCall(mock: MockBridge[keyof MockBridge], k: number, impl: (...args: unknown[]) => unknown) {
@@ -137,14 +154,15 @@ describe("check_fit default run", () => {
   it("returns a header, each view's label and image, and the reading rubric, and calls nothing clean", async () => {
     const r = await run();
     expect(r.isError).toBeUndefined();
-    expect(r.content).toHaveLength(12);
-    expect(r.content[0]).toEqual({ type: "text", text: "Fit check of Kevin: 5 views (face, left, right, back, front).\n" +
-      "Wearing: Boxers; hair: none; accessories: Hat_DarkBlue." });
+    // The header and the first view's label are one text block (F-95); every label comes just before its image.
+    expect(r.content).toHaveLength(11);
+    expectNoTextAfterText(r);
     VIEWS.forEach((view, k) => {
-      expect(r.content[1 + 2 * k]).toEqual({ type: "text", text: `View ${k + 1}/5: ${view} (${fileFor(k + 1, view)})` });
-      expect(r.content[2 + 2 * k]).toEqual({ type: "image", data: image(k + 1), mimeType: "image/png" });
+      const label = `View ${k + 1}/5: ${view} (${fileFor(k + 1, view)})`;
+      expect(r.content[2 * k]).toEqual({ type: "text", text: k === 0 ? `${HEADER}\n${label}` : label });
+      expect(r.content[1 + 2 * k]).toEqual({ type: "image", data: image(k + 1), mimeType: "image/png" });
     });
-    expect(r.content[11]).toEqual({ type: "text", text: FOOTER });
+    expect(r.content[10]).toEqual({ type: "text", text: FOOTER });
     for (const words of ["does not detect anything", "not a logo", "show the user every view", "remove_scene_item",
       "can no longer be redone"]) {
       expect(FOOTER).toContain(words);
@@ -160,7 +178,7 @@ describe("check_fit default run", () => {
   it("labels a view with the planned file when CC5 does not send the path back", async () => {
     bridge.captureViewport.mockResolvedValueOnce({ success: true, base64: image(9) });
     const r = await run();
-    expect(r.content[1].text).toBe(`View 1/5: face (${fileFor(1, "face")})`);
+    expect(lastLine(r.content[0])).toBe(`View 1/5: face (${fileFor(1, "face")})`);
     expect(imagesOf(r)).toHaveLength(5);
   });
 });
@@ -171,8 +189,8 @@ describe("check_fit views", () => {
     expect(bridge.frameCamera.mock.calls).toEqual([["back", "Kevin"], ["face", "Kevin"]]);
     expect(bridge.captureViewport.mock.calls.map((c) => c[0])).toEqual([fileFor(1, "back"), fileFor(2, "face")]);
     expect(r.content[0].text).toContain("Fit check of Kevin: 2 views (back, face).");
-    expect(r.content[1].text).toBe(`View 1/2: back (${fileFor(1, "back")})`);
-    expect(r.content[3].text).toBe(`View 2/2: face (${fileFor(2, "face")})`);
+    expect(lastLine(r.content[0])).toBe(`View 1/2: back (${fileFor(1, "back")})`);
+    expect(r.content[2].text).toBe(`View 2/2: face (${fileFor(2, "face")})`);
     expect(imagesOf(r)).toHaveLength(2);
   });
 
@@ -181,7 +199,7 @@ describe("check_fit views", () => {
     expect(bridge.frameCamera.mock.calls).toEqual([["home", "Kevin"]]);
     expect(bridge.captureViewport).toHaveBeenCalledWith(fileFor(1, "front"), 1280, 720);
     expect(r.content[0].text).toContain("Fit check of Kevin: 1 view (front).");
-    expect(r.content[1].text).toBe(`View 1/1: front (${fileFor(1, "front")})`);
+    expect(lastLine(r.content[0])).toBe(`View 1/1: front (${fileFor(1, "front")})`);
   });
 });
 
@@ -332,14 +350,16 @@ describe("check_fit picks the character", () => {
     expect(r.isError).toBeUndefined();
     expect(bridge.frameCamera.mock.calls.map((c) => c[1])).toEqual(["Kevin", "Kevin", "Kevin", "Kevin", "Kevin"]);
     // This Kevin is the second character: the list tools would read the first one's items.
-    expect(r.content[0].text).toBe("Fit check of Kevin: 5 views (face, left, right, back, front).");
+    expect(r.content[0].text).toBe("Fit check of Kevin: 5 views (face, left, right, back, front).\n" +
+      `View 1/5: face (${fileFor(1, "face")})`);
   });
 
   it("checks a character other than the first without a Wearing line: the list tools read only the first", async () => {
     bridge.getAvatars.mockResolvedValue([KEVIN, CAMILA]);
     const r = await run({ target: "Camila" });
     expect(r.isError).toBeUndefined();
-    expect(r.content[0].text).toBe("Fit check of Camila: 5 views (face, left, right, back, front).");
+    expect(r.content[0].text).toBe("Fit check of Camila: 5 views (face, left, right, back, front).\n" +
+      `View 1/5: face (${fileFor(1, "face")})`);
     expect(bridge.listClothes).not.toHaveBeenCalled();
     expect(bridge.listHair).not.toHaveBeenCalled();
     expect(bridge.listAccessories).not.toHaveBeenCalled();
@@ -350,7 +370,7 @@ describe("check_fit picks the character", () => {
     bridge.getAvatars.mockResolvedValue([KEVIN, CAMILA]);
     const r = await run({ target: "Kevin" });
     expect(r.content[0].text).toBe("Fit check of Kevin: 5 views (face, left, right, back, front).\n" +
-      "Wearing: Boxers; hair: none; accessories: Hat_DarkBlue.");
+      `Wearing: Boxers; hair: none; accessories: Hat_DarkBlue.\nView 1/5: face (${fileFor(1, "face")})`);
   });
 });
 
@@ -397,10 +417,11 @@ describe("check_fit stops at the first view it cannot capture properly (D1)", ()
     const first = r.content[0].text as string;
     expect(first.startsWith("INCOMPLETE: the fit check of Kevin stopped at view 'right' (3/5)")).toBe(true);
     expect(first).toContain('Why: CC5 is waiting for an answer to "X"');
-    expect(first).toBe(incompleteAt("right", 3, true) + question);
-    expect(r.content).toHaveLength(7);
-    expect(r.content[1].text).toContain("Fit check of Kevin: 5 views");
-    expect(r.content[2].text).toBe(`View 1/5: face (${fileFor(1, "face")})`);
+    // The stop, the header and the first view's label are one text block (F-95).
+    expect(first).toBe(incompleteText("right", 3, true, question));
+    expect(r.content).toHaveLength(5);
+    expectNoTextAfterText(r);
+    expect(r.content[2].text).toBe(`View 2/5: left (${fileFor(2, "left")})`);
     expect(imagesOf(r)).toHaveLength(2);
     expect(r.content.at(-1)).toEqual({ type: "text", text: FOOTER });
     expect(bridge.frameCamera).toHaveBeenCalledTimes(3);
@@ -416,7 +437,7 @@ describe("check_fit stops at the first view it cannot capture properly (D1)", ()
     const r = await run();
     expect(r.isError).toBe(true);
     const first = r.content[0].text as string;
-    expect(first).toBe(incompleteAt("left", 2, true) + `${CANCELLED}\n${formatDialog(LAYER, "cmd_ab12cd34_3")}`);
+    expect(first).toBe(incompleteText("left", 2, true, `${CANCELLED}\n${formatDialog(LAYER, "cmd_ab12cd34_3")}`));
     expect(first).toContain("Job cmd_ab12cd34_3 is waiting on this answer");
     expect(bridge.getDialog).toHaveBeenCalledTimes(2);
     expect(bridge.getDialog).toHaveBeenLastCalledWith(3000);
@@ -434,7 +455,7 @@ describe("check_fit stops at the first view it cannot capture properly (D1)", ()
     onCall(bridge.captureViewport, 2, () => { throw new BridgeHttpError(CANCELLED, 504); });
     const r = await run();
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe(incompleteAt("left", 2, true) + CANCELLED);
+    expect(r.content[0].text).toBe(incompleteText("left", 2, true, CANCELLED));
     expect(bridge.getDialog).toHaveBeenCalledTimes(2);
     expect(bridge.frameCamera).toHaveBeenCalledTimes(2);
   });
@@ -446,7 +467,8 @@ describe("check_fit stops at the first view it cannot capture properly (D1)", ()
     bridge.captureViewport.mockRejectedValueOnce(new BridgeHttpError(waiting, 409));
     const r = await run();
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe(incompleteAt("face", 1, false) + waiting);
+    // With no image, the stop, the header and the rubric are one text block (F-95).
+    expect(r.content).toEqual([{ type: "text", text: incompleteText("face", 1, false, waiting) }]);
     expect(imagesOf(r)).toHaveLength(0);
     expect(bridge.frameCamera).toHaveBeenCalledTimes(1);
     expect(bridge.getDialog).toHaveBeenCalledTimes(1);
@@ -462,7 +484,7 @@ describe("check_fit stops at the first view it cannot capture properly (D1)", ()
     bridge.frameCamera.mockResolvedValueOnce(answer);
     const r = await run();
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe(incompleteAt("face", 1, false) + why);
+    expect(r.content[0].text).toBe(incompleteText("face", 1, false, why));
     expect(bridge.frameCamera).toHaveBeenCalledTimes(1);
     expect(bridge.captureViewport).not.toHaveBeenCalled();
   });
@@ -479,7 +501,7 @@ describe("check_fit stops at the first view it cannot capture properly (D1)", ()
     bridge.captureViewport.mockResolvedValueOnce(answer);
     const r = await run();
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe(incompleteAt("face", 1, false) + why);
+    expect(r.content[0].text).toBe(incompleteText("face", 1, false, why));
     expect(imagesOf(r)).toHaveLength(0);
     expect(bridge.frameCamera).toHaveBeenCalledTimes(1);
     expect(bridge.captureViewport).toHaveBeenCalledTimes(1);
@@ -491,9 +513,9 @@ describe("check_fit stops at the first view it cannot capture properly (D1)", ()
     const r = await run();
     expect(r.isError).toBe(true);
     expect(r.content[0].text).toContain("screenshot of CC5's window (1920x1040)");
-    expect(r.content[0].text).toBe(incompleteAt("face", 1, false) + "the 'face' image is a screenshot of CC5's window " +
+    expect(r.content[0].text).toBe(incompleteText("face", 1, false, "the 'face' image is a screenshot of CC5's window " +
       "(1920x1040), not a render: RenderImage is not working (it stops after a .ccProject is loaded); restart CC5 or " +
-      "check the fit by hand");
+      "check the fit by hand"));
     expect(imagesOf(r)).toHaveLength(0);
     expect(bridge.frameCamera).toHaveBeenCalledTimes(1);
   });
@@ -503,7 +525,8 @@ describe("check_fit stops at the first view it cannot capture properly (D1)", ()
       base64: Buffer.from("GIF89a, not a PNG render").toString("base64") });
     const r = await run();
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe(incompleteAt("face", 1, false) + `the 'face' image is not a PNG render (${fileFor(1, "face")})`);
+    expect(r.content[0].text).toBe(incompleteText("face", 1, false,
+      `the 'face' image is not a PNG render (${fileFor(1, "face")})`));
     expect(imagesOf(r)).toHaveLength(0);
     expect(bridge.frameCamera).toHaveBeenCalledTimes(1);
   });
@@ -526,7 +549,7 @@ describe("check_fit stops at the first view it cannot capture properly (D1)", ()
     });
     const r = await run({}, { signal: ac.signal });
     expect(r.isError).toBe(true);
-    expect(r.content[0].text).toBe(incompleteAt("left", 2, true) + "the check was cancelled");
+    expect(r.content[0].text).toBe(incompleteText("left", 2, true, "the check was cancelled"));
     expect(imagesOf(r)).toHaveLength(1);
     expect(bridge.frameCamera).toHaveBeenCalledTimes(1);
     expect(bridge.captureViewport).toHaveBeenCalledTimes(1);
@@ -544,10 +567,43 @@ describe("check_fit's other safeguards", () => {
     const r = await run();
     expect(r.isError).toBeUndefined();
     expect(imagesOf(r)).toHaveLength(5);
-    expect(r.content[1].text).toBe(`View 1/5: face (${fileFor(1, "face")})`);
-    expect(r.content[3].text).toBe(`View 2/5: left (${fileFor(2, "left")}) WARNING: identical to the previous view: ` +
+    expect(lastLine(r.content[0])).toBe(`View 1/5: face (${fileFor(1, "face")})`);
+    expect(r.content[2].text).toBe(`View 2/5: left (${fileFor(2, "left")}) WARNING: identical to the previous view: ` +
       "the camera did not move.");
-    expect(r.content[5].text).toBe(`View 3/5: right (${fileFor(3, "right")})`);
+    expect(r.content[4].text).toBe(`View 3/5: right (${fileFor(3, "right")})`);
+  });
+
+  // F-104 (live): a capture's undo took back a load CC5 had not finished; the plugin says so in a WARNING note
+  // (cc5_api.CAPTURE_UNDO_REDONE).
+  const UNDO_REDONE = "WARNING: CC5 had not finished the change before this capture (a load still running), so the " +
+    "capture's own undo took that change back; it was put back with a redo (F-104). Check the scene.";
+
+  it("shows a capture's WARNING note under that view's label, and goes on", async () => {
+    const warning = UNDO_REDONE;
+    bridge.captureViewport.mockResolvedValueOnce({ success: true, path: fileFor(1, "face"), base64: image(9),
+      notes: [warning, "a note that is no warning"] });
+    const r = await run();
+    expect(r.isError).toBeUndefined();
+    expect(imagesOf(r)).toHaveLength(5);
+    expectNoTextAfterText(r);
+    expect(r.content[0].text).toBe(`${HEADER}\nView 1/5: face (${fileFor(1, "face")})\n${warning}`);
+    expect(r.content[1]).toEqual({ type: "image", data: image(9), mimeType: "image/png" });
+    expect(r.content[2].text).toBe(`View 2/5: left (${fileFor(2, "left")})`);
+    for (const text of textsOf(r)) expect(text).not.toContain("a note that is no warning");
+  });
+
+  it("keeps a capture's WARNING note when the check stops at that view", async () => {
+    const warning = UNDO_REDONE;
+    bridge.captureViewport.mockResolvedValueOnce({ success: true, path: fileFor(1, "face"),
+      base64: png(1920, 1040).toString("base64"), notes: [warning] });
+    const r = await run();
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toBe(incompleteText("face", 1, false, "the 'face' image is a screenshot of CC5's window " +
+      "(1920x1040), not a render: RenderImage is not working (it stops after a .ccProject is loaded); restart CC5 or " +
+      `check the fit by hand\n${warning}`));
+    bridge.captureViewport.mockResolvedValueOnce({ success: false, error: "No camera in scene", notes: [warning] });
+    expect((await run()).content[0].text).toBe(incompleteText("face", 1, false,
+      `capture_viewport failed: No camera in scene\n${warning}`));
   });
 
   it("reports each view as progress when the client asks for it", async () => {
@@ -681,9 +737,11 @@ describe("check_fit over the MCP SDK", () => {
     const r = await client.callTool({ name: "check_fit", arguments: { views: ["face", "front"] } });
     expect(r.isError).toBeFalsy();
     const content = r.content as Entry[];
-    expect(content.map((e) => e.type)).toEqual(["text", "text", "image", "text", "image", "text"]);
-    expect(content[2]).toMatchObject({ type: "image", data: image(1), mimeType: "image/png" });
-    expect(content[3]).toMatchObject({ type: "text", text: `View 2/2: front (${fileFor(2, "front")})` });
+    // No text block right after another (F-95): the header and the first view's label are one.
+    expect(content.map((e) => e.type)).toEqual(["text", "image", "text", "image", "text"]);
+    expect(lastLine(content[0])).toBe(`View 1/2: face (${fileFor(1, "face")})`);
+    expect(content[1]).toMatchObject({ type: "image", data: image(1), mimeType: "image/png" });
+    expect(content[2]).toMatchObject({ type: "text", text: `View 2/2: front (${fileFor(2, "front")})` });
     expect(bridge.frameCamera.mock.calls).toEqual([["face", "Kevin"], ["home", "Kevin"]]);
   });
 

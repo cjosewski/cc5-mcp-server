@@ -8,6 +8,8 @@ Install location:
   C:/Program Files/Reallusion/Character Creator 5/Bin64/OpenPlugin/CC5_MCP_Bridge/
 """
 
+from __future__ import annotations
+
 import os
 import sys
 
@@ -92,6 +94,10 @@ def initialize_plugin() -> int:
         _health_timer.timeout.connect(_on_health_timer)
         _health_timer.start(HEALTH_CHECK_INTERVAL_MS)
 
+        # F-104: watch CC5's background image loads, so that the queue holds a capture or an OBJ replace until they
+        # are done. It never raises: a registration that fails prints one line and leaves the watch off.
+        bridge_server.start_image_watch()
+
         print(f"[CC5 MCP Bridge] Bridge server running on http://127.0.0.1:{BRIDGE_PORT}")
     except Exception as e:
         print(f"[CC5 MCP Bridge] ERROR: {e}")
@@ -118,6 +124,7 @@ def uninitialize_plugin() -> None:
         _health_timer.stop()
         _health_timer = None
 
+    bridge_server.stop_image_watch()
     bridge_server.stop_server()
     if _server_thread is not None:
         _server_thread.join(timeout=5.0)

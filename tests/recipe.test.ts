@@ -3,14 +3,19 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
-  applyRecipe, checkRecipeFiles, formatReport, planRecipe, recipeStepCount, remainingRecipe, stepFromJob, supersedeChecks,
-  RecipeSchema, HEADSHOT_DISABLED, BASE_LOAD_WAIT_MS, PRESET_EXTENSIONS, STEP_JOB_WAIT_MS, WEARABLE_EXTENSIONS,
-  type StepResult,
+  answeredCancel, applyRecipe, checkRecipeFiles, formatReport, isSelectionRefusal, planRecipe, recipeStepCount,
+  remainingRecipe, stepFromJob, supersedeChecks, waitKind, RecipeSchema, HEADSHOT_DISABLED, BASE_LOAD_WAIT_MS,
+  CANCELLED_BASE, CANCELLED_CHANGED, CANCELLED_NOTHING, CANCELLED_UNSURE, PRESET_EXTENSIONS, STEP_JOB_WAIT_MS,
+  WEARABLE_EXTENSIONS, type StepResult,
 } from "../src/recipe.js";
+import type { CC5Dialog } from "../src/types.js";
 import { BridgeHttpError, BridgeTimeoutError } from "../src/cc5-bridge.js";
 import { LAYER_EXPECT } from "../src/build-session.js";
 import { STILL_ASKING_NOTE } from "../src/jobs.js";
-import { CANCEL_NOT_CARRIED, LAYER_STOP_ADVICE } from "../src/prompts/content-rules.js";
+import { SKINGEN_SESSION_NOTE } from "../src/change-report.js";
+import {
+  CANCEL_NOT_CARRIED, LAYER_STOP_ADVICE, SKINGEN_QUESTION, SKINGEN_QUESTION_RULE,
+} from "../src/prompts/content-rules.js";
 import { createMockBridge, mockJobs } from "./helpers/mock-bridge.js";
 import type { MockBridge } from "./helpers/mock-bridge.js";
 
@@ -24,12 +29,18 @@ const LAYER = {
   buttons: ["Replace", "Material Only", "Cancel"],
 };
 const APPLY = { title: "", text: "Apply the preset?", buttons: ["OK", "Cancel"] };
+const LAYER_QUESTION = "The target object layer already exists. Do you want to replace the object, or the material only?";
+const LAYER_BUTTONS = "Replace, Material Only, Cancel";
 /** server.py _waiting_dialog_error: a 409's text and a waiting job's dialog_message. */
-const waiting = (id: string, question = "The target object layer already exists. Do you want to replace the object, " +
-  "or the material only?", buttons = "Replace, Material Only, Cancel") =>
+const waiting = (id: string, question = LAYER_QUESTION, buttons = LAYER_BUTTONS) =>
   `CC5 is waiting for an answer to "${question}" (the "Character Creator 5" window). Buttons: ${buttons}. The command is ` +
   `still running as job ${id}: answer it with answer_cc5_dialog (ask the user when it is a real choice), then check ` +
   `its result with job_status("${id}").`;
+/** The same text in a report's WAIT line (batch F review #29): continue_after, not job_status, reads the job's result. */
+const waitingLine = (id: string, question = LAYER_QUESTION, buttons = LAYER_BUTTONS) =>
+  `CC5 is waiting for an answer to "${question}" (the "Character Creator 5" window). Buttons: ${buttons}. The command is ` +
+  `still running as job ${id}: answer it with answer_cc5_dialog (ask the user when it is a real choice), then ` +
+  "continue_after reads its result.";
 const GUARD = 'CC5 is waiting for an answer to "Replace?" - no MCP command is waiting on it, so it is probably the ' +
   "user's own or CC5's: ask the user to answer or close it in CC5, then try again.";
 const NOT_STARTED = "CC5 timed out (cancelled): Timed out before CC5 started the command; it was cancelled and will not run.";
@@ -610,9 +621,10 @@ describe("a skin setting the recipe sets again later is not a surprise (D2 vs F-
     expect(results[0]).toMatchObject({ step: "asset Red Velvet.ccSkinGenPreset", ok: true, detail: where, otherTarget: "Camila",
       checks: [SKIN_LINE] });
     expect(results[0].superseded).toBeUndefined();
-    expect(formatReport(results).split("\n").slice(0, 4)).toEqual([
+    expect(formatReport(results).split("\n").slice(0, 5)).toEqual([
       "All 2 steps succeeded. 1 step(s) changed more than they are for (CHECK lines below).",
-      `OK   asset Red Velvet.ccSkinGenPreset: ${where}`, `     CHECK ${SKIN_LINE}`, "OK   skin_rgb"]);
+      `OK   asset Red Velvet.ccSkinGenPreset: ${where}`, `     CHECK ${SKIN_LINE}`, `     NOTE ${SKINGEN_SESSION_NOTE}`,
+      "OK   skin_rgb"]);
     // The first character's own load carries no target note.
     mockJobs(bridge, { load_asset: { success: true, path: RED_VELVET, target: "Kevin", changes: changes([SKIN_FACT]) } });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -727,7 +739,9 @@ describe("formatReport", () => {
     expect(lines[0]).toBe("Stopped at asset Eyes_02.ccEye: CC5 is waiting for an answer nobody has given yet, so nothing " +
       "after it was sent to CC5.");
     expect(lines[1]).toBe("OK   body_preset");
-    expect(lines[2]).toBe(`WAIT asset Eyes_02.ccEye: ${waiting("cmd_ab12cd34_3")}`);
+    // Batch F review #29: the plugin's "then check its result with job_status(...)" names continue_after in the report.
+    expect(lines[2]).toBe(`WAIT asset Eyes_02.ccEye: ${waitingLine("cmd_ab12cd34_3")}`);
+    expect(text).not.toContain("job_status(");
     expect(lines).toContain("Still to run after the answer: skin_rgb, skin_condition, asset Shirt.ccCloth.");
     const prefix = 'To go on after the answer: apply_character_recipe with continue_after "cmd_ab12cd34_3" and this recipe: ';
     const go = lines.find((l) => l.startsWith(prefix)) ?? "";
@@ -748,10 +762,513 @@ describe("formatReport", () => {
     expect(ran).not.toContain(LAYER_STOP_ADVICE);
     const notRan = formatReport([{ step: "skin_rgb", ok: false, detail: GUARD, stopped: { ran: false, wait_ms: 1 } }],
       { id: "stop_4", remaining: { skin_rgb: [0.8, 0.6, 0.5] }, layer: false });
+    // The queue guard holds a command behind a window to close in CC5 too (F-85, F-99), not only behind a question.
     expect(notRan.split("\n")[0]).toBe("Stopped at skin_rgb: it could not run while CC5 had a window open (a question " +
-      "nobody has answered, or a progress window), so nothing after it was sent to CC5.");
-    expect(notRan).toContain("Still to run after the answer: skin_rgb.");
-    expect(notRan).toContain('apply_character_recipe with continue_after "stop_4" and this recipe: {"skin_rgb":[0.8,0.6,0.5]}');
+      "nobody has answered, a window to close in CC5 because it has no buttons or this bridge cannot read its buttons, " +
+      "or a progress window), so nothing after it was sent to CC5.");
+    // Batch F review #10: the step never ran, so it waits for whichever window kept it from running.
+    expect(notRan).toContain("Still to run once the window is answered or closed in CC5: skin_rgb.");
+    expect(notRan).toContain('To go on once the window is answered or closed in CC5: apply_character_recipe with ' +
+      'continue_after "stop_4" and this recipe: {"skin_rgb":[0.8,0.6,0.5]}');
     expect(notRan).toContain("continue_after runs it once the window is closed.");
+    expect(notRan).not.toContain("after the answer");
+  });
+
+  // Batch F review #10: SkinGen's About box (left open by bake_skin_textures, F-84) or a progress window kept a step from
+  // running, and the report said "Still to run after the answer" / "To go on after the answer", with nothing to answer.
+  it("says a step any window kept from running goes on once the window is answered or closed in CC5, as a batch does", () => {
+    // The queue guard's texts (server.py _modal_dialog_error), as the bridge sends them with HTTP 400.
+    const guards = [
+      'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character Creator 5 (no MCP tool can close it), ' +
+        "then try again.",
+      'CC5 has a window open whose buttons this bridge cannot read: "Export FBX" - answer or close it in Character ' +
+        "Creator 5 (no MCP tool can click its buttons), then try again.",
+      'CC5 is busy with "Exporting" (the progress window of a command it is running) - try again when it closes. Do not ' +
+        "cancel it unless the user asks; they cancel it in CC5.",
+      GUARD,
+    ];
+    for (const guard of guards) {
+      const text = formatReport([{ step: "skin_rgb", ok: false, detail: guard, stopped: { ran: false, wait_ms: 1 } }],
+        { id: "stop_5", remaining: RecipeSchema.parse({ skin_rgb: [0.8, 0.6, 0.5], pose_file: "C:/p/Supine.rlMotion" }),
+          layer: false });
+      expect(text.split("\n")).toEqual([
+        "Stopped at skin_rgb: it could not run while CC5 had a window open (a question nobody has answered, a window to " +
+          "close in CC5 because it has no buttons or this bridge cannot read its buttons, or a progress window), so " +
+          "nothing after it was sent to CC5.",
+        `WAIT skin_rgb: ${guard}`,
+        "Still to run once the window is answered or closed in CC5: skin_rgb, pose_file.",
+        'To go on once the window is answered or closed in CC5: apply_character_recipe with continue_after "stop_5" ' +
+          'and this recipe: {"skin_rgb":[0.8,0.6,0.5],"pose_file":"C:/p/Supine.rlMotion"}',
+        "Show the user the window above; they answer or close it in CC5 unless it is a plain confirmation of what they " +
+          "asked for. Do not run the step again yourself: continue_after runs it once the window is closed.",
+      ]);
+    }
+  });
+});
+
+// Review #19 and #3: a step waiting in a window answer_cc5_dialog cannot click was reported as "CC5 is waiting for an
+// answer nobody has given yet", with the advice to answer a plain confirmation.
+describe("a stop in a window that is answered or closed in CC5 itself (F-94, F-99)", () => {
+  const ABOUT = { title: "CCSkinGen", text: "SkinGen 2.0\nS/N : (serial)", buttons: [] };
+  const FBX = { title: "Export FBX", text: "", buttons: [], buttons_unreadable: true };
+  const waitIn = (question: CC5Dialog): StepResult[] => [{ step: "asset Eyes_02.ccEye", ok: false, detail: "asked",
+    stopped: { ran: true, job_id: "cmd_ab12cd34_3", question, wait_ms: STEP_JOB_WAIT_MS, asset: "C:/e/Eyes_02.ccEye" } }];
+  const stop = { id: "cmd_ab12cd34_3", remaining: RecipeSchema.parse({ skin_rgb: [0.8, 0.6, 0.5] }), layer: false };
+
+  it("tells a question from a window to close and from one whose buttons the bridge cannot read", () => {
+    expect(waitKind(undefined)).toBe("question");
+    expect(waitKind(LAYER)).toBe("question");
+    expect(waitKind(ABOUT)).toBe("close");
+    expect(waitKind(FBX)).toBe("unreadable");
+    expect(waitKind({ title: "Character Creator 5", text: "Unsaved project data found", buttons: [] })).toBe("question");
+  });
+
+  // Review #8, in dialog.ts's order (formatDialog, isWindowToClose): text that could not be read comes first, then the
+  // untitled Welcome page and windows with no buttons, then buttons the bridge cannot read.
+  it("takes a dialog whose text could not be read for a question the user answers in CC5, never a window to close", () => {
+    expect(waitKind({ ...FBX, text_read: false })).toBe("unread");
+    expect(waitKind({ ...ABOUT, text_read: false })).toBe("unread");
+    expect(waitKind({ title: "", text: "", buttons: [], text_read: false })).toBe("unread");  // not the Welcome page
+    // server.py answer_dialog refuses unread text before it looks for the crash-recovery prompt.
+    expect(waitKind({ title: "Unsaved project data found", text: "", buttons: [], text_read: false })).toBe("unread");
+    expect(waitKind({ ...LAYER, text_read: true })).toBe("question");
+    // An untitled window without text is CC5's Welcome page even when its buttons cannot be read (dialog.ts).
+    expect(waitKind({ title: "", text: "", buttons: [], buttons_unreadable: true })).toBe("close");
+    // The crash-recovery prompt stays a question even when its buttons cannot be read (dialog.ts, server.py).
+    expect(waitKind({ title: "Character Creator 5", text: "Unsaved project data found. Restore it?", buttons: [],
+      buttons_unreadable: true })).toBe("question");
+  });
+
+  // Review #8: the report said to answer a plain confirmation yourself, and answer_cc5_dialog refuses such a dialog.
+  it("asks the user to answer a question whose text could not be read in CC5, never to answer it yourself", () => {
+    const text = formatReport(waitIn({ title: "Character Creator 5", text: "", buttons: [], text_read: false }), stop);
+    expect(text.split("\n")).toEqual([
+      "Stopped at asset Eyes_02.ccEye: CC5 is waiting for an answer nobody has given yet, so nothing after it was " +
+        "sent to CC5.",
+      "WAIT asset Eyes_02.ccEye: asked",
+      "Still to run after the answer: skin_rgb.",
+      'To go on after the answer: apply_character_recipe with continue_after "cmd_ab12cd34_3" and this recipe: ' +
+        '{"skin_rgb":[0.8,0.6,0.5]}',
+      "Ask the user to answer that question in Character Creator 5: its text could not be read, so answer_cc5_dialog " +
+        "refuses it (it may be CC5's crash-recovery prompt). Do not call job_status or run the step again: " +
+        "continue_after waits for it and reports it.",
+    ]);
+    expect(text).not.toContain("Answer a plain confirmation");
+  });
+
+  it("says to close a window with no buttons in CC5, never to answer it", () => {
+    const text = formatReport(waitIn(ABOUT), stop);
+    expect(text.split("\n")).toEqual([
+      "Stopped at asset Eyes_02.ccEye: CC5 has a window open with no buttons that nobody has closed yet, so nothing " +
+        "after it was sent to CC5.",
+      "WAIT asset Eyes_02.ccEye: asked",
+      "Still to run once the window is closed: skin_rgb.",
+      'To go on once the window is closed: apply_character_recipe with continue_after "cmd_ab12cd34_3" and this ' +
+        'recipe: {"skin_rgb":[0.8,0.6,0.5]}',
+      "Ask the user to close that window in Character Creator 5: it has no buttons, so no MCP tool can close it. Do " +
+        "not call job_status or run the step again: continue_after waits for it and reports it once the window is closed.",
+    ]);
+    expect(text).not.toContain("Answer a plain confirmation");
+  });
+
+  it("says to answer or close a window whose buttons the bridge cannot read in CC5", () => {
+    const lines = formatReport(waitIn(FBX), stop).split("\n");
+    expect(lines[0]).toBe("Stopped at asset Eyes_02.ccEye: CC5 has a window open whose buttons this bridge cannot " +
+      "read, and nobody has answered or closed it yet, so nothing after it was sent to CC5.");
+    expect(lines.slice(2)).toEqual([
+      "Still to run once the window is answered or closed: skin_rgb.",
+      'To go on once the window is answered or closed: apply_character_recipe with continue_after "cmd_ab12cd34_3" ' +
+        'and this recipe: {"skin_rgb":[0.8,0.6,0.5]}',
+      "Ask the user to answer or close that window in Character Creator 5: this bridge cannot read or click its " +
+        "buttons. Do not call job_status or run the step again: continue_after waits for it and reports it once the " +
+        "window is closed.",
+    ]);
+  });
+});
+
+// Batch F review #29: the plugin's texts for a job waiting in a window end by telling the agent to read its result with
+// job_status, while the report's advice says not to call job_status: continue_after waits for that job and reports it.
+describe("a WAIT line names continue_after, not job_status, for the stopped step's own job (review #29)", () => {
+  // server.py _dialog_view of SkinGen's About box (tests/py/test_dialogs.py ABOUT_TEXT), and its name in the texts.
+  const ABOUT = { title: "CCSkinGen", text: "S/N : (serial)\nProduct Version : 1.0.0824.1\nwww.reallusion.com",
+    buttons: [], text_read: true };
+  const CLOSE = 'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character Creator 5 (no MCP tool can ' +
+    "close it)";
+  /** The lines of the report of a recipe stopped at a step CC5 started as job cmd_ab12cd34_3 and that waits with `detail`. */
+  const report = (detail: string, question: CC5Dialog, blocked?: string) => formatReport([{ step: "asset Eyes_02.ccEye",
+    ok: false, detail, stopped: { ran: true, job_id: "cmd_ab12cd34_3", question, wait_ms: STEP_JOB_WAIT_MS,
+      ...(blocked ? { blocked_by: blocked } : {}) } }], { id: "cmd_ab12cd34_3", remaining: {}, layer: false }).split("\n");
+
+  it("after a question, as server.py _waiting_dialog_error words it", () => {
+    const lines = report(waiting("cmd_ab12cd34_3", "Apply the preset?", "OK, Cancel"), APPLY);
+    expect(lines[1]).toBe('WAIT asset Eyes_02.ccEye: CC5 is waiting for an answer to "Apply the preset?" (the ' +
+      '"Character Creator 5" window). Buttons: OK, Cancel. The command is still running as job cmd_ab12cd34_3: answer it ' +
+      "with answer_cc5_dialog (ask the user when it is a real choice), then continue_after reads its result.");
+    expect(lines.at(-1)).toContain("Do not call job_status or run the step again: continue_after waits for it and reports it.");
+    expect(lines.join("\n")).not.toContain("job_status(");
+  });
+
+  it("in a window to close, as batch F's plugin words it and as jobDialogMessage words an older plugin's", () => {
+    const batchF = `${CLOSE}. The command is still running as job cmd_ab12cd34_3: read its result with ` +
+      'job_status("cmd_ab12cd34_3") once it is closed.';
+    const lines = report(batchF, ABOUT);
+    expect(lines[1]).toBe(`WAIT asset Eyes_02.ccEye: ${CLOSE}. The command is still running as job cmd_ab12cd34_3: ` +
+      "continue_after reads its result once it is closed.");
+    expect(lines.at(-1)).toContain("Do not call job_status or run the step again");
+    // jobs.ts jobDialogMessage: an older plugin's "answer it with answer_cc5_dialog" text, worded as formatDialog does.
+    const older = `${CLOSE}.\nJob cmd_ab12cd34_3 is waiting on this window; read its result with job_status once it is ` +
+      "closed.";
+    expect(report(older, ABOUT).slice(1, 3)).toEqual([`WAIT asset Eyes_02.ccEye: ${CLOSE}.`,
+      "Job cmd_ab12cd34_3 is waiting on this window; continue_after reads its result once it is closed."]);
+  });
+
+  it("keeps another job's words: the job the step is queued behind, and the one a step that never ran waits for", () => {
+    // server.py _job_status for a job queued behind another job's window (tests/py/test_dialogs.py).
+    const queued = "Job cmd_ab12cd34_3 has not started: it is queued behind job cmd_ab12cd34_2. " +
+      `${CLOSE}. The command is still running as job cmd_ab12cd34_2: read its result with job_status("cmd_ab12cd34_2") ` +
+      "once it is closed. Job cmd_ab12cd34_3 runs once that window is closed; read its result with " +
+      'job_status("cmd_ab12cd34_3").';
+    expect(report(queued, ABOUT, "cmd_ab12cd34_2")[1]).toBe("WAIT asset Eyes_02.ccEye: Job cmd_ab12cd34_3 has not " +
+      `started: it is queued behind job cmd_ab12cd34_2. ${CLOSE}. The command is still running as job cmd_ab12cd34_2: ` +
+      'read its result with job_status("cmd_ab12cd34_2") once it is closed. Job cmd_ab12cd34_3 runs once that window is ' +
+      "closed; continue_after reads its result.");
+    // A base step stopped in the delete it runs first never ran: continue_after waits for that delete and runs the
+    // whole step again, without reporting the delete.
+    const text = waiting("cmd_7", "Delete Old?", "OK, Cancel");
+    const notRan = formatReport([{ step: "base", ok: false, detail: text,
+      stopped: { ran: false, job_id: "cmd_7", question: APPLY, wait_ms: BASE_LOAD_WAIT_MS } }],
+    { id: "cmd_7", remaining: { base: "default" }, layer: false });
+    expect(notRan.split("\n")[1]).toBe(`WAIT base: ${text}`);
+  });
+});
+
+// F-98 (live): after Chad's Cancel on _Hazel1 Eyes' Replace / Material Only question, the continued recipe reported
+// "OK   asset _Hazel1 Eyes.ccEye (after the answer)" and "All 2 steps succeeded", though CC5 applied nothing.
+describe("a step answered Cancel in CC5 is CANCELLED, never OK (F-98)", () => {
+  const EYES = "C:/e/Eyes_02.ccEye";
+  const CANCEL = [{ button: "Cancel", title: "Character Creator 5" }];
+  /** Every job finishes at once with `result`; its status names the buttons clicked while it waited in a CC5 dialog. */
+  const finishWith = (result: unknown, answers: unknown[]) => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_ab12cd34_5" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_ab12cd34_5", action: "load_asset", status: "done", result, answers });
+  };
+
+  it("reports a load answered Cancel as CANCELLED, counts it apart from the rest, and runs the rest", async () => {
+    finishWith({ success: true, path: EYES, target: "Kevin", changes: changes([]) }, CANCEL);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ assets: [EYES], skin_rgb: [0.8, 0.6, 0.5] }));
+    expect(results[0]).toMatchObject({ step: "asset Eyes_02.ccEye", ok: false, cancelled: true, detail: CANCELLED_NOTHING });
+    expect(results[0].checks).toBeUndefined();
+    expect(results[1]).toEqual({ step: "skin_rgb", ok: true, detail: "" });
+    const text = formatReport(results);
+    expect(text.split("\n").slice(0, 3)).toEqual([
+      "1 of 2 steps was cancelled in CC5; 1 succeeded.",
+      "CANCELLED asset Eyes_02.ccEye (answered Cancel in CC5, so CC5 applied nothing)",
+      "OK   skin_rgb",
+    ]);
+    expect(text).not.toContain("All 2 steps succeeded");
+  });
+
+  it("drops the 'nothing changed' CHECK line of a cancelled load: that is what the Cancel did", async () => {
+    const recipe = RecipeSchema.parse({ assets: ["C:/c/Shirt.ccCloth"] });
+    const shirt = { success: true, path: "C:/c/Shirt.ccCloth", target: "Kevin", changes: changes([]) };
+    finishWith(shirt, [{ button: "&Cancel", title: "Character Creator 5" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, recipe);
+    expect(results[0]).toMatchObject({ step: "asset Shirt.ccCloth", ok: false, cancelled: true, detail: CANCELLED_NOTHING });
+    expect(results[0].checks).toBeUndefined();
+    const text = formatReport(results);
+    expect(text.split("\n")[0]).toBe("1 of 1 steps was cancelled in CC5; 0 succeeded.");
+    expect(text).not.toContain("     CHECK ");
+    // Without the Cancel, the same load keeps its CHECK line: CC5 reported it done, but nothing changed.
+    finishWith(shirt, []);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const plain = await applyRecipe(bridge as any, recipe);
+    expect(plain[0]).toMatchObject({ step: "asset Shirt.ccCloth", ok: true });
+    expect(plain[0].checks).toHaveLength(1);
+  });
+
+  it("says what a cancelled load still changed, under its CANCELLED line", async () => {
+    finishWith({ success: true, path: "C:/c/Pants.ccCloth", target: "Kevin", changes: changes([
+      { kind: "worn_added", group: "clothing", id: "13", name: "Pants" },
+      { kind: "worn_removed", group: "clothing", id: "11", name: "Boxers" }]) }, [{ button: "cancel", title: "Character Creator 5" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ assets: ["C:/c/Pants.ccCloth"] }));
+    expect(results[0]).toMatchObject({ step: "asset Pants.ccCloth", ok: false, cancelled: true, detail: CANCELLED_CHANGED,
+      checks: ["removed Boxers (clothing): CC5 may have swapped it out for this item"],
+      changed: ["Applied: added Pants (clothing)"] });
+    expect(formatReport(results)).toContain("\nCANCELLED asset Pants.ccCloth (answered Cancel in CC5, but CC5 still " +
+      "changed what the lines below say)\n     CHECK removed Boxers (clothing): CC5 may have swapped it out for this " +
+      "item\n     NOTE Applied: added Pants (clothing)\n");
+  });
+
+  it("takes only a Cancel among a job's answers, whatever their shape", async () => {
+    finishWith({ success: true, path: EYES, target: "Kevin", changes: changes([]) }, [
+      { button: "Material Only", title: "Character Creator 5" }, { button: "OK", title: "Character Creator 5" }, "Cancel",
+      { title: "Cancel" }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ assets: [EYES] }));
+    expect(results[0]).toMatchObject({ step: "asset Eyes_02.ccEye", ok: true, detail: "" });
+    expect(results[0]).not.toHaveProperty("cancelled");
+    expect(answeredCancel([{ button: " &Cancel " }])).toBe(true);
+    expect(answeredCancel([{ button: "Cancel All" }])).toBe(false);
+    expect(answeredCancel({ button: "Cancel" })).toBe(false);
+    expect(answeredCancel(undefined)).toBe(false);
+  });
+
+  it("stepFromJob reports a job that finished after a Cancel as cancelled, after its error when it failed", () => {
+    // Batch F review #11: nothing compared either step, so neither is said to have applied nothing.
+    expect(stepFromJob("skin_rgb (after the answer)", { done: true, failed: false, result: { success: true }, answers: CANCEL }))
+      .toEqual({ step: "skin_rgb (after the answer)", ok: false, cancelled: true, detail: CANCELLED_UNSURE });
+    expect(stepFromJob("x", { done: true, failed: true, result: { error: "LoadFile failed" }, answers: CANCEL }))
+      .toEqual({ step: "x", ok: false, cancelled: true, detail: `${CANCELLED_UNSURE}; LoadFile failed` });
+    // A content load whose own comparison ran in full and found nothing.
+    expect(stepFromJob("asset Eyes_02.ccEye (after the answer)", { done: true, failed: false,
+      result: { success: true, path: EYES, target: "Kevin", changes: changes([]) }, answers: CANCEL }, EYES).detail)
+      .toBe(CANCELLED_NOTHING);
+    expect(stepFromJob("y", { done: true, failed: false, result: { success: true } })).toEqual({ step: "y", ok: true, detail: "" });
+  });
+
+  // Batch F review #11: "CC5 applied nothing" was said of every cancelled step without a change line, also when nothing
+  // had compared it: a pose, or a load with the comparison switched off or from an older plugin.
+  it("says CC5 applied nothing only when the load's own comparison ran in full and found nothing", async () => {
+    const cancelledLoad = async (result: unknown): Promise<StepResult> => {
+      finishWith(result, CANCEL);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (await applyRecipe(bridge as any, RecipeSchema.parse({ assets: [EYES] })))[0];
+    };
+    expect((await cancelledLoad({ success: true, path: EYES, target: "Kevin", changes: changes([]) })).detail)
+      .toBe(CANCELLED_NOTHING);
+    // CC5_CHANGE_CHECK=0: the plugin sends an empty comparison marked incomplete (cc5_changes._stub), and a WARNING note.
+    const off = "WARNING: the before/after comparison is switched off (CC5_CHANGE_CHECK=0): nothing was compared";
+    const unchecked = await cancelledLoad({ success: true, path: EYES, target: "Kevin",
+      changes: { ...changes([]), complete: false }, notes: [off] });
+    expect(unchecked).toMatchObject({ step: "asset Eyes_02.ccEye", ok: false, cancelled: true, detail: CANCELLED_UNSURE });
+    expect(formatReport([unchecked]).split("\n").slice(0, 3)).toEqual([
+      "1 of 1 steps was cancelled in CC5; 0 succeeded.",
+      "CANCELLED asset Eyes_02.ccEye (answered Cancel in CC5, so CC5 may not have done it)",
+      `NOT CHECKED: ${off} (asset Eyes_02.ccEye)`,
+    ]);
+    // A plugin older than the change report, materials the comparison ran out of time for, and colours CC5 reports late.
+    const late = "WARNING: CC5 may report material colours late after an undo, a redo or a load that left a colour " +
+      "unsettled (seen for a colour set without an undo, F-90; not checked live after an undo), so whether this load " +
+      "changed the colour on CC_Base_Eye/Std_Cornea_R was not checked: capture, then compare";
+    for (const result of [{ success: true, path: EYES, target: "Kevin" },
+      { success: true, path: EYES, target: "Kevin", changes: { ...changes([]), skipped: 2 } },
+      { success: true, path: EYES, target: "Kevin", changes: changes([]), notes: [late] }]) {
+      expect((await cancelledLoad(result)).detail).toBe(CANCELLED_UNSURE);
+    }
+    // A pose is no content load: nothing compares it.
+    finishWith({ success: true }, CANCEL);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await applyRecipe(bridge as any, RecipeSchema.parse({ pose_file: "C:/p/Supine.rlMotion" })))
+      .toEqual([{ step: "pose_file", ok: false, cancelled: true, detail: CANCELLED_UNSURE }]);
+  });
+
+  it("counts cancelled steps apart from failures, and supersedes nothing with a cancelled skin step", () => {
+    const cancelled = (step: string): StepResult => ({ step, ok: false, cancelled: true, detail: CANCELLED_NOTHING });
+    expect(formatReport([cancelled("asset A.ccEye"), { step: "skin_rgb", ok: false, detail: "No avatar in scene" },
+      { step: "pose_file", ok: true, detail: "" }]).split("\n")).toEqual([
+      "1 of 3 steps was cancelled in CC5; 1 failed; 1 succeeded.",
+      "CANCELLED asset A.ccEye (answered Cancel in CC5, so CC5 applied nothing)",
+      "FAIL skin_rgb: No avatar in scene",
+      "OK   pose_file",
+    ]);
+    expect(formatReport([cancelled("asset A.ccEye"), cancelled("asset B.ccEye")]).split("\n")[0])
+      .toBe("2 of 2 steps were cancelled in CC5; 0 succeeded.");
+    const preset: StepResult = { step: "asset X.ccSkinGenPreset", ok: true, detail: "", checks: [SKIN_LINE] };
+    expect(supersedeChecks([preset, cancelled("skin_rgb (after the answer)")])[0].checks).toEqual([SKIN_LINE]);
+  });
+});
+
+// F-91 (live 2026-10-07): a .ccSkinGenPreset load starts a SkinGen session, which hides hair, brows and clothing until a
+// content load ends it, and that load first asks SKINGEN_QUESTION. load_asset said so; a recipe report said neither.
+describe("a SkinGen preset's session and the question that ends it (F-91)", () => {
+  const SKINGEN = { title: "Character Creator 5", text: SKINGEN_QUESTION, buttons: ["OK", "Cancel"] };
+  const SHIRT = "C:/c/Shirt.ccCloth";
+  const LOADED = { success: true, path: RED_VELVET, target: "Kevin", changes: changes([]) };
+
+  it("shows the session a SkinGen preset started under its line", async () => {
+    mockJobs(bridge, { load_asset: LOADED });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ assets: [RED_VELVET], skin_rgb: [0.8, 0.6, 0.5] }));
+    expect(results[0]).toMatchObject({ step: "asset Red Velvet.ccSkinGenPreset", ok: true, detail: "",
+      loadNotes: [SKINGEN_SESSION_NOTE] });
+    expect(formatReport(results).split("\n").slice(0, 4)).toEqual([
+      "All 2 steps succeeded.", "OK   asset Red Velvet.ccSkinGenPreset", `     NOTE ${SKINGEN_SESSION_NOTE}`, "OK   skin_rgb"]);
+    // The same load finishing after an answer (continue_after) says it too.
+    expect(stepFromJob("asset Red Velvet.ccSkinGenPreset (after the answer)", { done: true, failed: false, result: LOADED },
+      RED_VELVET).loadNotes).toEqual([SKINGEN_SESSION_NOTE]);
+  });
+
+  it("claims no session for a SkinGen preset answered Cancel in CC5", async () => {
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_ab12cd34_5" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_ab12cd34_5", action: "load_asset", status: "done", result: LOADED,
+      answers: [{ button: "Cancel", title: "Character Creator 5" }] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ assets: [RED_VELVET] }));
+    expect(results[0]).toMatchObject({ step: "asset Red Velvet.ccSkinGenPreset", ok: false, cancelled: true,
+      detail: CANCELLED_NOTHING });
+    expect(results[0]).not.toHaveProperty("loadNotes");
+    expect(formatReport(results)).not.toContain(SKINGEN_SESSION_NOTE);
+  });
+
+  it("gives the rule for CC5's SkinGen question when the recipe stopped on it", async () => {
+    bridge.startJob.mockImplementation(async (_action: string, params: Record<string, unknown>) =>
+      ({ job_id: params.file_path === RED_VELVET ? "cmd_ab12cd34_1" : "cmd_ab12cd34_2" }));
+    bridge.getJob.mockImplementation(async (id: string) => (id === "cmd_ab12cd34_1"
+      ? { job_id: id, action: "load_asset", status: "done", result: LOADED }
+      : { job_id: id, action: "load_asset", status: "running", dialog: SKINGEN,
+        dialog_message: waiting(id, SKINGEN_QUESTION, "OK, Cancel") }));
+    const recipe = RecipeSchema.parse({ assets: [RED_VELVET, SHIRT] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, recipe);
+    const report = formatReport(results, { id: "cmd_ab12cd34_2", remaining: remainingRecipe(recipe, results), layer: false });
+    expect(report.split("\n")).toEqual([
+      "Stopped at asset Shirt.ccCloth: CC5 is waiting for an answer nobody has given yet, so nothing after it was sent " +
+        "to CC5.",
+      "OK   asset Red Velvet.ccSkinGenPreset",
+      `     NOTE ${SKINGEN_SESSION_NOTE}`,
+      `WAIT asset Shirt.ccCloth: ${waitingLine("cmd_ab12cd34_2", SKINGEN_QUESTION, "OK, Cancel")}`,
+      `NOT CHECKED: ${results[0].notChecked?.[0]} (asset Red Velvet.ccSkinGenPreset)`,
+      "Nothing else was left to run.",
+      'To go on after the answer: apply_character_recipe with continue_after "cmd_ab12cd34_2" and this recipe: {}',
+      "Show the user the question. Answer a plain confirmation of exactly what they asked for yourself and say so; for " +
+        "a real choice let them pick (a window no MCP command waits on may be the user's own: ask them). Do not call " +
+        "job_status or run the step again: continue_after waits for it and reports it.",
+      SKINGEN_QUESTION_RULE,
+    ]);
+  });
+
+  it("knows the question by its words in the title or text, and gives the rule only for a question Claude can answer", () => {
+    const report = (question: CC5Dialog) => formatReport([{ step: "asset Shirt.ccCloth", ok: false, detail: "asked",
+      stopped: { ran: true, job_id: "cmd_ab12cd34_2", question, wait_ms: STEP_JOB_WAIT_MS } }],
+    { id: "cmd_ab12cd34_2", remaining: {}, layer: false });
+    const split = { ...SKINGEN, text: "Applying this content will DEACTIVATE the current\nSkinGen  session.\nContinue?" };
+    expect(report(split).split("\n").at(-1)).toBe(SKINGEN_QUESTION_RULE);
+    expect(report({ ...SKINGEN, title: "Deactivate the current SkinGen session", text: "Continue?" }).split("\n").at(-1))
+      .toBe(SKINGEN_QUESTION_RULE);
+    expect(report(LAYER)).not.toContain(SKINGEN_QUESTION_RULE);
+    expect(report(APPLY)).not.toContain(SKINGEN_QUESTION_RULE);
+    // A window the user answers or closes in CC5 (no buttons found, or text not read): no MCP tool can click its OK.
+    expect(report({ ...SKINGEN, buttons: [] })).not.toContain(SKINGEN_QUESTION_RULE);
+    expect(report({ ...SKINGEN, text_read: false })).not.toContain(SKINGEN_QUESTION_RULE);
+  });
+});
+
+// Review #12: the recipe's base step deletes through delete_avatar, which clears CC5's selection first (F-92: deleting
+// a character while one of its worn items is selected can crash CC5), but the report dropped what delete_avatar noted.
+// Review #2: delete_avatar fails closed, so a delete that went ahead notes at most the selection it cleared.
+describe("the base step deletes through delete_avatar and shows what it noted (F-92)", () => {
+  const CLEARED = "CC5's selection (Pants) was cleared before the delete: deleting a character while one of its worn " +
+    "items is selected can crash CC5 (F-92).";
+  const REFUSED = "CC5's selection (Pants) could not be cleared, so nothing was deleted: deleting a character while " +
+    "one of its worn items is selected can crash CC5 (F-92). Run clear_selection (or deselect everything in Character Creator 5), then delete again.";
+
+  it("shows delete_avatar's notes in the base step's line", async () => {
+    bridge.getAvatars.mockResolvedValue([{ name: "Old", id: "1", type: "avatar" }, { name: "Older", id: "2", type: "avatar" }]);
+    // The first delete cleared the selection (Pants); the second found nothing selected, so it noted nothing.
+    bridge.deleteAvatar.mockResolvedValueOnce({ success: true, removed: ["Old"], notes: [CLEARED] })
+      .mockResolvedValueOnce({ success: true, removed: ["Older"] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ base: "default", skin_rgb: [0.8, 0.6, 0.5] }));
+    expect(results).toEqual([{ step: "base", ok: true, detail: "", notes: [CLEARED] },
+      { step: "skin_rgb", ok: true, detail: "" }]);
+    expect(formatReport(results).split("\n")).toEqual([
+      "All 2 steps succeeded.", `OK   base: ${CLEARED}`, "OK   skin_rgb"]);
+    // The result is JSON from the plugin: a note that is not text is left out.
+    bridge.getAvatars.mockResolvedValue([{ name: "Old", id: "1", type: "avatar" }]);
+    bridge.deleteAvatar.mockResolvedValue({ success: true, removed: ["Old"], notes: [7, "", CLEARED] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((await applyRecipe(bridge as any, RecipeSchema.parse({ base: "default" })))[0].notes).toEqual([CLEARED]);
+  });
+
+  it("keeps the notes after the error of a base load that failed", async () => {
+    mockJobs(bridge, { create_default_avatar: { success: false, error: "LoadFile failed" } });
+    bridge.deleteAvatar.mockResolvedValue({ success: true, removed: ["Old"], notes: [CLEARED] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ base: "default" }));
+    expect(results).toEqual([{ step: "base", ok: false, detail: "LoadFile failed", notes: [CLEARED] }]);
+    expect(formatReport(results).split("\n")).toEqual(["1 of 1 steps failed.", `FAIL base: LoadFile failed. ${CLEARED}`]);
+  });
+
+  // Batch F review #11: the base load was answered Cancel after the base step had deleted the characters in the scene,
+  // and the report said "CC5 applied nothing" next to the delete's own note.
+  it("says a base load answered Cancel may not have loaded, after the characters in the scene were deleted", async () => {
+    bridge.deleteAvatar.mockResolvedValue({ success: true, removed: ["Old"], notes: [CLEARED] });
+    bridge.startJob.mockResolvedValue({ job_id: "cmd_ab12cd34_6" });
+    bridge.getJob.mockResolvedValue({ job_id: "cmd_ab12cd34_6", action: "create_default_avatar", status: "done",
+      result: { success: true, name: "Default Character" }, answers: [{ button: "Cancel", title: "Character Creator 5" }] });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, RecipeSchema.parse({ base: "default" }));
+    expect(bridge.deleteAvatar).toHaveBeenCalledWith("Old");
+    expect(results).toEqual([{ step: "base", ok: false, cancelled: true, detail: CANCELLED_BASE, notes: [CLEARED] }]);
+    expect(formatReport(results).split("\n")).toEqual(["1 of 1 steps was cancelled in CC5; 0 succeeded.",
+      "CANCELLED base (answered Cancel in CC5, so CC5 may not have done it; any characters that were in the scene had " +
+        `already been deleted) ${CLEARED}`]);
+    // The same step once it finished after the answer (continue_after names it "base (after the answer)").
+    expect(stepFromJob("base (after the answer)", { done: true, failed: false, result: { success: true },
+      answers: [{ button: "Cancel" }] })).toEqual({ step: "base (after the answer)", ok: false, cancelled: true,
+      detail: CANCELLED_BASE });
+  });
+
+  it("ends the recipe at the base step when delete_avatar refused because the selection could not be cleared", async () => {
+    // The bridge answers a failed command with HTTP 400 and the command's error (cc5-bridge.ts describeHttpError).
+    bridge.deleteAvatar.mockRejectedValue(new BridgeHttpError(REFUSED, 400));
+    const recipe = RecipeSchema.parse({ base: "C:/Bases/Male.ccAvatar", skin_rgb: [0.8, 0.6, 0.5], pose_file: "C:/p/Supine.rlMotion" });
+    const seen: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const results = await applyRecipe(bridge as any, recipe, { fileExists: () => true, onStep: (s) => seen.push(s.step) });
+    const failed: StepResult = { step: "base", ok: false, detail: `could not remove existing avatar Old: ${REFUSED}`,
+      notRun: ["skin_rgb", "pose_file"] };
+    expect(results).toEqual([failed]);
+    expect(seen).toEqual(["base"]);
+    expect(started).toEqual([]);
+    expect(bridge.setSkinColor).not.toHaveBeenCalled();
+    expect(formatReport(results).split("\n")).toEqual([
+      "Ended at base: that step failed, so nothing after it was sent to CC5.",
+      `FAIL base: could not remove existing avatar Old: ${REFUSED}`,
+      "Not sent to CC5: skin_rgb, pose_file.",
+      "Run clear_selection (or deselect everything in CC5), then run the whole recipe again: its base step deletes " +
+        "the characters in the scene first.",
+    ]);
+    // The same refusal as the plugin's result, not as an HTTP error, ends the recipe the same way.
+    bridge.deleteAvatar.mockResolvedValue({ success: false, error: REFUSED });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await applyRecipe(bridge as any, recipe, { fileExists: () => true })).toEqual([failed]);
+    expect(started).toEqual([]);
+  });
+
+  it("still runs the rest after any other failed delete, and still stops at an open dialog", async () => {
+    const recipe = RecipeSchema.parse({ base: "default", skin_rgb: [0.8, 0.6, 0.5] });
+    bridge.deleteAvatar.mockRejectedValue(new BridgeHttpError("Avatar not found: Old (the scene has no characters)", 400));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await applyRecipe(bridge as any, recipe)).toEqual([
+      { step: "base", ok: false, detail: "Avatar not found: Old (the scene has no characters)" },
+      { step: "skin_rgb", ok: true, detail: "" }]);
+    bridge.deleteAvatar.mockRejectedValue(new BridgeHttpError(GUARD, 400));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(await applyRecipe(bridge as any, recipe)).toEqual([
+      { step: "base", ok: false, detail: GUARD, stopped: { ran: false, wait_ms: BASE_LOAD_WAIT_MS } }]);
+  });
+
+  // Review #2: delete_avatar fails closed; both of its refusals are built with _SELECTED_ITEM_CRASH, which names F-92.
+  it("knows delete_avatar's refusals by the F-92 they name (cc5_api.py)", () => {
+    const py = fs.readFileSync(new URL("../cc5-plugin/cc5_api.py", import.meta.url), "utf-8");
+    const crash = /_SELECTED_ITEM_CRASH = "([^"]+)"/.exec(py)?.[1] ?? "";
+    expect(isSelectionRefusal(crash)).toBe(true);
+    for (const name of ["DELETE_SELECTION_NOT_CLEARED", "DELETE_SELECTION_NOT_READ"]) {
+      const text = new RegExp(`${name} = \\(([\\s\\S]*?)\\)\\r?\\n`).exec(py)?.[1] ?? "";
+      expect(text).toContain("so nothing was deleted: ");
+      expect(text).toContain("+ _SELECTED_ITEM_CRASH +");
+    }
+    expect(isSelectionRefusal(REFUSED)).toBe(true);
+    expect(isSelectionRefusal("Avatar not found: Old. Characters in the scene: Kevin.")).toBe(false);
+    expect(isSelectionRefusal(undefined)).toBe(false);
+    // The fixtures above are the plugin's: a delete that goes ahead notes only the selection it cleared (CLEARED), and
+    // its old WARNING note for a selection it could not clear, deleting all the same, is gone.
+    expect(py).toContain('notes.append(f"CC5\'s selection ({cleared}) was cleared before the delete: {_SELECTED_ITEM_CRASH}.")');
+    expect(crash).toBe("deleting a character while one of its worn items is selected can crash CC5 (F-92)");
+    expect(py).not.toContain("could not be cleared before the delete");
   });
 });

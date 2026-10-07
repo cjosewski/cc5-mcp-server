@@ -126,19 +126,20 @@ class ExportFbxTest(unittest.TestCase):
         self.assertFalse(r["success"])
         self.assertIn("ExportFbxFile reported an error status", r["error"])
 
-    # F-86 (live CC5 5.13): an FBX export clears CC5's undo history, and undo still reports success afterwards.
+    # F-89 (live CC5 5.13, corrects F-86): an FBX export does not clear CC5's undo history (morph and skin changes
+    # undo across exports), so no result carries undo_history_cleared and no error speaks of the undo history.
 
-    def test_a_successful_export_says_it_cleared_cc5s_undo_history(self):
+    def test_a_successful_export_says_nothing_about_cc5s_undo_history(self):
         r = self.api.export_fbx(self.fbx, 0, target_tool="Unity")
-        self.assertIs(r["undo_history_cleared"], True)
-        self.assertFalse(any("undo" in n.lower() for n in r["notes"]))  # a field, not a note
+        self.assertTrue(r["success"])
+        self.assertNotIn("undo_history_cleared", r)
+        self.assertFalse(any("undo" in n.lower() for n in r["notes"]))
         self.setting.SetOption.side_effect = TypeError("in method 'RExportFbxSetting_SetOption'")
         r = self.api.export_fbx(self.fbx, 0)  # the flags fallback
         self.assertTrue(r["success"])
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertNotIn("undo_history_cleared", r)
 
-    def test_a_failure_before_any_export_call_does_not_say_so(self):
-        # Nothing reached CC5's exporter and no timeline setter ran: the undo history is still there.
+    def test_a_failure_before_any_export_call_says_nothing_about_it(self):
         self.avatar.GetMaxSubdivMeshLevel.return_value = 0
         for kwargs in ({"convert_image_format": True}, {"sub_d_level": 1}):
             with self.subTest(**kwargs):
@@ -148,28 +149,27 @@ class ExportFbxTest(unittest.TestCase):
         self.setting.SetOption.side_effect = TypeError("in method 'RExportFbxSetting_SetOption'")
         r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", allow_fallback=False)
         self.assertFalse(r["success"])
-        self.assertNotIn("undo_history_cleared", r)
+        self.assertEqual(set(r), {"success", "error", "notes"})
         self.export.assert_not_called()
 
-    def test_a_failed_export_call_says_cc5_may_have_cleared_its_undo_history(self):
-        # P-5: once ExportFbxFile was called, the history may be gone, whether the call then reported an error status
-        # or raised. The cautious choice: a false warning costs a save_character, a missed one the user's work.
+    def test_a_failed_export_call_gives_cc5s_error_only(self):
+        # Whether ExportFbxFile then reported an error status or raised: CC5's error and the notes, nothing more.
         self.export.return_value.IsError.return_value = True
         r = self.api.export_fbx(self.fbx, 0, target_tool="Unity")
         self.assertFalse(r["success"])
-        self.assertEqual(r["error"], "ExportFbxFile reported an error status")  # the sentence is the action's to add
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertEqual(r["error"], "ExportFbxFile reported an error status")
+        self.assertEqual(set(r), {"success", "error", "notes"})
         self.export.return_value.IsError.return_value = False
         self.export.side_effect = RuntimeError("CC5 could not write the file")
         r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", allow_fallback=False)
         self.assertFalse(r["success"])
         self.assertEqual(r["error"], "CC5 could not export with the requested FBX settings: CC5 could not write the "
                                      "file")
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertEqual(set(r), {"success", "error", "notes"})
         r = self.api.export_fbx(self.fbx, 0, target_tool="Unity")  # the flags fallback raises too
         self.assertFalse(r["success"])
         self.assertEqual(r["error"], "CC5 could not write the file")
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertEqual(set(r), {"success", "error", "notes"})
 
 
 class _Time:
@@ -257,43 +257,43 @@ class OneFrameTimelineTest(unittest.TestCase):
         self.assertEqual(self.events, self.LENGTHENED + [("ExportFbxFile", 3)] + self.RESTORED)
         self.assertEqual(self.timeline, {"length": 0.0, "end": 0.0})
 
-    # F-86 (DT-1): the F-86 probe found that SetProjectLength / SetEndTime alone (set and restored, as this guard does)
-    # clear CC5's undo history: six undos left a light change in place. A posed export that then fails says so too.
+    # F-89 (live CC5 5.13, corrects F-86): a posed export that fails sets the timeline back and gives CC5's error
+    # only; nothing in it speaks of the undo history.
 
-    def test_a_posed_mesh_only_export_that_fails_says_the_undo_history_is_gone(self):
+    def test_a_posed_mesh_only_export_that_fails_sets_the_timeline_back_and_gives_cc5s_error_only(self):
         self.export_errors[3] = RuntimeError("CC5 could not export")
         r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", export_motion=False, allow_fallback=False)
         self.assertFalse(r["success"])
         self.assertEqual(r["error"], "CC5 could not export with the requested FBX settings: CC5 could not export")
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertNotIn("undo_history_cleared", r)
         self.export_errors.clear()
         self.rl.RFileIO.ExportFbxFile.return_value.IsError.return_value = True  # CC5 ran it and reported an error
         r = self.api.export_fbx(self.fbx, 0, target_tool="Unity", export_motion=False, allow_fallback=False)
         self.assertFalse(r["success"])
         self.assertEqual(r["error"], "ExportFbxFile reported an error status")
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertNotIn("undo_history_cleared", r)
         self.assertEqual(self.timeline, {"length": 0.0, "end": 0.0})
 
-    def test_the_guard_records_that_it_changed_the_timeline(self):
-        # The flag follows SetProjectLength, whatever the export inside the guard then does.
-        history = {"cleared": False}
-        with self.api._one_frame_timeline_for_export([], history):
-            self.assertIs(history["cleared"], True)
+    def test_the_guard_sets_only_a_0_frame_timeline_to_one_frame_and_back(self):
+        with self.api._one_frame_timeline_for_export([]):
+            self.assertEqual(self.timeline, {"length": 100.0, "end": 100.0})
         self.assertEqual(self.events, self.LENGTHENED + self.RESTORED)
+        self.events.clear()
         self.timeline = {"length": 100.0, "end": 100.0}  # one frame: left alone
-        history = {"cleared": False}
-        with self.api._one_frame_timeline_for_export([], history):
+        with self.api._one_frame_timeline_for_export([]):
             pass
-        self.assertIs(history["cleared"], False)
+        self.assertEqual(self.events, [])
         self.timeline = {"length": 0.0, "end": 0.0}
         self.rl.RGlobal.SetProjectLength.side_effect = RuntimeError("SWIG")  # nothing was changed
-        with self.api._one_frame_timeline_for_export([], history):
+        notes: list = []
+        with self.api._one_frame_timeline_for_export(notes):
             pass
-        self.assertIs(history["cleared"], False)
+        self.assertEqual(self.events, [])
+        self.assertEqual(notes, [self.LENGTHEN_FAILED.format("SWIG")])
 
-    def test_export_for_unity_passes_on_the_flag_of_a_posed_export_that_failed(self):
+    def test_a_failed_posed_export_for_unity_sets_the_timeline_back_and_gives_cc5s_error_only(self):
         # DT-1's scenario: apply_pose left the timeline at 0 frames, export_for_unity runs mesh-only (no
-        # include_current_pose) and CC5 reports an error status. The reply's undo line comes from this flag.
+        # include_current_pose) and CC5 reports an error status.
         pipe = importlib.import_module("cc5_pipeline")  # imported here, so it uses this test's cc5_api
         root = tempfile.mkdtemp()
         marker = os.path.join(root, "ProjectSettings", "ProjectVersion.txt")
@@ -303,8 +303,8 @@ class OneFrameTimelineTest(unittest.TestCase):
         self.rl.RFileIO.ExportFbxFile.return_value.IsError.return_value = True
         r = pipe.export_for_unity(os.path.join(root, "Assets", "Patients"), "P1")
         self.assertFalse(r["success"])
-        self.assertEqual(r["error"], "ExportFbxFile reported an error status")  # no sentence: unity.ts adds the line
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertEqual(r["error"], "ExportFbxFile reported an error status")
+        self.assertNotIn("undo_history_cleared", r)
         self.assertEqual(self.events, self.LENGTHENED + [("ExportFbxFile", 3)] + self.RESTORED)
 
     def test_the_flags_fallback_runs_with_one_frame_too(self):
@@ -384,7 +384,7 @@ class OneFrameTimelineTest(unittest.TestCase):
         self.assertEqual(restored, ["WARNING: CC5 timeline not restored: it was set to one frame for this export and "
                                     "could not be set back (end time: SetEndTime SWIG; project length: "
                                     "SetProjectLength SWIG); set the timeline's length in Character Creator 5"])
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertNotIn("undo_history_cleared", r)
 
     def test_a_failed_export_whose_timeline_was_not_set_back_never_calls_the_fbx_usable(self):
         # A failed export_for_unity and job_status show the plugin's notes as they are, so the note must not say the
@@ -404,13 +404,13 @@ class OneFrameTimelineTest(unittest.TestCase):
                                     "could not be set back (end time: SWIG); set the timeline's length in Character "
                                     "Creator 5"])
         self.assertFalse(any("usable" in n for n in r["notes"]))
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertNotIn("undo_history_cleared", r)
         self.assertEqual(self.timeline["length"], 0.0)  # the project length still went back
 
 
-class UndoHistoryPassThroughTest(unittest.TestCase):
-    """F-86: export_for_unity passes export_fbx's undo_history_cleared on, also from an export that ran and then failed
-    a check (the history is gone either way)."""
+class ExportResultsCarryNoUndoFlagTest(unittest.TestCase):
+    """F-89 (live CC5 5.13, corrects F-86): an FBX export does not clear CC5's undo history, so export_for_unity and
+    export_textures carry no undo_history_cleared, not even one an export_fbx result from before the fix still has."""
 
     def setUp(self):
         _support.install_fake_rlpy()
@@ -434,35 +434,30 @@ class UndoHistoryPassThroughTest(unittest.TestCase):
         with mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake):
             return self.pipe.export_for_unity(self.unity_dir, "P1")
 
-    def test_a_successful_export_passes_the_flag_on(self):
-        r = self._export({"success": True, "flags_applied": True, "notes": [], "undo_history_cleared": True})
-        self.assertTrue(r["success"])
-        self.assertIs(r["undo_history_cleared"], True)
+    def test_a_successful_export_carries_no_undo_flag(self):
+        for result in ({"success": True, "flags_applied": True, "notes": []},
+                       {"success": True, "flags_applied": True, "notes": [], "undo_history_cleared": True}):
+            with self.subTest(result=result):
+                r = self._export(result)
+                self.assertTrue(r["success"])
+                self.assertNotIn("undo_history_cleared", r)
 
-    def test_an_export_fbx_without_the_flag_passes_false(self):
-        r = self._export({"success": True, "flags_applied": True, "notes": []})
-        self.assertTrue(r["success"])
-        self.assertIs(r["undo_history_cleared"], False)
-
-    def test_an_export_that_ran_but_wrote_no_fbx_still_says_so(self):
+    def test_an_export_that_ran_but_wrote_no_fbx_carries_none_either(self):
         r = self._export({"success": True, "flags_applied": True, "notes": [], "undo_history_cleared": True},
                          write=False)
         self.assertFalse(r["success"])
         self.assertIn("did not write", r["error"])
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertNotIn("undo_history_cleared", r)
 
-    def test_a_failed_export_does_not(self):
-        r = self._export({"success": False, "error": "ExportFbxFile reported an error status", "notes": []})
-        self.assertEqual(r, {"success": False, "error": "ExportFbxFile reported an error status", "notes": []})
+    def test_a_failed_export_passes_on_only_its_error_and_notes(self):
+        for result in ({"success": False, "error": "ExportFbxFile reported an error status", "notes": []},
+                       {"success": False, "error": "ExportFbxFile reported an error status", "notes": [],
+                        "undo_history_cleared": True}):
+            with self.subTest(result=result):
+                r = self._export(result, write=False)
+                self.assertEqual(r, {"success": False, "error": "ExportFbxFile reported an error status", "notes": []})
 
-    def test_a_failed_export_that_may_have_cleared_the_history_passes_the_flag_on(self):
-        # P-5: the flag, not the sentence: the TypeScript reply adds the undo line from it (it would show twice).
-        r = self._export({"success": False, "error": "ExportFbxFile reported an error status", "notes": [],
-                          "undo_history_cleared": True}, write=False)
-        self.assertEqual(r, {"success": False, "error": "ExportFbxFile reported an error status", "notes": [],
-                             "undo_history_cleared": True})
-
-    def test_export_textures_passes_the_flag_on_too(self):
+    def test_export_textures_carries_none_either(self):
         def fake(path, flags, **kw):
             open(path, "wb").close()
             return {"success": True, "flags_applied": True, "notes": [], "undo_history_cleared": True}
@@ -470,18 +465,13 @@ class UndoHistoryPassThroughTest(unittest.TestCase):
         with mock.patch.object(self.pipe.cc5_api, "export_fbx", side_effect=fake):
             r = self.pipe.export_textures(tempfile.mkdtemp(), "P1")
         self.assertTrue(r["success"])
-        self.assertIs(r["undo_history_cleared"], True)
+        self.assertNotIn("undo_history_cleared", r)
 
 
 class ExportFbxActionTest(unittest.TestCase):
-    """P-5: the export_fbx tool reads a failed export's HTTP 400 for its `error` only, so the export_fbx action
-    (server.ACTION_MAP, and the copy cc5_api._auto_patch_server installs on /reload) adds the undo sentence there when
-    the failure says CC5's undo history may be gone. export_fbx itself does not: export_for_unity and export_textures
-    print the line from the flag."""
-
-    # UNDO_HISTORY_CLEARED in src/tools/unity.ts.
-    SENTENCE = ("CC5 cleared its undo history with this export: changes made before it can no longer be undone "
-                "(save_character first to keep a way back).")
+    """F-89: the export_fbx action (server.ACTION_MAP, and the copy cc5_api._auto_patch_server installs on /reload)
+    returns export_fbx's result as it is: a failure's error is CC5's own text, with no sentence about the undo
+    history."""
 
     def setUp(self):
         _support.install_fake_rlpy()
@@ -501,33 +491,19 @@ class ExportFbxActionTest(unittest.TestCase):
         self.assertIs(export.call_args.kwargs["export_motion"], False)
         return out
 
-    def test_the_sentence_is_the_typescript_one(self):
-        self.assertEqual(self.api.UNDO_HISTORY_CLEARED, self.SENTENCE)
+    def test_the_undo_sentence_and_its_helper_are_gone(self):
+        self.assertFalse(hasattr(self.api, "UNDO_HISTORY_CLEARED"))
+        self.assertFalse(hasattr(self.api, "with_undo_history_sentence"))
 
-    def test_a_failure_that_may_have_cleared_the_history_says_so_in_its_error(self):
+    def test_every_result_is_returned_as_export_fbx_gave_it(self):
+        results = ({"success": False, "error": "ExportFbxFile reported an error status", "notes": ["n"]},
+                   {"success": False, "error": "Output path must end with .fbx"},
+                   {"success": True, "path": "P.fbx", "notes": []})
         for module, action in self._actions():
-            with self.subTest(action=module):
-                self.assertEqual(action.__module__, module)
-                out = self._run(action, {"success": False, "error": "ExportFbxFile reported an error status",
-                                         "notes": ["n"], "undo_history_cleared": True})
-                self.assertEqual(out, {"success": False, "notes": ["n"], "undo_history_cleared": True,
-                                       "error": f"ExportFbxFile reported an error status\n{self.SENTENCE}"})
-
-    def test_other_results_are_left_alone(self):
-        unchanged = ({"success": False, "error": "Output path must end with .fbx"},
-                     {"success": False, "error": "x", "notes": [], "undo_history_cleared": False},
-                     {"success": True, "path": "P.fbx", "notes": [], "undo_history_cleared": True})
-        for module, action in self._actions():
-            for result in unchanged:
+            self.assertEqual(action.__module__, module)
+            for result in results:
                 with self.subTest(action=module, result=result):
                     self.assertEqual(self._run(action, result), result)
-
-    def test_the_sentence_is_added_once_and_the_export_result_is_not_changed(self):
-        failed = {"success": False, "error": "boom", "undo_history_cleared": True}
-        once = self.api.with_undo_history_sentence(failed)
-        self.assertEqual(once["error"], f"boom\n{self.SENTENCE}")
-        self.assertEqual(self.api.with_undo_history_sentence(once), once)
-        self.assertEqual(failed["error"], "boom")
 
 
 if __name__ == "__main__":

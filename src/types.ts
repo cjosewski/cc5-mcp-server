@@ -45,6 +45,8 @@ export interface CreateAvatarResult extends OperationResult {
 
 export interface DeleteAvatarResult extends OperationResult {
   removed?: string[];
+  /** Set when CC5's selection was cleared before the delete, or could not be (F-92). */
+  notes?: string[];
 }
 
 export interface CaptureResult extends OperationResult {
@@ -52,6 +54,8 @@ export interface CaptureResult extends OperationResult {
   base64?: string;
   /** Set when the plugin wrote the file but did not send it (over its 10 MB limit). */
   warning?: string;
+  /** The plugin's notes on the capture, e.g. a WARNING that its undo took back more than the render (F-104). */
+  notes?: string[];
 }
 
 export interface CameraInfo {
@@ -140,6 +144,8 @@ export interface ExpressionResetResult extends OperationResult {
   reset?: string[];
   /** Every expression slider the character has. */
   slider_count?: number;
+  /** The sliders it reset, by name, with the weights they had (F-88): set_expression takes them to set it again. */
+  reset_weights?: Record<string, number>;
 }
 
 export interface ResetMorphsResult extends OperationResult {
@@ -286,6 +292,13 @@ export interface CC5Dialog {
   buttons: string[];
   /** True for a command's own progress window (only button Cancel): not a question (F-56). */
   progress?: boolean;
+  /**
+   * True for a window whose buttons the bridge cannot read (F-99: a QML dialog such as CC5's Export FBX): the user
+   * answers or closes it in CC5. Absent from older plugins.
+   */
+  buttons_unreadable?: boolean;
+  /** False when the dialog's labels could not be read: it may be the crash-recovery prompt. Absent from older plugins. */
+  text_read?: boolean;
 }
 
 export interface DialogResult extends OperationResult {
@@ -353,18 +366,43 @@ export interface ExportFbxResult extends OperationResult {
   embed_textures?: boolean;
   /** Whether image format conversion was applied. */
   convert_image_format?: boolean;
-  /** F-86: CC5 cleared its undo history with this export (live CC5 5.13 does on every FBX export). */
-  undo_history_cleared?: boolean;
+}
+
+export interface ExportObjResult extends OperationResult {
+  path?: string;
+  /** The ExportObjFile call form CC5 took. */
+  signature?: string;
+  notes?: string[];
+  /** F-88: the expression sliders not at 0 when the OBJ was written, by name with their weights (the OBJ carries them). */
+  expression_weights?: Record<string, number>;
+}
+
+export interface ReplaceMeshFromObjResult extends OperationResult {
+  mesh?: string;
+  /** The character's pose (a motion clip of at most one frame) was removed before the replace (F-83). */
+  pose_removed?: boolean;
+  /** How far the mesh is from the OBJ after the replace, in cm (null: not checked). */
+  check_max_cm?: number | null;
+  notes?: string[];
+  /** F-88: the expression sliders not at 0 when the replace ran, by name with their weights. */
+  expression_weights?: Record<string, number>;
 }
 
 export interface BakeSkinResult extends OperationResult {
   resolution?: number;
   triggered_action?: string;
+  /**
+   * F-87: what the command CC5 was asked to run is, by its name. A "bake" command bakes rather than opening a panel
+   * and has not yet been seen running; "apply_skin" and "skin_editor" open a panel where the user bakes.
+   */
+  command_kind?: "bake" | "apply_skin" | "skin_editor";
   manual_step_required?: boolean;
   instructions?: string;
   notes?: string[];
   /** F-84: CC5's skin-related commands the plugin looked at (at most 20), whether it could run them or not. */
   candidates_inspected?: Array<{ text: string; objectName: string }>;
+  /** F-87: the bake, apply-skin and skin-editor commands CC5 has disabled right now; none of them was run. */
+  disabled_candidates?: Array<{ text: string; objectName: string }>;
 }
 
 export interface ExportHeadMetaHumanResult extends OperationResult {
@@ -450,6 +488,8 @@ export interface JobStatus {
   dialog_message?: string;
   /** A queued job: the job whose dialog it waits behind (it starts after that answer). */
   blocked_by?: string;
+  /** The buttons answer_cc5_dialog clicked while this job waited, oldest first, with the dialog's title. */
+  answers?: { button: string; title?: string }[];
 }
 
 /**

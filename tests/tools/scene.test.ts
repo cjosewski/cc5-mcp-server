@@ -333,6 +333,38 @@ describe("delete_avatar handler", () => {
     const result = await handler({ name: "Camila" });
     expect(result.content[0].text).toContain("CC5 bridge error: CC5 not running");
   });
+
+  it("shows the plugin's notes, such as the selection it cleared before the delete (F-92)", async () => {
+    // Live: CC5 crashed deleting Kevin while his uniform pants were selected (load_asset leaves the loaded item selected).
+    const cleared = "CC5's selection (Pants) was cleared before the delete: deleting a character while one of its " +
+      "worn items is selected can crash CC5 (F-92).";
+    bridge.deleteAvatar.mockResolvedValue({ success: true, removed: ["Kevin"], notes: [cleared] });
+    const result = await server.getRegisteredTool("delete_avatar")({ name: "Kevin" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe(`Deleted avatar(s): Kevin\n${cleared}`);
+  });
+
+  // Review #2 (F-92): delete_avatar fails closed. When CC5's selection could not be read, or held something and could
+  // not be cleared, nothing is deleted (cc5_api.DELETE_SELECTION_NOT_CLEARED, DELETE_SELECTION_NOT_READ); the
+  // WARNING note of a delete that went ahead anyway is gone.
+  it("reports a delete CC5 refused because its selection could not be cleared as an error that deleted nothing (F-92)", async () => {
+    const crash = "deleting a character while one of its worn items is selected can crash CC5 (F-92). Run " +
+      "clear_selection, then delete again.";
+    const notCleared = `CC5's selection (Pants) could not be cleared, so nothing was deleted: ${crash}`;
+    const notRead = `CC5's selection could not be read or cleared, so nothing was deleted: ${crash}`;
+    for (const error of [notCleared, notRead]) {
+      bridge.deleteAvatar.mockResolvedValue({ success: false, error });
+      const result = await server.getRegisteredTool("delete_avatar")({ name: "Kevin" });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe(`Failed: ${error}`);
+    }
+    // Through the real bridge a refused command is an HTTP 400, and the tool shows CC5's text as it is.
+    bridge.deleteAvatar.mockRejectedValue(new BridgeHttpError(notCleared, 400));
+    const refused = await server.getRegisteredTool("delete_avatar")({ name: "Kevin" });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toBe(notCleared);
+    expect(refused.content[0].text).not.toContain("Deleted avatar(s)");
+  });
 });
 
 // ── capture_viewport ──────────────────────────────────────────────────────────
@@ -440,6 +472,40 @@ describe("capture_viewport handler", () => {
     const result = await handler({ output_path: "C:/temp/capture.png" });
     expect(result.content[0].type).toBe("image");
     expect(result.content[1].type).toBe("text");
+  });
+
+  // F-104 (live): a capture's undo took back a load CC5 had not finished; the plugin says so in a WARNING note
+  // (cc5_api.CAPTURE_UNDO_REDONE).
+  const UNDO_REDONE = "WARNING: CC5 had not finished the change before this capture (a load still running), so the " +
+    "capture's own undo took that change back; it was put back with a redo (F-104). Check the scene.";
+
+  it("shows every note the plugin returns, each on its own line of the text block beside the image (F-104)", async () => {
+    const warning = UNDO_REDONE;
+    bridge.captureViewport.mockResolvedValue({ ...CAPTURE_SUCCESS, notes: [warning, "Rendered at 1280x720."] });
+    const result = await server.getRegisteredTool("capture_viewport")({ output_path: "C:/temp/capture.png" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toHaveLength(2);
+    expect(result.content[0]).toEqual({ type: "image", data: CAPTURE_SUCCESS.base64, mimeType: "image/png" });
+    expect(result.content[1]).toEqual({ type: "text",
+      text: `Viewport captured: C:/temp/capture.png\n${warning}\nRendered at 1280x720.` });
+  });
+
+  it("shows the notes with a render too large to send, with no path, and with a failure (F-104)", async () => {
+    const warning = UNDO_REDONE;
+    const handler = server.getRegisteredTool("capture_viewport");
+    bridge.captureViewport.mockResolvedValueOnce({ success: true, path: "C:/t/cc5_captures/cc5_viewport_3.png",
+      warning: "Image too large to embed (35000000 bytes). Read from path directly.", notes: [warning] });
+    expect((await handler({})).content).toEqual([{ type: "text", text: "Viewport captured: " +
+      "C:/t/cc5_captures/cc5_viewport_3.png\nImage too large to embed (35000000 bytes). Read from path directly.\n" +
+      warning }]);
+    bridge.captureViewport.mockResolvedValueOnce({ success: true, notes: [warning] });
+    const none = await handler({});
+    expect(none.isError).toBe(true);
+    expect(none.content[0].text).toBe(`CC5 reported a capture but sent neither the image nor its file path.\n${warning}`);
+    bridge.captureViewport.mockResolvedValueOnce({ success: false, error: "RenderImage failed", notes: [warning] });
+    const failed = await handler({});
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0].text).toBe(`Failed: RenderImage failed\n${warning}`);
   });
 
   it("says it captures one view only and points fit checks to check_fit (F-44)", () => {
@@ -583,6 +649,44 @@ describe("check_cc5_connection after the Batch C live check (F-56, F-59)", () =>
       "(export, import, recipe step) stays queued and runs after the answer. get_cc5_dialog and answer_cc5_dialog " +
       "still work:\nCC5 dialog \"Character Creator 5\":\nReplace?\nButtons: Replace, Cancel\n" +
       "Job cmd_ab12cd34_7 is waiting on this answer; read its result with job_status after answering.");
+  });
+
+  // Review #4: for a window with no buttons, the reply offered answer_cc5_dialog and said it waits for an answer, then
+  // quoted formatDialog's "no MCP tool can close it".
+  it("behind a window with no buttons an MCP command waits in: it is closed in CC5, and answer_cc5_dialog is not offered", async () => {
+    bridge.getDialog.mockResolvedValue({ success: true, waiting_job: "cmd_ab12cd34_7",
+      dialog: { title: "CCSkinGen", text: "SkinGen 2.0\nS/N : (serial)", buttons: [], progress: false } });
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(text).toBe("CC5 bridge is connected.\nBut CC5 has a window open that an MCP command is waiting on. " +
+      "Nothing else starts until it is closed: a direct command sent now is cancelled after about 30 s; a job " +
+      "(export, import, recipe step) stays queued and runs once it is closed. get_cc5_dialog still works:\n" +
+      'CC5 has a window open with no buttons: "CCSkinGen" - close it in Character Creator 5 (no MCP tool can close ' +
+      "it).\nJob cmd_ab12cd34_7 is waiting on this window; read its result with job_status once it is closed.");
+    expect(text).not.toContain("answer_cc5_dialog");
+    expect(text).not.toContain("S/N");
+  });
+
+  it("behind a window whose buttons the bridge cannot read (F-99): it is answered or closed in CC5", async () => {
+    bridge.getDialog.mockResolvedValue({ success: true, waiting_job: "cmd_ab12cd34_7",
+      dialog: { title: "Export FBX", text: "", buttons: [], progress: false, buttons_unreadable: true } });
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(text).toBe("CC5 bridge is connected.\nBut CC5 has a window open that an MCP command is waiting on. " +
+      "Nothing else starts until it is answered or closed in CC5: a direct command sent now is cancelled after about " +
+      "30 s; a job (export, import, recipe step) stays queued and runs once it is answered or closed in CC5. " +
+      "get_cc5_dialog still works:\nCC5 has a window open whose buttons this bridge cannot read: \"Export FBX\" - " +
+      "answer or close it in Character Creator 5 (no MCP tool can click its buttons).\nJob cmd_ab12cd34_7 is waiting " +
+      "on this window; read its result with job_status once it is closed.");
+    expect(text).not.toContain("answer_cc5_dialog");
+  });
+
+  it("behind a window whose text could not be read (review #8): the user answers it in CC5", async () => {
+    bridge.getDialog.mockResolvedValue({ success: true, waiting_job: "cmd_ab12cd34_7",
+      dialog: { title: "Character Creator 5", text: "", buttons: ["OK", "Cancel"], progress: false, text_read: false } });
+    const text = (await server.getRegisteredTool("check_cc5_connection")({})).content[0].text as string;
+    expect(text).toContain("Nothing else starts until it is answered or closed in CC5:");
+    expect(text).toContain("get_cc5_dialog still works:\nCC5 is waiting for an answer to \"Character Creator 5\" - its " +
+      "text could not be read, so ask the user to answer it in CC5.");
+    expect(text).not.toContain("answer_cc5_dialog");
   });
 
   it("shows CC5's error when the dialog check is refused, instead of calling CC5 busy (C2 review)", async () => {

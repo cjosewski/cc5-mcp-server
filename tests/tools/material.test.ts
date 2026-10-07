@@ -201,6 +201,33 @@ describe("get_diffuse_color handler", () => {
   });
 });
 
+// F-90 (review #0): right after the bridge set a colour, CC5 still reads the colour from before until it next renders,
+// so the plugin answers from the bridge's record and says so in a note (cc5_api.DIFFUSE_FROM_RECORD); the reply
+// dropped it.
+describe("get_diffuse_color shows the plugin's notes (F-90)", () => {
+  const FROM_RECORD = "This is the colour the bridge set. CC5 reports a material's colour only after it next renders " +
+    "(capture_viewport), so its own read may still give the colour from before (F-90).";
+
+  it("puts each note on its own line after the RGB line", async () => {
+    bridge.getDiffuseColor.mockResolvedValue(
+      { success: true, r: 128 / 255, g: 128 / 255, b: 128 / 255, notes: [FROM_RECORD] } as DiffuseColor);
+    const result = await server.getRegisteredTool("get_diffuse_color")({ mesh_name: "CC_Base_Body", material_name: "Std_Skin_Head" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toEqual([{ type: "text",
+      text: `Diffuse color of CC_Base_Body/Std_Skin_Head: RGB(0.502, 0.502, 0.502)\n${FROM_RECORD}` }]);
+  });
+
+  it("keeps the one line without notes, and shows only the notes that are text", async () => {
+    const handler = server.getRegisteredTool("get_diffuse_color");
+    bridge.getDiffuseColor.mockResolvedValue({ r: 1, g: 0.5, b: 0 });
+    expect((await handler({ mesh_name: "M", material_name: "Mat" })).content[0].text)
+      .toBe("Diffuse color of M/Mat: RGB(1.000, 0.500, 0.000)");
+    bridge.getDiffuseColor.mockResolvedValue({ r: 1, g: 0.5, b: 0, notes: [3, null, "a note"] } as unknown as DiffuseColor);
+    expect((await handler({ mesh_name: "M", material_name: "Mat" })).content[0].text)
+      .toBe("Diffuse color of M/Mat: RGB(1.000, 0.500, 0.000)\na note");
+  });
+});
+
 // ── set_diffuse_color ─────────────────────────────────────────────────────────
 
 describe("set_diffuse_color handler", () => {
@@ -325,8 +352,8 @@ describe("get_shader_parameters handler", () => {
     const handler = server.getRegisteredTool("get_shader_parameters");
     const result = await handler({ mesh_name: "CC_Base_Body", material_name: "Std_Skin_Head" });
     expect(result.content[0].text).toContain("Digital_Human Head");
-    expect(result.content[0].text).toContain("Micro Roughness Scale = [0.050]");
-    expect(result.content[0].text).toContain("SSS Radius = [1.500]");
+    expect(result.content[0].text).toContain("Micro Roughness Scale = [0.05]");
+    expect(result.content[0].text).toContain("SSS Radius = [1.5]");
   });
 
   it("reports when there are no shader parameters", async () => {
@@ -392,7 +419,7 @@ describe("get_shader_parameters: entries that are not settings are listed apart 
   it("counts only the settable parameters", async () => {
     const text = await shown({ ...head, no_value: ["SSS Metallic Threshold"], filler: ["padding1"], unreadable: [] });
     expect(text).toContain("(1 params):");
-    expect(text).toContain("  - SSS Radius = [1.500]");
+    expect(text).toContain("  - SSS Radius = [1.5]");
     expect(text).not.toContain("- padding1");
   });
 
@@ -474,5 +501,37 @@ describe("set_shader_parameter handler", () => {
       values: [1.5],
     });
     expect(result.content[0].text).toContain("CC5 bridge error: bridge down");
+  });
+});
+
+// F-102 (live): RootColor set to [0.02, 0.018, 0.016] replied "set to [0.019999999552965164, 0.017999999225139618,
+// 0.01600000075995922]": CC5 keeps float32, as F-13 and F-62 found for morph weights.
+describe("shader values are shown rounded, as morph weights are (F-102)", () => {
+  const FLOAT32 = [0.019999999552965164, 0.017999999225139618, 0.01600000075995922];
+
+  it("set_shader_parameter echoes CC5's read-back to 4 decimals at most", async () => {
+    bridge.setShaderParameter.mockResolvedValue({ success: true, mesh: "Hair", material: "Hair_Transparency",
+      parameter: "RootColor", values: FLOAT32 });
+    const result = await server.getRegisteredTool("set_shader_parameter")({
+      mesh_name: "Hair", material_name: "Hair_Transparency", parameter_name: "RootColor", values: [0.02, 0.018, 0.016],
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toBe("Hair/Hair_Transparency 'RootColor' set to [0.02, 0.018, 0.016]");
+  });
+
+  it("set_shader_parameter rounds the values it was given the same way when CC5 sends none back", async () => {
+    bridge.setShaderParameter.mockResolvedValue({ success: true });
+    const result = await server.getRegisteredTool("set_shader_parameter")({
+      mesh_name: "CC_Base_Body", material_name: "Std_Skin_Head", parameter_name: "SSS Radius", values: [0.12345678, 2],
+    });
+    expect(result.content[0].text).toBe("CC_Base_Body/Std_Skin_Head 'SSS Radius' set to [0.1235, 2]");
+  });
+
+  it("get_shader_parameters shows the same digits, without trailing zeros or a lost fourth decimal", async () => {
+    bridge.getShaderParameters.mockResolvedValue({ success: true, mesh: "Hair", material: "Hair_Transparency",
+      shader: "Digital_Human Hair", parameters: { RootColor: FLOAT32, "Strand Width": [0.0005], Specular: [1] } });
+    const result = await server.getRegisteredTool("get_shader_parameters")({ mesh_name: "Hair", material_name: "Hair_Transparency" });
+    expect(result.content[0].text).toBe("Shader 'Digital_Human Hair' on Hair/Hair_Transparency (3 params):\n" +
+      "  - RootColor = [0.02, 0.018, 0.016]\n  - Strand Width = [0.0005]\n  - Specular = [1]");
   });
 });
